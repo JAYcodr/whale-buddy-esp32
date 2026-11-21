@@ -56,6 +56,12 @@ void sendUsbScreenshot() {
   Serial.flush();
 }
 
+// 串口 tap 注入：串口任务写、UI 任务读。坐标是独立标量，
+// 即使读到中间的写也不会画错，最多点歪一格，所以 volatile 足够。
+volatile bool    s_pendingTap  = false;
+volatile int16_t s_pendingTapX = 0;
+volatile int16_t s_pendingTapY = 0;
+
 void pollSerialCommands(UiNav& nav, bool& needFull,
                         uint32_t& fpsFrames, int64_t& fpsWindowStartUs, int64_t& nextFrameAt) {
   static char line[192];
@@ -96,6 +102,12 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             else if (strcmp(p, "settings") == 0) { pageSettingsSetTab(0); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "settings_adv") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "tokens") == 0)   { pageTokensOnEnter(millis()); nav.setPage(UiPage::TOKENS); needFull = true; }
+          } else if (strcmp(cmd, "tap") == 0) {
+            // 真机验收用：把手动戳屏变成可重放的命令。
+            // UI 任务里才拿得到 nav / handleAction，这里只放下坐标。
+            s_pendingTapX = (int16_t)(doc["x"] | 0);
+            s_pendingTapY = (int16_t)(doc["y"] | 0);
+            s_pendingTap = true;
           } else if (strcmp(cmd, "demo") == 0) {
             int anim = doc["anim"] | -1;
             pageHomeSetDemoOverride(anim);
@@ -484,6 +496,19 @@ void uiTaskFn(void*) {
       }
     };
 
+    // 串口注入的点击：复用 handleAction，与真实触屏同一条路径。
+    if (s_pendingTap) {
+      const int16_t tx = s_pendingTapX;
+      const int16_t ty = s_pendingTapY;
+      s_pendingTap = false;
+      UiAction act = nav.onTap(tx, ty, st, cfg);
+      if (act.kind != UiAction::NONE) {
+        handleAction(act);
+      } else {
+        needFull = true;  // 至少重绘一次，方便截图对比
+      }
+    }
+
     InputEvent ev;
     while (hwBusPollInput(&ev)) {
       if (ev.type == InputEvtType::TOUCH_DOWN) {
@@ -683,6 +708,9 @@ void uiTaskFn(void*) {
         needFull = true;
       }
     }
+    if (st.dockExpanded && st.turnError && st.errMsg[0] && !screenOff) {
+      needFull = true;  // 浮层期间锁全量重绘，压住宠物动画
+    }
     if (pageSettingsTick(nowMs) && nav.currentPage() == UiPage::SETTINGS) {
       needFull = true;
     }
@@ -762,7 +790,10 @@ void uiTaskFn(void*) {
     }
 
     // Frame rate target depends on active page & power profile.
-    bool animPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::HOME);
+    // 异常详情浮层开着时不能走舞台局部重绘：pageHomeDrawStage 只重画宠物那一块，
+    // 浮层画完立刻会被动画覆盖（真机实测：宠物和气泡压在浮层上）。
+    bool animPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::HOME &&
+                     !(st.dockExpanded && st.turnError && st.errMsg[0]));
     bool tokensPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::TOKENS);
     bool tokensAnim = tokensPage && pageTokensIsAnimating(st, cfg, nowMs);
     if (wasTokensAnim && !tokensAnim && tokensPage) {
