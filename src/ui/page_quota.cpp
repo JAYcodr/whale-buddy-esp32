@@ -94,7 +94,9 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
     ui::aaFillRoundRect(c, cx + 10, cy + 16, 4, ch - 32, 2, accent, accent);
 
     // Header: Provider name + sync feedback or live incrementing age badge
-    ui::drawText(c, ui::fontCjk16(), cx + 22, cy + 31, card.name, ui::COL_TEXT, ui::COL_CARD);
+    char nameBuf[32];
+    ui::fitUtf8Line(c, ui::fontCjk16(), card.name, cw - 96, nameBuf, sizeof(nameBuf));
+    ui::drawText(c, ui::fontCjk16(), cx + 22, cy + 31, nameBuf, ui::COL_TEXT, ui::COL_CARD);
     if (s_syncPending) {
       ui::drawTextRight(c, ui::fontCjk14(), cx + cw - 14, cy + 30,
                         "同步中…", ui::COL_ACCENT, ui::COL_CARD);
@@ -133,8 +135,8 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
 
         const int16_t barX = cx + 64;
         const int16_t barY = rowY - 6;
-        // 146px bar + pct right-aligned at cx + 254 leaves >= 6px before 6-char reset strings.
-        const int16_t barW = 146;
+        // 152px bar + pct right-aligned at cx + 254 leaves clean breathing room before reset time.
+        const int16_t barW = 152;
         const int16_t barH = 9;
         const uint16_t barCol = usageBarColor(qb.pct, accent);
         ui::drawProgressBar(c, barX, barY, barW, barH, qb.pct, barCol);
@@ -143,28 +145,24 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
                                      ? (qb.resetSec - localElapsed)
                                      : 0u;
         const uint32_t totalSec = windowTotalSec(qb.tag);
-        float pace = 0.0f;
-        if (totalSec > 0) {
-          pace = (liveReset < totalSec)
-                   ? (float)(totalSec - liveReset) / (float)totalSec
-                   : 0.0f;
+        if (totalSec > 0 && liveReset > 0 && liveReset < totalSec) {
+          float pace = (float)(totalSec - liveReset) / (float)totalSec;
           if (pace < 0.0f) pace = 0.0f;
           if (pace > 1.0f) pace = 1.0f;
           int16_t tickX = (int16_t)(barX + (int16_t)(barW * pace + 0.5f));
-          if (tickX < barX) tickX = barX;
-          if (tickX > barX + barW - 2) tickX = barX + barW - 2;
-          // Draw pace tick 2px above and below the 9px bar so pace is visible against track.
-          c.fillRect(tickX, barY - 2, 2, 13, ui::COL_TEXT);
+          if (tickX < barX + 2) tickX = barX + 2;
+          if (tickX > barX + barW - 4) tickX = barX + barW - 4;
+          int16_t fillW = (int16_t)((int32_t)barW * (qb.pct > 100 ? 100 : qb.pct) / 100);
+          if (fillW > 0 && fillW < barH) fillW = barH;
+          // Flush gauge notch inside the bar height so it never juts out like a stray artifact.
+          uint16_t tickCol = (tickX < barX + fillW)
+                               ? ui::blend565(barCol, ui::COL_CARD, 185)
+                               : ui::COL_DIM;
+          c.fillRect(tickX, barY + 1, 2, barH - 2, tickCol);
         }
 
-        uint16_t pctCol = accent;
-        if (qb.pct == 0) {
-          pctCol = ui::COL_MUTED;
-        } else if (qb.pct >= 90) {
-          pctCol = ui::COL_RED;
-        } else if (qb.pct >= 75 || (totalSec > 0 && (float)qb.pct > pace * 100.0f + 10.0f)) {
-          pctCol = ui::COL_AMBER;
-        }
+        // Keep percentage color consistent with the progress bar (muted only when 0%).
+        uint16_t pctCol = (qb.pct == 0) ? ui::COL_MUTED : barCol;
 
         char pctBuf[8];
         snprintf(pctBuf, sizeof(pctBuf), "%u%%", qb.pct);
