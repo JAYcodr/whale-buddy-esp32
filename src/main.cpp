@@ -198,7 +198,9 @@ void uiTaskFn(void*) {
 
     // Update shared NovaState hardware fields.
     novaStateWithLock([&](NovaState& s) {
-      s.fps        = (lastHomeFps > 0.5f) ? lastHomeFps : curFps;
+      // curFps 才是当前页的真实帧率；lastHomeFps 是主屏残留，
+      // 在别的页读 stat 会被它骗（曾把 40ms/帧 报成 60fps）。
+      s.fps        = curFps;
       s.pushUs     = lastPushUs;
       s.freeHeap   = esp_get_free_heap_size();
       s.freePsram  = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -764,9 +766,14 @@ void uiTaskFn(void*) {
     wasTokensAnim = tokensAnim;
 
     bool interactive = tpActive || pageRankIsFlinging() || uiAnimating;
-    uint8_t targetFps = (animPage || tokensAnim)
-                          ? settingsEffectiveFps(snap.battery.usbPresent)
-                          : (interactive ? 60 : (st.approvalActive ? 30 : 10));
+    // TOKENS 页一帧要搬 63 KB（368×88）@ 实测 2.7 MB/s ≈ 23 ms，喂不到 60；
+    // 鱼又是 ±2.6px / 4s 的慢速微动，30 fps 和 60 fps 肉眼没差别，锁 30 换稳定。
+    const uint8_t baseFps = settingsEffectiveFps(snap.battery.usbPresent);
+    const uint8_t tokensFps = baseFps > 30 ? 30 : baseFps;
+    uint8_t targetFps = animPage
+                          ? baseFps
+                          : (tokensAnim ? tokensFps
+                                        : (interactive ? 60 : (st.approvalActive ? 30 : 10)));
     if (screenOff || dimmedForNap) targetFps = 5;
     int64_t frameUs = 1000000LL / targetFps;
 
@@ -800,7 +807,7 @@ void uiTaskFn(void*) {
       } else if (tokensAnim || (tokensPage && needTokensSettle)) {
         int64_t t0 = esp_timer_get_time();
         pageTokensDrawStage(*canvas, st, cfg, nowMs);
-        hwDisplayPushRect(0, 148, UI_W, 194);
+        hwDisplayPushRect(0, 194, UI_W, 88);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needTokensSettle = false;
         frame++;

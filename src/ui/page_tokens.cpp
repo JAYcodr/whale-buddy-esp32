@@ -8,6 +8,11 @@ namespace {
 
 constexpr int16_t kStageTop    = 148;
 constexpr int16_t kStageH      = 194;
+// 鱼真正活动的纵向范围：kStageCy ± (kWaveAmp + wob 2.2 + bob 2.6 + 半高 10.4 + glow 10)
+// ≈ 195.8 .. 280.2。以前每帧清+推整个 194px 舞台，等于白搬一半像素——
+// QSPI 实测有效带宽只有 2.7 MB/s，那一半就是 27 ms。
+constexpr int16_t kPushTop     = 194;
+constexpr int16_t kPushH       = 88;
 constexpr float   kStageSpan   = 336.0f;
 constexpr float   kStageX0     = 16.0f;
 constexpr float   kStageCy     = 238.0f;
@@ -213,19 +218,29 @@ void drawWhale(NovaCanvas& c, const WhaleGeom& g, uint16_t col,
     for (int16_t px = px0; px <= px1; px++) {
       const float fx = (float)px + 0.5f;
       const float dxB = fx - bodyCx;
-      const float ellNorm = sqrtf(dxB * dxB * invRx2 + dyNorm2);
+      const float ell2 = dxB * dxB * invRx2 + dyNorm2;
+
+      // 椭圆 2 倍半径之外、又不在尾鳍横坐标范围内的像素一定为空
+      // （辉光只到 1.9 倍半径）。包围盒四角靠这一条直接跳过。
+      if (ell2 > 4.0f && fx < x0 + g.w * 0.72f) continue;
+
+      const float ellNorm = sqrtf(ell2);
       const float sdBody = (ellNorm - 1.0f) * bodyScale;
 
       float sd = sdBody;
-      if (fx > x0 + g.w * 0.72f) {
-        float sdT1 = sdTriangle(fx, fy, tx0, ty0, tx1, ty1, tx2, ty2);
-        float sdT2 = sdTriangle(fx, fy, tx0, ty0, tx2, ty2, tx3, ty3);
-        if (sdT1 < sd) sd = sdT1;
-        if (sdT2 < sd) sd = sdT2;
-      }
-      if (fy < bodyCy && fx > x0 + g.w * 0.24f && fx < x0 + g.w * 0.52f) {
-        float sdFin = sdTriangle(fx, fy, fx0, fy0, fx1, fy1, fx2, fy2);
-        if (sdFin < sd) sd = sdFin;
+      // 椭圆内部的像素 sdBody 已经是最小距离，三角形不可能更近——
+      // 以前对每个像素都白算 2~3 次点到线段距离，这是 40 ms 帧的主因。
+      if (sdBody >= 0.75f) {
+        if (fx > x0 + g.w * 0.72f) {
+          float sdT1 = sdTriangle(fx, fy, tx0, ty0, tx1, ty1, tx2, ty2);
+          float sdT2 = sdTriangle(fx, fy, tx0, ty0, tx2, ty2, tx3, ty3);
+          if (sdT1 < sd) sd = sdT1;
+          if (sdT2 < sd) sd = sdT2;
+        }
+        if (fy < bodyCy && fx > x0 + g.w * 0.24f && fx < x0 + g.w * 0.52f) {
+          float sdFin = sdTriangle(fx, fy, fx0, fy0, fx1, fy1, fx2, fy2);
+          if (sdFin < sd) sd = sdFin;
+        }
       }
 
       if (sd < 0.75f) {
@@ -240,11 +255,13 @@ void drawWhale(NovaCanvas& c, const WhaleGeom& g, uint16_t col,
             fg = bellyCol;
           }
         }
-        // Anti-aliased dark eye.
+        // Anti-aliased dark eye —— 先比平方距离，只有真落在眼睛附近才开方。
         float edx = fx - eyeCx;
         float edy = fy - eyeCy;
-        float ed = sqrtf(edx * edx + edy * edy) - eyeR;
-        if (ed < 0.7f) {
+        float ed2 = edx * edx + edy * edy;
+        float eyeOuter = eyeR + 0.7f;
+        if (ed2 < eyeOuter * eyeOuter) {
+          float ed = sqrtf(ed2) - eyeR;
           float eyeCov = clampf(0.5f - ed, 0.0f, 1.0f);
           fg = ui::blend565(fg, kColEye, clampByte(eyeCov * 255.0f));
         }
@@ -319,7 +336,12 @@ float computeBobScale(const NovaState& st, const NovaSettings& cfg, uint32_t now
 }
 
 void drawWhaleSchool(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t nowMs) {
-  c.fillRect(0, kStageTop, UI_W, kStageH, ui::COL_BG);
+  // COL_BG 是纯黑 0x0000：memset 比逐像素 fillRect 快一个数量级
+  // （fillRect 在 80 MHz + PSRAM canvas 上约 0.5 µs/px）。
+  uint16_t* fb = c.getFramebuffer();
+  if (fb) {
+    memset(fb + (int32_t)kPushTop * UI_W, 0, sizeof(uint16_t) * UI_W * kPushH);
+  }
   if (st.nTokenDays == 0) return;
 
   const uint64_t maxV = findMaxDayTokens(st);

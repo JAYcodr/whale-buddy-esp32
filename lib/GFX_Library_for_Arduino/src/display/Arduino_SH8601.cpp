@@ -14,6 +14,20 @@ bool Arduino_SH8601::begin(int32_t speed)
   return Arduino_TFT::begin(speed);
 }
 
+// Arduino_GFX::draw16bitRGBBitmap 是逐像素 writePixel：每个像素一次完整的
+// 地址窗口命令 + 单像素数据传输。368×88 就是 31,500 次事务，实测 38 ms/帧，
+// 把鲸群动画压到 20 fps 以下（目标 60）。
+// QSPI 本身支持一次设窗口 + 连续写，同样的 63 KB 只要约 3 ms。
+// 前提是 bitmap 连续排布成 w*h —— 调用方传的是 framebuffer 的整行带，满足。
+void Arduino_SH8601::draw16bitRGBBitmap(int16_t x, int16_t y, uint16_t *bitmap, int16_t w, int16_t h)
+{
+  if (!_bus || !bitmap || w <= 0 || h <= 0) return;
+  startWrite();
+  writeAddrWindow(x, y, (uint16_t)w, (uint16_t)h);
+  _bus->writePixels(bitmap, (uint32_t)w * (uint32_t)h);
+  endWrite();
+}
+
 void Arduino_SH8601::writeAddrWindow(int16_t x, int16_t y, uint16_t w, uint16_t h)
 {
   if ((x != _currentX) || (w != _currentW))
