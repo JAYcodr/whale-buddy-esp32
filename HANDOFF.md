@@ -173,14 +173,13 @@ timeout 40 node --test host-plugin/test/bridge.test.mjs    # 7/7 通过
 
 `ttl` 已是 20000，`src/net/proto.cpp:165` 把它写进 `st.apTtlMs`，进度条总长随之变长。
 
-尚待日常使用确认的两点：
+审批时序两点都已目视确认（2026-11-21 23:50）：
 
-- 客户端 GUI 审批卡片出现的时机 —— `mirror` 分支在发报文的同一轮就调了 `next()`，
-  理论上应与设备同时出现
-- 客户端先答时 `approval_end` 是否让设备立刻关窗。本次两次测试都没抓到 `approval_end`：
-  若两次都是在设备上点的批准，属正常（`handleUp` 的 `decision` 分支按设计
-  `notifyDeviceEnd: false`，设备自己知道）；要单独验证得在 GUI 上点，然后订阅
-  `nova/D93468/approval_end` 看有没有到
+- **两端同时出现** —— `mirror` 分支在发报文的同一轮就调了 `next()`，客户端 GUI 卡片
+  与设备弹窗同步弹出，「pet 先出、到期才轮到客户端」的旧症状消失
+- **在 GUI 上点批准后设备立刻关窗** —— `approval_end` 链路正常。此前两次测试没抓到
+  `approval_end`，是因为两次都在设备上点的：`handleUp` 的 `decision` 分支按设计
+  `notifyDeviceEnd: false`，设备自己知道结果，无需回灌
 
 `node --test host-plugin/test/bridge.test.mjs` 7/7 通过。
 
