@@ -6,8 +6,8 @@
 #include <string.h>
 
 namespace {
-constexpr ui::Rect BTN_CANCEL_PORTAL{ 94, 304, 180, 44 };
-constexpr int ANIM_RX = 94, ANIM_RY = 86, ANIM_RW = 180, ANIM_RH = 176;
+constexpr ui::Rect BTN_CANCEL_PORTAL{ 94, 304, 180, 46 };
+constexpr int ANIM_RX = 94, ANIM_RY = 74, ANIM_RW = 180, ANIM_RH = 176;
 constexpr int PET_CX  = ANIM_RX + ANIM_RW / 2;
 constexpr int PET_CY  = ANIM_RY + ANIM_RH / 2;
 
@@ -73,12 +73,12 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st) {
     stateTag = "思考执行中";
   }
   ui::TextMetrics tm = ui::measureText(c, ui::fontCjk14(), stateTag);
-  int16_t pw = (int16_t)tm.w + 30;
+  int16_t pw = (int16_t)tm.w + 32;
   int16_t px = (UI_W - pw) / 2;
-  int16_t py = 272;
-  ui::drawCard(c, px, py, pw, 26, ui::COL_CARD, ui::COL_BORDER, 13);
-  ui::aaFillCircle(c, px + 12, py + 13, 3, dotCol);
-  ui::drawTextCenteredInRect(c, ui::fontCjk14(), { (int16_t)(px + 18), py, (int16_t)(pw - 22), 26 },
+  int16_t py = 258;
+  ui::drawCard(c, px, py, pw, 28, ui::COL_CARD, ui::COL_BORDER, 14);
+  ui::aaFillCircle(c, px + 12, py + 14, 3, dotCol);
+  ui::drawTextCenteredInRect(c, ui::fontCjk14(), { (int16_t)(px + 18), py, (int16_t)(pw - 22), 28 },
                              stateTag, ui::COL_DIM, ui::COL_CARD);
 }
 }  // namespace
@@ -115,28 +115,28 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame) {
   drawStatusPill(c, st);
 
   // Bottom DSH Live Dock Card
-  const int16_t dockX = 24, dockY = 312, dockW = 320, dockH = 114;
+  const int16_t dockX = 20, dockY = 296, dockW = 328, dockH = 134;
   ui::drawCard(c, dockX, dockY, dockW, dockH, ui::COL_CARD, ui::COL_BORDER, 18);
 
   char statsLine[64];
   snprintf(statsLine, sizeof(statsLine), "运行 %u · 等待 %u · 会话 %u", st.run, st.wait, st.sess);
-  ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 28, statsLine, ui::COL_TEXT, ui::COL_CARD);
+  ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 32, statsLine, ui::COL_TEXT, ui::COL_CARD);
 
   if (st.ctxPct >= 0) {
     char ctxBuf[16];
     snprintf(ctxBuf, sizeof(ctxBuf), "CTX %d%%", st.ctxPct);
     uint16_t ctxCol = st.ctxPct >= 80 ? ui::COL_RED : (st.ctxPct >= 60 ? ui::COL_AMBER : ui::COL_MINT);
     ui::TextMetrics cm = ui::measureText(c, ui::fontAscii14(), ctxBuf);
-    int16_t pw = (int16_t)cm.w + 16;
+    int16_t pw = (int16_t)cm.w + 18;
     int16_t px = (int16_t)(dockX + dockW - 14 - pw);
-    int16_t py = (int16_t)(dockY + 12);
-    ui::aaFillRoundRect(c, px, py, pw, 22, 11, rgb565(18, 30, 48), rgb565(18, 30, 48));
-    ui::drawTextCenteredInRect(c, ui::fontAscii14(), { px, py, pw, 22 }, ctxBuf, ctxCol, rgb565(18, 30, 48));
+    int16_t py = (int16_t)(dockY + 13);
+    ui::aaFillRoundRect(c, px, py, pw, 24, 12, rgb565(18, 30, 48), rgb565(18, 30, 48));
+    ui::drawTextCenteredInRect(c, ui::fontAscii14(), { px, py, pw, 24 }, ctxBuf, ctxCol, rgb565(18, 30, 48));
   }
 
   char cmdLine[96];
   ui::fitUtf8Line(c, ui::fontCjk16(), st.msg[0] ? st.msg : "等待 DSH 事件...", dockW - 32, cmdLine, sizeof(cmdLine));
-  ui::drawText(c, ui::fontCjk16(), dockX + 16, dockY + 64, cmdLine, ui::COL_ACCENT, ui::COL_CARD);
+  ui::drawText(c, ui::fontCjk16(), dockX + 16, dockY + 75, cmdLine, ui::COL_ACCENT, ui::COL_CARD);
 
   char metaLine[96];
   if (st.activeModel[0]) {
@@ -146,7 +146,7 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame) {
   } else {
     snprintf(metaLine, sizeof(metaLine), "轻触诺瓦互动 · 左右滑动切页");
   }
-  ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 94, metaLine, ui::COL_DIM, ui::COL_CARD);
+  ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 112, metaLine, ui::COL_DIM, ui::COL_CARD);
 }
 
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {

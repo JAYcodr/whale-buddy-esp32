@@ -219,13 +219,13 @@ inline void drawBatteryIcon(NovaCanvas& c, int16_t rightX, int16_t centerY,
   snprintf(pctStr, sizeof(pctStr), "%u%%", pct);
 
   uint16_t col = usbPresent ? COL_MINT : (pct <= 20 ? COL_RED : (pct <= 45 ? COL_AMBER : COL_TEXT));
-  const int16_t bw = 24;
-  const int16_t bh = 12;
+  const int16_t bw = 26;
+  const int16_t bh = 14;
   const int16_t bx = rightX - bw - 3;
   const int16_t by = centerY - bh / 2;
 
   aaDrawRoundRect(c, bx, by, bw, bh, 3, COL_DIM);
-  c.fillRect(bx + bw, centerY - 2, 2, 5, COL_DIM);
+  c.fillRect(bx + bw, centerY - 3, 2, 6, COL_DIM);
   int16_t fillW = (int16_t)(((bw - 4) * pct + 50) / 100);
   if (fillW < 2 && pct > 0) fillW = 2;
   if (fillW > bw - 4) fillW = bw - 4;
@@ -238,13 +238,13 @@ inline void drawBatteryIcon(NovaCanvas& c, int16_t rightX, int16_t centerY,
     c.drawLine(mx - 2, centerY, mx + 2, centerY, COL_BG);
     c.drawLine(mx + 2, centerY, mx - 1, by + bh - 3, COL_BG);
   }
-  drawTextRight(c, fontAscii14(), bx - 6, centerY + 5, pctStr, col, COL_BG);
+  drawTextRight(c, fontAscii14(), bx - 6, centerY + 6, pctStr, col, COL_BG);
 }
 
 inline void drawPagePills(NovaCanvas& c, int16_t centerX, int16_t centerY,
                           int activeDot, int totalDots) {
   if (totalDots <= 0) return;
-  const int16_t activeW = 16;
+  const int16_t activeW = 18;
   const int16_t dotW = 5;
   const int16_t gap = 7;
   int16_t totalW = (totalDots - 1) * (dotW + gap) + activeW;
@@ -259,11 +259,11 @@ inline void drawPagePills(NovaCanvas& c, int16_t centerX, int16_t centerY,
 }
 
 inline void drawTopBar(NovaCanvas& c, const NovaState& st, int activeDot, int totalDots = 4) {
-  c.fillRect(0, 0, UI_W, 58, COL_BG);
+  c.fillRect(0, 0, UI_W, 60, COL_BG);
 
   char clockBuf[8];
   snprintf(clockBuf, sizeof(clockBuf), "%02u:%02u", st.hour, st.minute);
-  drawText(c, fontNum24(), UI_SAFE_L + 4, 37, clockBuf, COL_TEXT, COL_BG);
+  drawText(c, fontNum24(), UI_SAFE_L + 2, 41, clockBuf, COL_TEXT, COL_BG);
 
   uint16_t dotCol = COL_RED;
   const char* netLabel = "离线";
@@ -279,15 +279,15 @@ inline void drawTopBar(NovaCanvas& c, const NovaState& st, int activeDot, int to
   }
   TextMetrics lm = measureText(c, fontCjk14(), netLabel);
   int16_t pillW = (int16_t)lm.w + 26;
-  int16_t pillX = (int16_t)((UI_W - pillW) / 2 + 4);
+  int16_t pillX = (int16_t)((UI_W - pillW) / 2 + 2);
   int16_t pillY = 16;
-  aaFillRoundRect(c, pillX, pillY, pillW, 24, 12, COL_CARD, COL_BORDER);
-  aaFillCircle(c, pillX + 11, pillY + 12, 3, dotCol);
-  drawTextCenteredInRect(c, fontCjk14(), { (int16_t)(pillX + 16), pillY, (int16_t)(pillW - 20), 24 },
+  aaFillRoundRect(c, pillX, pillY, pillW, 26, 13, COL_CARD, COL_BORDER);
+  aaFillCircle(c, pillX + 11, pillY + 13, 3, dotCol);
+  drawTextCenteredInRect(c, fontCjk14(), { (int16_t)(pillX + 16), pillY, (int16_t)(pillW - 20), 26 },
                          netLabel, COL_DIM, COL_CARD);
 
-  drawBatteryIcon(c, UI_SAFE_R - 4, 28, st.battPct, st.usbPresent);
-  drawPagePills(c, UI_W / 2, 50, activeDot, totalDots);
+  drawBatteryIcon(c, UI_SAFE_R - 2, 29, st.battPct, st.usbPresent);
+  drawPagePills(c, UI_W / 2, 52, activeDot, totalDots);
 }
 
 inline void fmtResetTime(uint32_t sec, char* out, size_t cap) {

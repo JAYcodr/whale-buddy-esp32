@@ -22,29 +22,29 @@ void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
   ui::drawCard(c, 20, 32, 328, 394, ui::COL_CARD, frameCol, 22);
 
   // Alert indicator & large numeric countdown
-  ui::aaFillCircle(c, 44, 62, 5, frameCol);
-  ui::drawText(c, ui::fontCjk16(), 58, 68, "请求工具执行确认", ui::COL_TEXT, ui::COL_CARD);
+  ui::aaFillCircle(c, 42, 62, 5, frameCol);
+  ui::drawText(c, ui::fontCjk16(), 56, 69, "请求工具确认", ui::COL_TEXT, ui::COL_CARD);
 
   char secStr[16];
   snprintf(secStr, sizeof(secStr), "%us", (unsigned)((rem + 999) / 1000));
-  ui::drawTextRight(c, ui::fontNum24(), 330, 72, secStr, frameCol, ui::COL_CARD);
+  ui::drawTextRight(c, ui::fontNum24(), 330, 74, secStr, frameCol, ui::COL_CARD);
 
   // Smooth countdown progress bar
-  ui::drawProgressBar(c, 36, 90, 296, 8, pct, frameCol);
+  ui::drawProgressBar(c, 36, 92, 296, 8, pct, frameCol);
 
   // Tool header card
-  ui::drawCard(c, 36, 112, 296, 44, ui::COL_CARD_HI, ui::COL_BORDER, 12);
-  ui::aaFillRoundRect(c, 46, 122, 46, 24, 6, rgb565(18, 44, 68), rgb565(18, 44, 68));
-  ui::drawTextCenteredInRect(c, ui::fontCjk14(), { 46, 122, 46, 24 }, "工具", ui::COL_ACCENT, rgb565(18, 44, 68));
+  ui::drawCard(c, 36, 112, 296, 46, ui::COL_CARD_HI, ui::COL_BORDER, 12);
+  ui::aaFillRoundRect(c, 46, 122, 48, 26, 7, rgb565(18, 44, 68), rgb565(18, 44, 68));
+  ui::drawTextCenteredInRect(c, ui::fontCjk14(), { 46, 122, 48, 26 }, "工具", ui::COL_ACCENT, rgb565(18, 44, 68));
 
   char toolBuf[48];
-  ui::fitUtf8Line(c, ui::fontAscii18(), st.apTool[0] ? st.apTool : "Tool", 220, toolBuf, sizeof(toolBuf));
-  ui::drawText(c, ui::fontAscii18(), 102, 141, toolBuf, ui::COL_TEXT, ui::COL_CARD_HI);
+  ui::fitUtf8Line(c, ui::fontAscii18(), st.apTool[0] ? st.apTool : "Tool", 216, toolBuf, sizeof(toolBuf));
+  ui::drawText(c, ui::fontAscii18(), 104, 143, toolBuf, ui::COL_TEXT, ui::COL_CARD_HI);
 
   // Multi-line reason box (UTF-8 safe wrap)
-  ui::drawCard(c, 36, 168, 296, 120, rgb565(8, 12, 20), ui::COL_BORDER, 12);
+  ui::drawCard(c, 36, 168, 296, 122, rgb565(8, 12, 20), ui::COL_BORDER, 12);
   const char* reason = st.apReason[0] ? st.apReason : "DSH 请求执行该操作";
-  ui::drawWrappedUtf8(c, ui::fontCjk14(), 48, 194, 272, 24, 4, reason, ui::COL_TEXT, rgb565(8, 12, 20));
+  ui::drawWrappedUtf8(c, ui::fontCjk14(), 48, 195, 272, 24, 4, reason, ui::COL_TEXT, rgb565(8, 12, 20));
 
   // Deny / Allow primary buttons
   const uint16_t denyBg = rgb565(46, 14, 22);

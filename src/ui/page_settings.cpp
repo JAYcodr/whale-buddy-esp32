@@ -44,33 +44,33 @@ constexpr ui::Rect BTN_BACK{   198, 384, 146, 44 };
 void pageSettingsDraw(NovaCanvas& c, const NovaSettings& cfg) {
   c.fillScreen(ui::COL_BG);
 
-  ui::aaFillCircle(c, 30, 36, 4, ui::COL_ACCENT);
-  ui::drawText(c, ui::fontCjk16(), 42, 42, "系统与偏好设置", ui::COL_TEXT, ui::COL_BG);
-  ui::drawTextRight(c, ui::fontAscii14(), 340, 41, "Nova v0.3", ui::COL_MUTED, ui::COL_BG);
+  ui::aaFillCircle(c, 28, 36, 4, ui::COL_ACCENT);
+  ui::drawText(c, ui::fontCjk16(), 40, 43, "系统与偏好设置", ui::COL_TEXT, ui::COL_BG);
+  ui::drawTextRight(c, ui::fontAscii14(), 344, 42, "v0.3", ui::COL_MUTED, ui::COL_BG);
 
   // Card 1: Default home page
-  ui::drawCard(c, 24, 58, 320, 80, ui::COL_CARD, ui::COL_BORDER, 16);
-  ui::drawText(c, ui::fontCjk14(), 36, 82, "默认首页（开机 & Key1 返回）", ui::COL_DIM, ui::COL_CARD);
+  ui::drawCard(c, 20, 58, 328, 82, ui::COL_CARD, ui::COL_BORDER, 16);
+  ui::drawText(c, ui::fontCjk14(), 34, 83, "默认首页（开机 / Key1 返回）", ui::COL_DIM, ui::COL_CARD);
   for (int i = 0; i < 3; i++) {
     ui::drawButton(c, HOME_BTNS[i], HOME_LABELS[i], (int)cfg.homePage == i, ui::COL_ACCENT, ui::fontCjk14());
   }
 
   // Card 2: Power & FPS profile
-  ui::drawCard(c, 24, 144, 320, 80, ui::COL_CARD, ui::COL_BORDER, 16);
-  ui::drawText(c, ui::fontCjk14(), 36, 168, "功耗与刷新策略", ui::COL_DIM, ui::COL_CARD);
+  ui::drawCard(c, 20, 146, 328, 82, ui::COL_CARD, ui::COL_BORDER, 16);
+  ui::drawText(c, ui::fontCjk14(), 34, 171, "功耗与刷新策略", ui::COL_DIM, ui::COL_CARD);
   for (int i = 0; i < 3; i++) {
     ui::drawButton(c, PWR_BTNS[i], PWR_LABELS[i], (int)cfg.powerProfile == i, ui::COL_MINT, ui::fontCjk14());
   }
 
   // Card 3: Sound & Brightness
-  ui::drawCard(c, 24, 230, 320, 140, ui::COL_CARD, ui::COL_BORDER, 16);
-  ui::drawText(c, ui::fontCjk14(), 36, 266, "提示音效", ui::COL_TEXT, ui::COL_CARD);
+  ui::drawCard(c, 20, 234, 328, 140, ui::COL_CARD, ui::COL_BORDER, 16);
+  ui::drawText(c, ui::fontCjk14(), 34, 268, "提示音效", ui::COL_TEXT, ui::COL_CARD);
   char sndBuf[20];
-  snprintf(sndBuf, sizeof(sndBuf), cfg.soundPct > 0 ? "开启 (%u%%)" : "静音", cfg.soundPct);
+  snprintf(sndBuf, sizeof(sndBuf), cfg.soundPct > 0 ? "开启 %u%%" : "静音", cfg.soundPct);
   ui::drawButton(c, BTN_SOUND, sndBuf, cfg.soundPct > 0, ui::COL_ACCENT, ui::fontCjk14());
 
-  c.drawFastHLine(36, 288, 296, rgb565(20, 32, 52));
-  ui::drawText(c, ui::fontCjk14(), 36, 308, "屏幕亮度", ui::COL_TEXT, ui::COL_CARD);
+  c.drawFastHLine(34, 290, 300, rgb565(20, 32, 52));
+  ui::drawText(c, ui::fontCjk14(), 34, 311, "屏幕亮度", ui::COL_TEXT, ui::COL_CARD);
   const char* pctLabels[5] = { "20%", "40%", "60%", "80%", "100%" };
   for (int i = 0; i < 5; i++) {
     bool lit = (i <= cfg.brightLevel);

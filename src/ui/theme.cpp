@@ -1,19 +1,19 @@
 #include "ui/theme.h"
 #include <math.h>
 
-extern const AaFont g_fontPf14;
-extern const AaFont g_fontPf17;
-extern const AaFont g_fontDin14;
-extern const AaFont g_fontDin18;
-extern const AaFont g_fontDin26;
+extern const AaFont g_fontPf16;
+extern const AaFont g_fontPf20;
+extern const AaFont g_fontDin17;
+extern const AaFont g_fontDin22;
+extern const AaFont g_fontDin30;
 
 namespace ui {
 
-const AaFont* fontCjk14()   { return &g_fontPf14; }
-const AaFont* fontCjk16()   { return &g_fontPf17; }
-const AaFont* fontAscii14() { return &g_fontDin14; }
-const AaFont* fontAscii18() { return &g_fontDin18; }
-const AaFont* fontNum24()   { return &g_fontDin26; }
+const AaFont* fontCjk14()   { return &g_fontPf16; }
+const AaFont* fontCjk16()   { return &g_fontPf20; }
+const AaFont* fontAscii14() { return &g_fontDin17; }
+const AaFont* fontAscii18() { return &g_fontDin22; }
+const AaFont* fontNum24()   { return &g_fontDin30; }
 
 namespace {
 
