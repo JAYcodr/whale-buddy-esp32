@@ -74,6 +74,7 @@ void pageSettingsSetTab(uint8_t tab);
 bool pageSettingsTick(uint32_t nowMs);
 
 void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
+void pageApprovalDrawBar(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 UiAction pageApprovalTap(int16_t x, int16_t y);
 
 bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
