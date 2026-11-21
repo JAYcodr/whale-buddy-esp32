@@ -504,9 +504,15 @@ void uiTaskFn(void*) {
         }
         int16_t dx = ev.x - tpStartX;
         int16_t dy = ev.y - tpStartY;
+        UiPage prevPage = nav.currentPage();
         UiAction act = st.approvalActive ? UiAction{} : nav.onSwipe(dx, dy);
         if (act.kind != UiAction::NONE) {
-          handleAction(act, dx < 0 ? 1 : -1);
+          int16_t adx = dx < 0 ? -dx : dx;
+          // Downward swipe-to-close on SETTINGS should redraw directly rather than slide sideways.
+          int slideDir = (prevPage == UiPage::SETTINGS && dy >= 60 && dy > adx)
+                           ? 0
+                           : (dx < 0 ? 1 : -1);
+          handleAction(act, slideDir);
         } else {
           act = nav.onTap(ev.x, ev.y, st, cfg);
           handleAction(act);
@@ -620,6 +626,9 @@ void uiTaskFn(void*) {
     }
     if (st.approvalActive && st.second != lastSecond) {
       lastSecond = st.second;
+      needFull = true;
+    }
+    if (pageSettingsTick(nowMs) && nav.currentPage() == UiPage::SETTINGS) {
       needFull = true;
     }
 

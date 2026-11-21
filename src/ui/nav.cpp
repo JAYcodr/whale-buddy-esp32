@@ -24,7 +24,16 @@ void UiNav::goHome(HomePageKind home) {
 }
 
 UiAction UiNav::onSwipe(int16_t dx, int16_t dy) {
-  if (m_page == UiPage::SETTINGS) return UiAction{};
+  if (m_page == UiPage::SETTINGS) {
+    int16_t adx = dx < 0 ? -dx : dx;
+    int16_t ady = dy < 0 ? -dy : dy;
+    // Allow downward or rightward swipe to dismiss settings back to DETAIL.
+    if ((dy >= 60 && dy > adx) || (dx >= 48 && dx > ady)) {
+      m_page = UiPage::DETAIL;
+      return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
+    }
+    return UiAction{};
+  }
   int16_t adx = dx < 0 ? -dx : dx;
   int16_t ady = dy < 0 ? -dy : dy;
   if (adx < 48 || adx <= ady) return UiAction{};
