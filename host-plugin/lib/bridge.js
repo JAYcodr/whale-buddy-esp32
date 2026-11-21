@@ -4,6 +4,37 @@ import { generateChoreography, loadAiConfig, synthesizeSpeechAdpcm } from './ai.
 
 const TTS_CHUNK_BYTES = 1800;
 
+/** 从 tool/call 的 arguments 里摘一段人类可读预览（arguments 是 JSON 字符串）。 */
+function toolArgPreview(raw) {
+  if (raw == null) return '';
+  if (typeof raw === 'string') {
+    try {
+      return toolArgPreview(JSON.parse(raw));
+    } catch {
+      return raw.slice(0, 60);
+    }
+  }
+  if (typeof raw !== 'object') return String(raw).slice(0, 60);
+  for (const key of ['command', 'path', 'file_path', 'query', 'pattern', 'url', 'description', 'prompt']) {
+    const v = raw[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  const firstString = Object.values(raw).find((v) => typeof v === 'string' && v.trim());
+  return typeof firstString === 'string' ? firstString : '';
+}
+
+/** 上下文占用百分比：tokenMeter.contextPressure() → { pressureTokens, contextWindow }。 */
+function readCtxPct(session, tokenMeter) {
+  if (!session || !tokenMeter || typeof tokenMeter.contextPressure !== 'function') return null;
+  try {
+    const { pressureTokens, contextWindow } = tokenMeter.contextPressure(session) || {};
+    if (!pressureTokens || !contextWindow) return null;
+    return Math.max(0, Math.min(100, Math.round((pressureTokens / contextWindow) * 100)));
+  } catch {
+    return null;
+  }
+}
+
 export function createNovaBridge(options = {}) {
   const brokerUrl = options.brokerUrl || process.env.NOVA_MQTT_URL || 'mqtt://192.168.31.15:1883';
   const fallbackMs = Number(options.fallbackMs ?? 8000);
@@ -324,7 +355,7 @@ export function createNovaBridge(options = {}) {
     choreoTimer = setInterval(() => refreshChoreo('timer').catch(() => {}), aiCfg.llm.intervalMs);
   }
 
-  function onSessionEvent(session, event) {
+  function onSessionEvent(session, event, tokenMeter) {
     const sid = String(session?.id || event?.sessionId || 'default');
     const cur = sessions.get(sid) || {
       running: false,
@@ -337,10 +368,12 @@ export function createNovaBridge(options = {}) {
     const type = String(event?.type || '');
     const data = event?.data || {};
 
-    if (session?.model) cur.model = String(session.model);
     if (data?.model) cur.model = String(data.model);
 
     switch (type) {
+      case 'model/selection':
+        if (data.model) cur.model = String(data.model);
+        break;
       case 'turn/start':
         cur.running = true;
         cur.waiting = false;
@@ -351,15 +384,15 @@ export function createNovaBridge(options = {}) {
       case 'tool/call': {
         cur.running = true;
         cur.error = false;
-        const tool = String(data.toolName || data.name || 'tool');
-        const arg = String(data.command || data.path || data.query || '').slice(0, 42);
+        const tool = String(data.name || data.toolName || 'tool');
+        const arg = toolArgPreview(data.arguments).slice(0, 42);
         cur.lastTool = tool;
         cur.msg = arg ? `${tool}: ${arg}` : `${tool}`;
         break;
       }
       case 'tool/result':
         cur.running = true;
-        if (data.isError || data.error) {
+        if (data.error || data.message?.isError) {
           cur.msg = cur.lastTool ? `${cur.lastTool} 返回异常` : '工具执行异常';
         } else if (cur.lastTool) {
           cur.msg = `整理 ${cur.lastTool} 结果...`;
@@ -376,8 +409,12 @@ export function createNovaBridge(options = {}) {
         const wasRunning = cur.running;
         cur.running = false;
         cur.waiting = false;
-        cur.error = data.reason === 'error';
+        cur.error = data.reason?.kind === 'error';
         cur.msg = cur.error ? '本轮异常结束' : '待命中';
+        {
+          const pct = readCtxPct(session, tokenMeter);
+          if (pct != null) cur.ctxPct = pct;
+        }
         if (wasRunning) {
           const line = cur.error
             ? '唔，刚刚好像出了一点小差错，快来看看呀！'
@@ -387,9 +424,12 @@ export function createNovaBridge(options = {}) {
         }
         break;
       }
-      case 'context/usage':
-        if (data.percent != null) cur.ctxPct = Number(data.percent);
+      case 'step/end': {
+        // DSH 没有 context/usage 事件；占用率从 tokenMeter 的投影现取。
+        const pct = readCtxPct(session, tokenMeter);
+        if (pct != null) cur.ctxPct = pct;
         break;
+      }
       default:
         break;
     }

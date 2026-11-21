@@ -3,7 +3,7 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Nova Buddy desktop companion bridge: MQTT state, quota cards, ModelDial radar, and remote tool approval for ESP32-S3 AMOLED.",
+  "description": "Nova Buddy 的 DSH 宿主侧桥接：把会话状态、订阅额度、ModelDial 榜单与工具审批推送到 ESP32-S3 AMOLED 副屏（MQTT）。",
   "bin": {
     "nova-buddy": "./bin/nova-buddy.js"
   },
@@ -29,5 +29,19 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "mqtt",
+    "esp32",
+    "amoled",
+    "desktop-companion"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JAYcodr/whale-buddy-esp32.git"
   }
 }

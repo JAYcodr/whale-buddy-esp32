@@ -1,4 +1,6 @@
 {
-  "title": "Nova Buddy",
-  "description": "ESP32-S3 AMOLED desktop companion: live status, quota cards, ModelDial leaderboard, and remote tool approvals over MQTT."
+  "meta": {
+    "title": "Nova Buddy",
+    "description": "Pushes DSH session status, quota cards, the ModelDial leaderboard, and tool approvals to an ESP32-S3 AMOLED desk screen over MQTT. While the screen is online, tool approvals are asked there first and fall back to the local dialog after 8 seconds."
+  }
 }

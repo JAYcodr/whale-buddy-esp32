@@ -27,12 +27,16 @@ function createMockMqttClient() {
 describe('Nova Bridge session aggregation & device prefs', () => {
   it('prioritizes waiting and running sessions over idle sessions and propagates turn errors', () => {
     const bridge = createNovaBridge({ brokerUrl: 'mqtt://127.0.0.1:1883' });
-    bridge.onSessionEvent({ id: 's1', model: 'deepseek-v4' }, { type: 'turn/start', data: {} });
-    bridge.onSessionEvent({ id: 's1' }, { type: 'tool/call', data: { toolName: 'Bash', command: 'pio run' } });
-    bridge.onSessionEvent({ id: 's1' }, { type: 'context/usage', data: { percent: 42 } });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'model/selection', data: { provider: 'deepseek', model: 'deepseek-v4' } });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/start', data: { turn: 1 } });
+    bridge.onSessionEvent(
+      { id: 's1' },
+      { type: 'tool/call', data: { turn: 1, step: 1, callId: 'c1', name: 'Bash', arguments: JSON.stringify({ command: 'pio run' }) } },
+    );
 
     // An idle session updates later, should NOT shadow active s1 tool message
-    bridge.onSessionEvent({ id: 's_idle', model: 'glm-5' }, { type: 'turn/end', data: { reason: 'completed' } });
+    bridge.onSessionEvent({ id: 's_idle' }, { type: 'model/selection', data: { provider: 'zhipu', model: 'glm-5' } });
+    bridge.onSessionEvent({ id: 's_idle' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
     let st = bridge.buildStatePayload();
     assert.equal(st.run, 1);
     assert.equal(st.sess, 2);
@@ -40,12 +44,12 @@ describe('Nova Bridge session aggregation & device prefs', () => {
     assert.equal(st.model, 'deepseek-v4');
 
     // Tool result updates message cleanly
-    bridge.onSessionEvent({ id: 's1' }, { type: 'tool/result', data: {} });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'tool/result', data: { turn: 1, step: 1, message: { isError: false } } });
     st = bridge.buildStatePayload();
     assert.equal(st.msg, '整理 Bash 结果...');
 
     // Error turn end sets err=true
-    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/end', data: { reason: 'error' } });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'error' } } });
     st = bridge.buildStatePayload();
     assert.equal(st.run, 0);
     assert.equal(st.err, true);

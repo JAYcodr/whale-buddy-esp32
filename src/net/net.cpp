@@ -97,7 +97,12 @@ void onMqttMessage(String& topic, String& payload) {
   const size_t plen = strlen(s_topicPrefix);
   if (strncmp(t, s_topicPrefix, plen) != 0 || t[plen] != '/') return;
   const char* suffix = t + plen + 1;
-  protoApplyMessage(suffix, payload.c_str(), payload.length(), millis());
+  const uint32_t now = millis();
+  // 心跳类 topic（time/tts）的 handler 不碰 NovaState，但它们证明链路活着。
+  // 在这里统一刷新存活时间，否则每 30s 的 time 心跳不算数，状态栏会误报「滞后」。
+  if (protoApplyMessage(suffix, payload.c_str(), payload.length(), now)) {
+    novaStateWithLock([&](NovaState& st) { st.lastMqttRxMs = now; });
+  }
 }
 
 void subscribeTopics() {
