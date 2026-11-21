@@ -60,7 +60,7 @@ int16_t cardY(int i, int nShow) {
 
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
   c.fillScreen(ui::COL_BG);
-  ui::drawTopBar(c, st, 1);
+  ui::drawTopBar(c, st, 2);
 
   if (s_syncPending &&
       (st.quotaGen != s_syncGen || st.nowMs < s_syncStartMs ||

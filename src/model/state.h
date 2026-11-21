@@ -21,6 +21,12 @@ struct QuotaCard {
 
 constexpr int MAX_RANK_ROWS = 24;
 constexpr int MAX_CHOREO_STEPS = 6;
+constexpr int MAX_TOKEN_DAYS = 14;
+
+struct TokenDay {
+  char     date[8];
+  uint64_t tokens;
+};
 
 struct ChoreoStep {
   int16_t  x;
@@ -116,6 +122,16 @@ struct NovaState {
   ChoreoStep choreoSteps[MAX_CHOREO_STEPS];
   uint8_t    nChoreoSteps;
   uint32_t   choreoGen;
+
+  // Daily token consumption (whale-school page)
+  TokenDay   tokenDays[MAX_TOKEN_DAYS];
+  uint8_t    nTokenDays;
+  uint64_t   tokenTotal;
+  uint64_t   tokenAvgOverride;
+  uint16_t   tokenSpanDays;
+  float      tokenCachePct;
+  uint32_t   tokenRxMs;
+  uint32_t   tokenGen;
 };
 
 void novaStateInit(const char* devId, const char* fwVer);

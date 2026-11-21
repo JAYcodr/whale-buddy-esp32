@@ -32,6 +32,7 @@ clang++ -std=c++17 -O2 -funsigned-char -DNOVA_HOST_SIM \
   "$ROOT/src/ui/page_detail.cpp" \
   "$ROOT/src/ui/page_settings.cpp" \
   "$ROOT/src/ui/page_approval.cpp" \
+  "$ROOT/src/ui/page_tokens.cpp" \
   "$ROOT/src/ui/nav.cpp" \
   "$ROOT/src/ui/transition.cpp" \
   "$ROOT/tools/sim/main.cpp" \

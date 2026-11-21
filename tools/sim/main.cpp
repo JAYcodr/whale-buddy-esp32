@@ -137,6 +137,25 @@ static void populateSample(NovaState& st) {
   st.hour = 16;
   st.minute = 55;
   st.second = 10;
+
+  static constexpr const char* kTokenDates[14] = {
+    "11/09", "11/10", "11/11", "11/12", "11/13", "11/14", "11/15",
+    "11/16", "11/17", "11/18", "11/19", "11/20", "11/21", "11/22"
+  };
+  static constexpr uint64_t kTokenVals[14] = {
+    169000000ULL, 107000000ULL, 137000000ULL, 139000000ULL, 25700000ULL,
+    106000000ULL, 286000000ULL, 178000000ULL, 132000000ULL, 59000000ULL,
+    73000000ULL,  238000000ULL, 287000000ULL, 30310000ULL
+  };
+  st.nTokenDays = 14;
+  for (int i = 0; i < 14; i++) {
+    std::strcpy(st.tokenDays[i].date, kTokenDates[i]);
+    st.tokenDays[i].tokens = kTokenVals[i];
+  }
+  st.tokenTotal = 4040000000ULL;
+  st.tokenAvgOverride = 141000000ULL;
+  st.tokenSpanDays = 20;
+  st.tokenCachePct = 96.6f;
 }
 
 static void mutateQuotaEmpty(NovaState& st, NovaSettings&) {
@@ -184,6 +203,19 @@ static void mutateApprovalUrgent(NovaState& st, NovaSettings&) {
       "./tools/sim/run.sh /tmp/out");
 }
 
+static void mutateTokensSelected(NovaState& st, NovaSettings&) {
+  // Tap the peak whale (index 12, "11/21") to exercise whale selection & exact token readout.
+  pageTokensTap(315, 228, st, 6500);
+}
+
+static void cleanupTokensSelect() {
+  pageTokensOnEnter(0);
+}
+
+static void mutateTokensEmpty(NovaState& st, NovaSettings&) {
+  st.nTokenDays = 0;
+}
+
 int main(int argc, char** argv) {
   std::string outDir = (argc > 1) ? argv[1] : "tools/sim/out";
   Arduino_Canvas canvas(UI_W, UI_H, nullptr);
@@ -216,6 +248,9 @@ int main(int argc, char** argv) {
     { "rank_scrolled", UiPage::RANK, false, 0, 6500, mutateRankScrolled, cleanupRankScroll },
     { "settings_muted", UiPage::SETTINGS, false, 0, 6500, mutateSettingsMuted, nullptr },
     { "approval_urgent", UiPage::HOME, true, 0, 25000, mutateApprovalUrgent, nullptr },
+    { "tokens", UiPage::TOKENS, false, 0, 6500, nullptr, nullptr },
+    { "tokens_selected", UiPage::TOKENS, false, 0, 6500, mutateTokensSelected, cleanupTokensSelect },
+    { "tokens_empty", UiPage::TOKENS, false, 0, 6500, mutateTokensEmpty, nullptr },
   };
 
   for (const auto& cs : cases) {

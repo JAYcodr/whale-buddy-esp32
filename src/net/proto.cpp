@@ -154,6 +154,48 @@ bool applyRank(JsonDocument& doc, uint32_t nowMs) {
   return true;
 }
 
+bool applyTokens(JsonDocument& doc, uint32_t nowMs) {
+  JsonArray arr = doc["days"].as<JsonArray>();
+  if (arr.isNull()) return false;
+  novaStateWithLock([&](NovaState& st) {
+    st.tokenTotal = doc["total"] | (uint64_t)0;
+    st.tokenAvgOverride = doc["avg"] | (uint64_t)0;
+    uint16_t span = (uint16_t)(doc["spanDays"] | (doc["span"] | 0));
+    float cachePct = doc["cachePct"] | (doc["cache"] | 0.0f);
+    if (cachePct < 0.0f) cachePct = 0.0f;
+    if (cachePct > 100.0f) cachePct = 100.0f;
+    st.tokenCachePct = cachePct;
+
+    // Keep the most recent MAX_TOKEN_DAYS entries if host sends more than 14.
+    const size_t totalItems = arr.size();
+    const size_t skip = (totalItems > MAX_TOKEN_DAYS) ? (totalItems - MAX_TOKEN_DAYS) : 0;
+    uint8_t n = 0;
+    size_t idx = 0;
+    for (JsonVariant item : arr) {
+      if (idx++ < skip) continue;
+      if (n >= MAX_TOKEN_DAYS) break;
+      TokenDay& td = st.tokenDays[n];
+      memset(&td, 0, sizeof(td));
+      if (item.is<JsonArray>()) {
+        JsonArray pair = item.as<JsonArray>();
+        safeStrCopy(td.date, sizeof(td.date), pair[0] | "");
+        td.tokens = pair[1] | (uint64_t)0;
+      } else if (item.is<JsonObject>()) {
+        JsonObject obj = item.as<JsonObject>();
+        safeStrCopy(td.date, sizeof(td.date), obj["d"] | (obj["date"] | ""));
+        td.tokens = obj["v"] | (obj["tokens"] | (uint64_t)0);
+      }
+      n++;
+    }
+    st.nTokenDays = n;
+    st.tokenSpanDays = (span > 0) ? span : (uint16_t)n;
+    st.tokenRxMs = nowMs;
+    st.tokenGen++;
+    st.lastMqttRxMs = nowMs;
+  });
+  return true;
+}
+
 bool applyApproval(JsonDocument& doc, uint32_t nowMs) {
   const char* id = doc["id"] | "";
   if (!id[0]) return false;
@@ -300,6 +342,7 @@ bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint
   if (strcmp(suffix, "state") == 0)        return applyState(doc, nowMs);
   if (strcmp(suffix, "quota") == 0)        return applyQuota(doc, nowMs);
   if (strcmp(suffix, "rank") == 0)         return applyRank(doc, nowMs);
+  if (strcmp(suffix, "tokens") == 0)       return applyTokens(doc, nowMs);
   if (strcmp(suffix, "approval") == 0)     return applyApproval(doc, nowMs);
   if (strcmp(suffix, "approval_end") == 0) return applyApprovalEnd(doc, nowMs);
   if (strcmp(suffix, "time") == 0)         return applyTime(doc);

@@ -418,7 +418,7 @@ void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& c
 
 void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
   c.fillScreen(ui::COL_BG);
-  ui::drawTopBar(c, st, 0);
+  ui::drawTopBar(c, st, 1);
 
   if (st.wifiApMode && !st.wifiConnected) {
     ui::drawCard(c, 24, 80, 320, 290, ui::COL_CARD, ui::COL_AMBER, 20);
