@@ -18,6 +18,7 @@
 #include "ui/canvas.h"
 #include "ui/nav.h"
 #include "ui/pages.h"
+#include "ui/theme.h"
 
 namespace {
 
@@ -190,6 +191,8 @@ void uiTaskFn(void*) {
 
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
+  bool    hasPressedRect = false;
+  ui::Rect pressedRect{ 0, 0, 0, 0 };
   uint32_t key1DownAt = 0;
   bool     key1LongFired = false;
   uint32_t lastInteractMs = millis();
@@ -290,6 +293,7 @@ void uiTaskFn(void*) {
     // Handle new approval arrival: wake idle screen (unless face-down napping).
     if (st.apGen != lastApGen) {
       lastApGen = st.apGen;
+      hasPressedRect = false;
       needFull = true;
       if (st.approvalActive) {
         if (!snap.faceDown && screenOff) {
@@ -476,11 +480,22 @@ void uiTaskFn(void*) {
         tpStartX = ev.x;
         tpStartY = ev.y;
         tpLastY  = ev.y;
+        if (!dimmedForNap && canvas && nav.pressedRect(ev.x, ev.y, st, cfg, &pressedRect)) {
+          ui::drawPressedOverlay(*canvas, pressedRect, 12);
+          hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
+          hasPressedRect = true;
+        } else {
+          hasPressedRect = false;
+        }
       } else if (ev.type == InputEvtType::TOUCH_MOVE && tpActive) {
         wakeScreen();
+        int16_t adx = ev.x > tpStartX ? (ev.x - tpStartX) : (tpStartX - ev.x);
+        int16_t ady = ev.y > tpStartY ? (ev.y - tpStartY) : (tpStartY - ev.y);
+        if (hasPressedRect && (adx >= 12 || ady >= 12)) {
+          hasPressedRect = false;
+          needFull = true;
+        }
         if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
-          int16_t adx = ev.x > tpStartX ? (ev.x - tpStartX) : (tpStartX - ev.x);
-          int16_t ady = ev.y > tpStartY ? (ev.y - tpStartY) : (tpStartY - ev.y);
           if (!tpDraggedV && ady >= 12 && ady > adx) {
             tpDraggedV = true;
           }
@@ -495,6 +510,10 @@ void uiTaskFn(void*) {
       } else if (ev.type == InputEvtType::TOUCH_UP && tpActive) {
         tpActive = false;
         wakeScreen();
+        if (hasPressedRect) {
+          hasPressedRect = false;
+          needFull = true;
+        }
         if (tpDraggedV) {
           tpDraggedV = false;
           continue;

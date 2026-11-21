@@ -85,6 +85,24 @@ inline void drawCard(NovaCanvas& c, int16_t x, int16_t y, int16_t w, int16_t h,
   aaFillRoundRect(c, x, y, w, h, r, fill, border);
 }
 
+inline uint16_t blend565(uint16_t a, uint16_t b, uint8_t t) {
+  if (t == 0) return a;
+  if (t == 255) return b;
+  uint32_t inv = 255 - t;
+  uint32_t r  = (((a >> 11) & 0x1F) * inv + ((b >> 11) & 0x1F) * t + 127) / 255;
+  uint32_t g  = (((a >> 5)  & 0x3F) * inv + ((b >> 5)  & 0x3F) * t + 127) / 255;
+  uint32_t bl = ((a         & 0x1F) * inv + (b         & 0x1F) * t + 127) / 255;
+  return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+
+void drawSwitch(NovaCanvas& c, Rect r, bool on, uint16_t accent);
+void drawSegmented(NovaCanvas& c, Rect r, const char* const* labels, int n, int sel,
+                   uint16_t accent, const AaFont* f = nullptr);
+void drawLevelBar(NovaCanvas& c, Rect r, int levels, int cur, uint16_t accent,
+                  bool firstIsMute);
+void drawSectionLabel(NovaCanvas& c, int16_t x, int16_t baseY, const char* s);
+void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius);
+
 inline void drawButton(NovaCanvas& c, Rect r, const char* label, bool active,
                        uint16_t accent = COL_ACCENT, const AaFont* font = nullptr) {
   const AaFont* f = font ? font : fontCjk16();

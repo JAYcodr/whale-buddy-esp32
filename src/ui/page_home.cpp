@@ -537,3 +537,16 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
 
   return UiAction{};
 }
+
+bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings&, ui::Rect* out) {
+  if (!out) return false;
+  if (st.wifiApMode && !st.wifiConnected && BTN_CANCEL_PORTAL.contains(x, y)) {
+    *out = BTN_CANCEL_PORTAL;
+    return true;
+  }
+  if (PILL_RECT.contains(x, y)) {
+    *out = PILL_RECT;
+    return true;
+  }
+  return false;
+}

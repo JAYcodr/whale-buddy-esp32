@@ -3,6 +3,7 @@
 #include "model/settings.h"
 #include "model/state.h"
 #include "ui/canvas.h"
+#include "ui/theme.h"
 #include <stdint.h>
 
 enum class UiPage : uint8_t {
@@ -67,3 +68,10 @@ void pageSettingsSetTab(uint8_t tab);
 
 void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 UiAction pageApprovalTap(int16_t x, int16_t y);
+
+bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageQuotaHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageRankHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageDetailHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageApprovalHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);

@@ -69,3 +69,12 @@ UiAction pageDetailTap(int16_t x, int16_t y) {
   if (BTN_SETTINGS.contains(x, y)) return UiAction{ UiAction::GO_PAGE, (int)UiPage::SETTINGS };
   return UiAction{};
 }
+
+bool pageDetailHitRect(int16_t x, int16_t y, const NovaState&, const NovaSettings&, ui::Rect* out) {
+  if (!out) return false;
+  if (BTN_SETTINGS.contains(x, y)) {
+    *out = BTN_SETTINGS;
+    return true;
+  }
+  return false;
+}

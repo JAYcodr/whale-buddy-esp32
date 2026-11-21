@@ -54,6 +54,22 @@ UiAction UiNav::onTap(int16_t x, int16_t y, const NovaState& st, const NovaSetti
   }
 }
 
+bool UiNav::pressedRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg,
+                        ui::Rect* out) const {
+  if (!out) return false;
+  if (st.approvalActive) {
+    return pageApprovalHitRect(x, y, st, cfg, out);
+  }
+  switch (m_page) {
+    case UiPage::HOME:     return pageHomeHitRect(x, y, st, cfg, out);
+    case UiPage::QUOTA:    return pageQuotaHitRect(x, y, st, cfg, out);
+    case UiPage::RANK:     return pageRankHitRect(x, y, st, cfg, out);
+    case UiPage::DETAIL:   return pageDetailHitRect(x, y, st, cfg, out);
+    case UiPage::SETTINGS: return pageSettingsHitRect(x, y, st, cfg, out);
+    default:               return false;
+  }
+}
+
 void UiNav::draw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
                  uint32_t frame, uint32_t nowMs) {
   if (st.approvalActive) {
