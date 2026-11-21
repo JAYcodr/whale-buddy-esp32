@@ -1,6 +1,7 @@
 import mqtt from 'mqtt';
 import { fetchAllQuota, fetchModelDialRank } from './fetchers.js';
 import { generateChoreography, loadAiConfig, synthesizeSpeechAdpcm } from './ai.js';
+import { createTokenCollector } from './tokens.js';
 
 const TTS_CHUNK_BYTES = 1800;
 
@@ -45,6 +46,13 @@ export function createNovaBridge(options = {}) {
   const quotaFetcher = options.fetchAllQuota || fetchAllQuota;
   const rankFetcher = options.fetchModelDialRank || fetchModelDialRank;
   const mqttConnectFn = options.mqttConnect || ((url, opts) => mqtt.connect(url, opts));
+  // token 页的数据源是会话日志而不是 ctx 服务：`ctx.sessions` 只列 live session，
+  // 拿不到历史，而累计页要的正是历史。见 lib/tokens.js 顶部注释。
+  const tokenCollector = createTokenCollector({
+    log,
+    enabled: options.tokensEnabled !== false,
+    dshHome: options.dshHome,
+  });
 
   const devices = new Map(); // id -> { online, lastSeen, meta, prefs, stat }
   const sessions = new Map(); // sessionId -> { running, waiting, error, lastTool, msg, ctxPct, model, updatedAt }
@@ -54,6 +62,7 @@ export function createNovaBridge(options = {}) {
   let quotaPayload = null;
   let rankPayload = null;
   let choreoPayload = null;
+  let tokensPayload = null;
   let recentAnims = [];
   let recentMood = '';
   let lastStateJson = '';
@@ -67,6 +76,7 @@ export function createNovaBridge(options = {}) {
   let rankTimer = null;
   let hbTimer = null;
   let choreoTimer = null;
+  let tokensTimer = null;
   let closed = false;
 
   function onlineIds() {
@@ -186,6 +196,16 @@ export function createNovaBridge(options = {}) {
     }
   }
 
+  async function refreshTokens(force = false) {
+    const next = await tokenCollector.refresh(force);
+    if (!next) return null;
+    // 内容没变就别刷 retain：设备端 tokenGen 每次都自增会白重绘一页。
+    const changed = JSON.stringify(next) !== JSON.stringify(tokensPayload);
+    tokensPayload = next;
+    if (changed) publishAll('tokens', tokensPayload, { qos: 1, retain: true });
+    return tokensPayload;
+  }
+
   function buildContextSummary(reason = 'timer') {
     const st = buildStatePayload();
     let ds = '';
@@ -272,6 +292,7 @@ export function createNovaBridge(options = {}) {
       publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
+      if (tokensPayload) publishTo(id, 'tokens', tokensPayload, { qos: 1, retain: true });
       if (choreoPayload && prefs?.choreo !== false) {
         publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
       }
@@ -308,6 +329,7 @@ export function createNovaBridge(options = {}) {
       publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
+      if (tokensPayload) publishTo(id, 'tokens', tokensPayload, { qos: 1, retain: true });
       if (choreoPayload && devices.get(id)?.prefs?.choreo !== false) {
         publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
       }
@@ -331,6 +353,7 @@ export function createNovaBridge(options = {}) {
       refreshQuota().catch(() => {});
       refreshRank(false).catch(() => {});
       refreshChoreo('boot', 30000).catch(() => {});
+      refreshTokens(false).catch(() => {});
     });
 
     client.on('message', (topic, buf) => {
@@ -353,6 +376,7 @@ export function createNovaBridge(options = {}) {
       for (const id of onlineIds()) pushTime(id);
     }, 30 * 1000);
     choreoTimer = setInterval(() => refreshChoreo('timer').catch(() => {}), aiCfg.llm.intervalMs);
+    tokensTimer = setInterval(() => refreshTokens(false).catch(() => {}), 60 * 1000);
   }
 
   function onSessionEvent(session, event, tokenMeter) {
@@ -503,6 +527,7 @@ export function createNovaBridge(options = {}) {
     if (rankTimer) clearInterval(rankTimer);
     if (hbTimer) clearInterval(hbTimer);
     if (choreoTimer) clearInterval(choreoTimer);
+    if (tokensTimer) clearInterval(tokensTimer);
     for (const apId of [...pendingApprovals.keys()]) {
       settleApproval(apId, { kind: 'abort' }, { notifyDeviceEnd: true });
     }
@@ -519,6 +544,7 @@ export function createNovaBridge(options = {}) {
     refreshQuota,
     refreshRank,
     refreshChoreo,
+    refreshTokens,
     publishTts,
     publishTo,
     onlineIds,

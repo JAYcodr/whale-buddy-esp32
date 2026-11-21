@@ -4,6 +4,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import mqtt from 'mqtt';
 import { fetchAllQuota, fetchModelDialRank, saveOpenDesignCookie } from '../lib/fetchers.js';
 import { generateChoreography, loadAiConfig, synthesizeSpeechAdpcm } from '../lib/ai.js';
+import { createTokenCollector } from '../lib/tokens.js';
 
 const args = process.argv.slice(2);
 const brokerUrl = process.env.NOVA_MQTT_URL || 'mqtt://192.168.31.15:1883';
@@ -116,6 +117,13 @@ async function cmdTestPush() {
   );
   await pubJson(client, `nova/${devId}/quota`, quota, true);
   if (rank) await pubJson(client, `nova/${devId}/rank`, rank, true);
+
+  console.log('正在聚合会话日志里的 token 用量...');
+  const tokens = await createTokenCollector({ log: (m) => console.log(m) }).refresh();
+  if (tokens) {
+    console.log(`Tokens: ${tokens.total} / ${tokens.spanDays} 天 / 命中 ${tokens.cachePct}%`);
+    await pubJson(client, `nova/${devId}/tokens`, tokens, true);
+  }
 
   if (withApproval) {
     const apId = `ap_test_${Date.now().toString(36)}`;
