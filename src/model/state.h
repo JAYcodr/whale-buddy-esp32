@@ -20,6 +20,15 @@ struct QuotaCard {
 };
 
 constexpr int MAX_RANK_ROWS = 24;
+constexpr int MAX_CHOREO_STEPS = 6;
+
+struct ChoreoStep {
+  int16_t  x;
+  bool     run;
+  uint8_t  anim;   // NvaAnimKey index 0..8
+  uint16_t durMs;
+  char     say[48];
+};
 
 struct RankRow {
   uint8_t r;
@@ -100,6 +109,12 @@ struct NovaState {
   uint32_t nowMs;
   uint16_t cpuMhz;
   uint8_t  burnInStep;
+
+  // LLM choreography loop
+  char       choreoMood[32];
+  ChoreoStep choreoSteps[MAX_CHOREO_STEPS];
+  uint8_t    nChoreoSteps;
+  uint32_t   choreoGen;
 };
 
 void novaStateInit(const char* devId, const char* fwVer);

@@ -1,5 +1,10 @@
 #include "audio/sfx.h"
 #include "hw/audio.h"
+#include <LittleFS.h>
+
+static bool isQuietTime(uint8_t hour, bool timeValid) {
+  return timeValid && (hour >= 23 || hour < 8);
+}
 
 void sfxPlay(SfxKind kind, uint8_t volPct) {
   if (volPct == 0) return;
@@ -27,4 +32,11 @@ void sfxPlay(SfxKind kind, uint8_t volPct) {
       hwTone(330, 330, 110, volPct);
       break;
   }
+}
+
+bool sfxSpeakFile(const char* path, uint8_t volPct, uint8_t hour, bool timeValid) {
+  if (volPct == 0 || isQuietTime(hour, timeValid) || !path || !path[0]) return false;
+  if (!LittleFS.exists(path)) return false;
+  hwPlayAdpcmFile(path, volPct);
+  return true;
 }

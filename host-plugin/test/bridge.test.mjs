@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNovaBridge } from '../lib/bridge.js';
+import { extractJsonObject, isQuietHours, normalizeChoreo } from '../lib/ai.js';
+import { wavToNvAdpcm } from '../lib/adpcm.js';
 
 describe('Nova Bridge session aggregation', () => {
   it('tracks active running/waiting sessions and context pct', () => {
@@ -10,7 +12,6 @@ describe('Nova Bridge session aggregation', () => {
     bridge.onSessionEvent({ id: 's1' }, { type: 'context/usage', data: { percent: 42 } });
     bridge.onSessionEvent({ id: 's2' }, { type: 'approval/asked', data: { toolName: 'Write' } });
 
-    // Exercise dispose cleanup
     bridge.onSessionDisposed({ id: 's2' });
     bridge.stop();
     assert.ok(true);
@@ -29,5 +30,51 @@ describe('Nova Bridge session aggregation', () => {
     assert.equal(nextCalled, true);
     assert.equal(outcome, 'allowed-once');
     bridge.stop();
+  });
+});
+
+describe('AI choreography sanitizer and ADPCM encoder', () => {
+  it('cleans think tags, fences, numeric speeds and second durations', () => {
+    const raw =
+      '<think>internal reasoning</think>\n```json\n' +
+      '{"mood":"晚安摸鱼","steps":[{"x":999,"speed":1.4,"anim":"QUOTA","dur":3.5,"say":"看看余额"},{"x":20,"speed":0.7,"anim":"bogus","dur":500,"say":"休息一下"}]}\n```';
+    const choreo = normalizeChoreo(extractJsonObject(raw));
+    assert.equal(choreo.t, 'choreo');
+    assert.equal(choreo.steps.length, 2);
+    assert.deepEqual(choreo.steps[0], { x: 288, speed: 'run', anim: 'quota', dur: 3500, say: '看看余额' });
+    assert.deepEqual(choreo.steps[1], { x: 80, speed: 'walk', anim: 'idle', dur: 1800, say: '休息一下' });
+  });
+
+  it('evaluates overnight quiet hours accurately', () => {
+    assert.equal(isQuietHours([23, 8], new Date('2026-11-21T23:30:00')), true);
+    assert.equal(isQuietHours([23, 8], new Date('2026-11-21T07:15:00')), true);
+    assert.equal(isQuietHours([23, 8], new Date('2026-11-21T14:00:00')), false);
+  });
+
+  it('resamples 24kHz WAV to 16kHz NVAD IMA-ADPCM container', () => {
+    const samples24k = 2400; // 100 ms
+    const wav = Buffer.alloc(44 + samples24k * 2);
+    wav.write('RIFF', 0);
+    wav.writeUInt32LE(36 + samples24k * 2, 4);
+    wav.write('WAVE', 8);
+    wav.write('fmt ', 12);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(24000, 24);
+    wav.writeUInt32LE(48000, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write('data', 36);
+    wav.writeUInt32LE(samples24k * 2, 40);
+    for (let i = 0; i < samples24k; i++) {
+      wav.writeInt16LE(Math.round(Math.sin(i * 0.1) * 12000), 44 + i * 2);
+    }
+
+    const adp = wavToNvAdpcm(wav, 16000);
+    assert.equal(adp.toString('ascii', 0, 4), 'NVAD');
+    assert.equal(adp.readUInt32LE(4), 16000);
+    assert.equal(adp.readUInt32LE(8), 1600);
+    assert.equal(adp.length, 16 + 800);
   });
 });

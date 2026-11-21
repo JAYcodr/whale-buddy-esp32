@@ -177,7 +177,9 @@ void uiTaskFn(void*) {
   uint32_t lastStateGen = 0;
   uint32_t lastQuotaGen = 0;
   uint32_t lastRankGen = 0;
+  uint32_t lastChoreoGen = 0;
   uint16_t lastRunCount = 0;
+  uint8_t  tapVoiceIdx = 0;
   bool     lastWifiUp = false;
   bool     lastApMode = false;
   bool     lastMqttUp = false;
@@ -336,9 +338,19 @@ void uiTaskFn(void*) {
           break;
         case UiAction::PET_TAP:
           if (act.value == 0) {
+            static constexpr const char* kTapVoices[3] = {
+              "/audio/tap0.adp", "/audio/tap1.adp", "/audio/tap2.adp"
+            };
             clickAnimUntilMs = nowMs + 2600;
             nvaSetState(NvaAnimKey::CLICK);
-            sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+            if (!sfxSpeakFile(kTapVoices[tapVoiceIdx % 3], cfg.soundPct, st.hour, st.timeValid)) {
+              sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+            }
+            tapVoiceIdx++;
+          } else if (act.value == 1) {
+            if (!sfxSpeakFile("/audio/run.adp", cfg.soundPct, st.hour, st.timeValid)) {
+              sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+            }
           } else {
             sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           }
@@ -478,6 +490,7 @@ void uiTaskFn(void*) {
 
     // Detect state / heartbeat / burn-in pixel shift changes requiring a full redraw.
     if (st.stateGen != lastStateGen || st.quotaGen != lastQuotaGen || st.rankGen != lastRankGen ||
+        st.choreoGen != lastChoreoGen ||
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
         st.mqttConnected != lastMqttUp || st.minute != lastMinute || st.battPct != lastBattPct ||
         st.lastMqttRxMs != lastMqttRxSeen || isStale != lastStaleFlag ||
@@ -485,6 +498,7 @@ void uiTaskFn(void*) {
       lastStateGen      = st.stateGen;
       lastQuotaGen      = st.quotaGen;
       lastRankGen       = st.rankGen;
+      lastChoreoGen     = st.choreoGen;
       lastWifiUp        = st.wifiConnected;
       lastApMode        = st.wifiApMode;
       lastMqttUp        = st.mqttConnected;
@@ -501,8 +515,9 @@ void uiTaskFn(void*) {
       needFull = true;
     }
 
-    // Drive all 9 Nova animation states cleanly (click > one-shot > demo > approval/run > walk/sleep/idle).
+    // Drive all 9 Nova animation states cleanly (click > one-shot > demo > approval/run > walk/sleep/choreo/idle).
     int demoIdx = pageHomeDemoOverride();
+    int choreoAnim = pageHomeChoreoAnim();
     if (clickAnimUntilMs != 0 && (int32_t)(nowMs - clickAnimUntilMs) < 0) {
       nvaSetState(NvaAnimKey::CLICK);
     } else if (demoIdx >= 0 && demoIdx <= 8) {
@@ -522,6 +537,8 @@ void uiTaskFn(void*) {
         nvaSetState(NvaAnimKey::THINKING);
       } else if ((nowMs - lastInteractMs) >= (snap.battery.usbPresent ? 90000u : 45000u)) {
         nvaSetState(NvaAnimKey::SLEEP);
+      } else if (choreoAnim >= 0 && choreoAnim <= 8) {
+        nvaSetState((NvaAnimKey)choreoAnim);
       } else if (st.sess > 0 && ((nowMs / 18000u) % 3u) == 1u) {
         nvaSetState(NvaAnimKey::THINKING);
       } else if (((nowMs / 25000u) % 5u) == 4u) {
@@ -606,7 +623,9 @@ void setup() {
     while (1) delay(1000);
   }
 
-  sfxPlay(SfxKind::NEW_EVENT, settingsGet().soundPct);
+  if (!sfxSpeakFile("/audio/boot.adp", settingsGet().soundPct, 12, false)) {
+    sfxPlay(SfxKind::NEW_EVENT, settingsGet().soundPct);
+  }
   xTaskCreatePinnedToCore(uiTaskFn, "task_ui", 10240, nullptr, 5, nullptr, 1);
 }
 

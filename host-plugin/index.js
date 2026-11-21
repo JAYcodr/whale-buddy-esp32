@@ -5,6 +5,10 @@ export function apply(ctx, config = {}) {
     brokerUrl: config.brokerUrl || 'mqtt://192.168.31.15:1883',
     deviceApproval: config.deviceApproval || 'prefer',
     fallbackMs: config.fallbackMs ?? 8000,
+    ttsVoice: config.ttsVoice,
+    ttsStyle: config.ttsStyle,
+    quietHours: config.quietHours,
+    choreoIntervalMs: config.choreoIntervalMs,
     log: (msg) => ctx.logger?.('nova-buddy')?.info?.(msg),
   });
 

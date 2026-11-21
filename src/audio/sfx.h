@@ -11,3 +11,4 @@ enum class SfxKind : uint8_t {
 };
 
 void sfxPlay(SfxKind kind, uint8_t volPct = 100);
+bool sfxSpeakFile(const char* path, uint8_t volPct, uint8_t hour, bool timeValid);

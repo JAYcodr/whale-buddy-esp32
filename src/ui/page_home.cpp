@@ -13,20 +13,25 @@ constexpr int16_t STAGE_BOTTOM = 304;
 constexpr int16_t PET_MIN_X    = 80;
 constexpr int16_t PET_MAX_X    = 288;
 constexpr int16_t PET_BASE_Y   = 296;
-constexpr ui::Rect PILL_RECT{ 104, 308, 160, 28 };
+constexpr ui::Rect PILL_RECT{ 96, 308, 176, 28 };
 
-float   s_petX          = 184.0f;
-float   s_targetX       = 184.0f;
-bool    s_runSpeed      = false;
+float   s_petX           = 184.0f;
+float   s_targetX        = 184.0f;
+bool    s_runSpeed       = false;
+bool    s_userTargetLock = false;
 uint32_t s_lastStepFrame = 0;
 uint32_t s_nextRoamFrame = 90;
-int     s_sparkFrames   = 0;
-int     s_demoAnim      = -1;  // -1 = auto
+int     s_sparkFrames    = 0;
+int     s_demoAnim       = -1;  // -1 = auto
 
-const char* s_bubbleTxt = nullptr;
-int         s_bubbleFrames = 0;
+uint32_t s_seenChoreoGen  = 0;
+uint8_t  s_choreoIdx      = 0;
+uint32_t s_choreoStepEnd  = 0;
+int      s_choreoAnim     = -1;
 
-// Track previous dirty bounding box inside STAGE_TOP..STAGE_BOTTOM for fast 60fps union push.
+char     s_bubbleBuf[48]  = "";
+int      s_bubbleFrames   = 0;
+
 int16_t s_prevX0 = 94, s_prevY0 = 110, s_prevX1 = 274, s_prevY1 = 304;
 bool    s_hasPrevBox = false;
 
@@ -37,6 +42,13 @@ const char* const kPetQuotes[] = {
   "收到指令啦",
 };
 uint8_t s_quoteIdx = 0;
+
+void setBubble(const char* txt, int frames) {
+  if (!txt || !txt[0]) return;
+  strncpy(s_bubbleBuf, txt, sizeof(s_bubbleBuf) - 1);
+  s_bubbleBuf[sizeof(s_bubbleBuf) - 1] = '\0';
+  s_bubbleFrames = frames;
+}
 
 void drawSpark(NovaCanvas& c, int16_t x, int16_t y, uint16_t col, int16_t size) {
   c.drawLine(x - size, y, x + size, y, col);
@@ -56,9 +68,33 @@ void updateRoam(const NovaState& st, uint32_t frame) {
   } else {
     s_petX = s_targetX;
     s_runSpeed = false;
+    s_userTargetLock = false;
   }
 
-  // Autonomous idle/working patrol across stage
+  if (st.choreoGen != s_seenChoreoGen) {
+    s_seenChoreoGen = st.choreoGen;
+    s_choreoIdx = 0;
+    s_choreoStepEnd = 0;
+  }
+
+  // Execute LLM choreography script when in autonomous idle/patrol mode.
+  if (st.nChoreoSteps > 0 && s_demoAnim < 0 && st.run == 0 && st.wait == 0 &&
+      !st.approvalActive && !s_userTargetLock) {
+    if (s_choreoStepEnd == 0 || (int32_t)(st.nowMs - s_choreoStepEnd) >= 0) {
+      if (s_choreoIdx >= st.nChoreoSteps) s_choreoIdx = 0;
+      const ChoreoStep& step = st.choreoSteps[s_choreoIdx];
+      s_targetX = (float)step.x;
+      s_runSpeed = step.run;
+      s_choreoAnim = step.anim;
+      s_choreoStepEnd = st.nowMs + step.durMs;
+      if (step.say[0]) setBubble(step.say, 150);
+      s_choreoIdx = (uint8_t)((s_choreoIdx + 1) % st.nChoreoSteps);
+    }
+    return;
+  }
+  s_choreoAnim = -1;
+
+  // Built-in local fallback patrol when no LLM script is active.
   if (s_petX == s_targetX && frame >= s_nextRoamFrame && st.wait == 0 && !st.approvalActive) {
     if (s_demoAnim == (int)NvaAnimKey::SLEEP) {
       s_nextRoamFrame = frame + 180;
@@ -85,15 +121,14 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
   int16_t hop = walking ? (int16_t)(fabsf(sinf(frame * 0.28f)) * 5.0f) : 0;
   const int16_t bottomY = PET_BASE_Y + oy - hop;
 
-  // Tight current dirty bounding box (~156x188 when no bubble -> <64KB SRAM fast push!)
   int16_t curX0 = cx - 76;
   int16_t curX1 = cx + 76;
   int16_t curY0 = bottomY - 174;
   int16_t curY1 = PET_BASE_Y + 6;
 
-  if (s_bubbleFrames > 0 && s_bubbleTxt) {
-    curX0 = (cx - 88 < curX0) ? (cx - 88) : curX0;
-    curX1 = (cx + 88 > curX1) ? (cx + 88) : curX1;
+  if (s_bubbleFrames > 0 && s_bubbleBuf[0]) {
+    curX0 = (cx - 104 < curX0) ? (cx - 104) : curX0;
+    curX1 = (cx + 104 > curX1) ? (cx + 104) : curX1;
     curY0 = STAGE_TOP;
   }
 
@@ -110,14 +145,12 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
   s_prevX0 = curX0; s_prevY0 = curY0; s_prevX1 = curX1; s_prevY1 = curY1;
   s_hasPrevBox = true;
 
-  // Clear dirty union region to pure OLED black (no concentric circles!)
   c.fillRect(uX0, uY0, uX1 - uX0, uY1 - uY0, ui::COL_BG);
 
   const float t = frame * 0.06f;
   const bool busy = (st.run > 0 || st.wait > 0);
   const uint16_t auraCol = st.wait > 0 ? ui::COL_AMBER : (busy ? ui::COL_MINT : ui::COL_ACCENT);
 
-  // Subtle ambient firefly dots around Nova
   for (int i = 0; i < 3; i++) {
     float a = t * (busy ? 1.25f : 0.65f) + i * 2.0944f;
     int16_t px = cx + (int16_t)(cosf(a) * 62.0f);
@@ -127,7 +160,6 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
     }
   }
 
-  // Tap sparkle burst
   if (s_sparkFrames > 0) {
     float prog = 1.0f - (float)s_sparkFrames / 24.0f;
     for (int i = 0; i < 6; i++) {
@@ -147,18 +179,18 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
     ui::aaFillCircle(c, cx - 10, bottomY - 80, 9, rgb565(224, 246, 255));
   }
 
-  // Optional short speech bubble above Nova
-  if (s_bubbleFrames > 0 && s_bubbleTxt) {
-    ui::TextMetrics bm = ui::measureText(c, ui::fontCjk14(), s_bubbleTxt);
-    int16_t bw = (int16_t)bm.w + 22;
+  if (s_bubbleFrames > 0 && s_bubbleBuf[0]) {
+    ui::TextMetrics bm = ui::measureText(c, ui::fontCjk14(), s_bubbleBuf);
+    int16_t bw = (int16_t)bm.w + 24;
+    if (bw > UI_W - 24) bw = UI_W - 24;
     int16_t bx = cx - bw / 2;
-    if (bx < 16) bx = 16;
-    if (bx + bw > UI_W - 16) bx = UI_W - 16 - bw;
+    if (bx < 12) bx = 12;
+    if (bx + bw > UI_W - 12) bx = UI_W - 12 - bw;
     int16_t by = STAGE_TOP + 6;
     ui::aaFillRoundRect(c, bx, by, bw, 28, 14, ui::COL_CARD_HI, ui::COL_ACCENT);
-    ui::drawTextCenteredInRect(c, ui::fontCjk14(), { bx, by, bw, 28 }, s_bubbleTxt, ui::COL_TEXT, ui::COL_CARD_HI);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), { bx, by, bw, 28 }, s_bubbleBuf, ui::COL_TEXT, ui::COL_CARD_HI);
     s_bubbleFrames--;
-    if (s_bubbleFrames == 0) s_bubbleTxt = nullptr;
+    if (s_bubbleFrames == 0) s_bubbleBuf[0] = '\0';
   }
 
   if (outDx) *outDx = uX0;
@@ -187,6 +219,9 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st) {
   } else if (st.run > 0) {
     dotCol = ui::COL_MINT;
     stateTag = "思考执行中";
+  } else if (st.nChoreoSteps > 0 && st.choreoMood[0]) {
+    dotCol = ui::COL_ACCENT;
+    stateTag = st.choreoMood;
   } else if (!st.wifiConnected || !st.mqttConnected) {
     dotCol = ui::COL_ACCENT;
     stateTag = "本地陪伴中";
@@ -194,6 +229,7 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st) {
 
   ui::TextMetrics tm = ui::measureText(c, ui::fontCjk14(), stateTag);
   int16_t pw = (int16_t)tm.w + 34;
+  if (pw > 280) pw = 280;
   int16_t px = (int16_t)((UI_W - pw) / 2 + ox);
   int16_t py = (int16_t)(308 + oy);
   ui::drawCard(c, px, py, pw, 28, ui::COL_CARD, ui::COL_BORDER, 14);
@@ -206,6 +242,10 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st) {
 
 int pageHomeDemoOverride() {
   return s_demoAnim;
+}
+
+int pageHomeChoreoAnim() {
+  return s_choreoAnim;
 }
 
 bool pageHomeIsWalking() {
@@ -241,7 +281,6 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame) {
   drawStageContent(c, st, frame, nullptr, nullptr, nullptr, nullptr);
   drawStatusPill(c, st);
 
-  // Compact bottom DSH Dock Card (no raw bash command line!)
   const int16_t ox = ui::burnOffsetX(st.burnInStep);
   const int16_t oy = ui::burnOffsetY(st.burnInStep);
   const int16_t dockX = (int16_t)(20 + ox);
@@ -288,38 +327,32 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     return UiAction{ UiAction::CANCEL_PORTAL, 0 };
   }
 
-  // Tap status pill to cycle local showcase animation mode (-1 = auto, 0..8 = manual anim)
   if (PILL_RECT.contains(x, y)) {
-    if (s_demoAnim < 0) s_demoAnim = 1;  // start with THINKING
+    if (s_demoAnim < 0) s_demoAnim = 1;
     else if (s_demoAnim >= 8) s_demoAnim = -1;
     else s_demoAnim++;
-    s_bubbleTxt = (s_demoAnim < 0) ? "恢复自动状态" : "切换动作!";
-    s_bubbleFrames = 90;
+    setBubble((s_demoAnim < 0) ? "恢复自动状态" : "切换动作!", 90);
     return UiAction{ UiAction::PET_TAP, 2 };
   }
 
-  // Tap in open playground stage
   if (y >= STAGE_TOP && y <= STAGE_BOTTOM) {
     int16_t curX = (int16_t)(s_petX + 0.5f);
     int16_t dx = x - curX;
     if (dx < 0) dx = -dx;
     if (dx <= 62 && y >= 112) {
-      // Direct pet tap -> sparkle burst + cute bubble + CLICK animation
       s_sparkFrames = 24;
-      s_bubbleTxt = kPetQuotes[s_quoteIdx % 4];
+      setBubble(kPetQuotes[s_quoteIdx % 4], 110);
       s_quoteIdx++;
-      s_bubbleFrames = 110;
       return UiAction{ UiAction::PET_TAP, 0 };
     }
-    // Tap empty floor -> Nova turns & runs there!
     int16_t tx = x;
     if (tx < PET_MIN_X) tx = PET_MIN_X;
     if (tx > PET_MAX_X) tx = PET_MAX_X;
     s_targetX = (float)tx;
     s_runSpeed = true;
+    s_userTargetLock = true;
     s_nextRoamFrame = s_lastStepFrame + 220;
-    s_bubbleTxt = "跑过来啦~";
-    s_bubbleFrames = 90;
+    setBubble("跑过来啦~", 90);
     return UiAction{ UiAction::PET_TAP, 1 };
   }
 

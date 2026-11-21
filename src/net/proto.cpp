@@ -5,7 +5,11 @@
 #include <time.h>
 
 #ifndef NOVA_HOST_SIM
+#include "hw/audio.h"
 #include "hw/bus.h"
+#include "model/settings.h"
+#include <esp_heap_caps.h>
+#include <mbedtls/base64.h>
 #endif
 
 namespace {
@@ -159,6 +163,113 @@ bool applyApprovalEnd(JsonDocument& doc, uint32_t nowMs) {
   return true;
 }
 
+uint8_t animNameToIdx(const char* s) {
+  if (!s) return 0;
+  if (strcmp(s, "thinking") == 0) return 1;
+  if (strcmp(s, "working") == 0)  return 2;
+  if (strcmp(s, "waiting") == 0)  return 3;
+  if (strcmp(s, "success") == 0)  return 4;
+  if (strcmp(s, "error") == 0)    return 5;
+  if (strcmp(s, "click") == 0)    return 6;
+  if (strcmp(s, "sleep") == 0)    return 7;
+  if (strcmp(s, "quota") == 0)    return 8;
+  return 0;
+}
+
+bool applyChoreo(JsonDocument& doc, uint32_t nowMs) {
+  JsonArray arr = doc["steps"].as<JsonArray>();
+  if (arr.isNull() || arr.size() == 0) return false;
+  novaStateWithLock([&](NovaState& st) {
+    safeStrCopy(st.choreoMood, sizeof(st.choreoMood), doc["mood"] | "");
+    uint8_t n = 0;
+    for (JsonObject obj : arr) {
+      if (n >= MAX_CHOREO_STEPS) break;
+      ChoreoStep& step = st.choreoSteps[n];
+      int16_t x = (int16_t)(obj["x"] | 184);
+      if (x < 80) x = 80;
+      if (x > 288) x = 288;
+      step.x = x;
+      const char* spd = obj["speed"] | "walk";
+      step.run = (strcmp(spd, "run") == 0);
+      step.anim = animNameToIdx(obj["anim"] | "idle");
+      uint32_t dur = obj["dur"] | 4000;
+      if (dur < 1500) dur = 1500;
+      if (dur > 15000) dur = 15000;
+      step.durMs = (uint16_t)dur;
+      safeStrCopy(step.say, sizeof(step.say), obj["say"] | "");
+      n++;
+    }
+    st.nChoreoSteps = n;
+    st.choreoGen++;
+    st.lastMqttRxMs = nowMs;
+  });
+  return true;
+}
+
+bool applyTtsChunk(JsonDocument& doc) {
+#ifndef NOVA_HOST_SIM
+  static constexpr size_t MAX_TTS_BYTES = 98304;  // 96 KB ADPCM (~12s speech)
+  static uint8_t* s_ttsBuf = nullptr;
+  static size_t   s_ttsLen = 0;
+  static uint32_t s_curId  = 0;
+  static uint16_t s_expSeq = 0;
+
+  uint32_t id  = doc["id"] | 0u;
+  uint16_t seq = doc["seq"] | 0u;
+  uint16_t tot = doc["tot"] | 0u;
+  const char* b64 = doc["b64"] | "";
+  if (tot == 0 || !b64[0] || seq >= tot) return false;
+
+  if (seq == 0 || id != s_curId) {
+    if (s_ttsBuf) { free(s_ttsBuf); s_ttsBuf = nullptr; }
+    s_ttsLen = 0;
+    s_curId  = id;
+    s_expSeq = 0;
+    if (seq != 0) return false;
+    s_ttsBuf = (uint8_t*)heap_caps_malloc(MAX_TTS_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_ttsBuf) return false;
+  } else if (seq != s_expSeq || !s_ttsBuf) {
+    if (s_ttsBuf) { free(s_ttsBuf); s_ttsBuf = nullptr; }
+    s_ttsLen = 0;
+    return false;
+  }
+
+  size_t olen = 0;
+  size_t avail = MAX_TTS_BYTES - s_ttsLen;
+  int rc = mbedtls_base64_decode(s_ttsBuf + s_ttsLen, avail, &olen,
+                                 (const unsigned char*)b64, strlen(b64));
+  if (rc != 0) {
+    free(s_ttsBuf);
+    s_ttsBuf = nullptr;
+    s_ttsLen = 0;
+    return false;
+  }
+  s_ttsLen += olen;
+  s_expSeq++;
+
+  if (s_expSeq == tot) {
+    uint8_t* owned = s_ttsBuf;
+    size_t len = s_ttsLen;
+    s_ttsBuf = nullptr;
+    s_ttsLen = 0;
+
+    static NovaState snap;
+    novaStateRead(&snap);
+    uint8_t vol = settingsGet().soundPct;
+    bool quiet = snap.timeValid && (snap.hour >= 23 || snap.hour < 8);
+    if (vol > 0 && !quiet) {
+      hwPlayAdpcmOwned(owned, len, vol);
+    } else {
+      free(owned);
+    }
+  }
+  return true;
+#else
+  (void)doc;
+  return true;
+#endif
+}
+
 }  // namespace
 
 bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint32_t nowMs) {
@@ -173,6 +284,8 @@ bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint
   if (strcmp(suffix, "approval") == 0)     return applyApproval(doc, nowMs);
   if (strcmp(suffix, "approval_end") == 0) return applyApprovalEnd(doc, nowMs);
   if (strcmp(suffix, "time") == 0)         return applyTime(doc);
+  if (strcmp(suffix, "choreo") == 0)       return applyChoreo(doc, nowMs);
+  if (strcmp(suffix, "tts") == 0)          return applyTtsChunk(doc);
   return false;
 }
 

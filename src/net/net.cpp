@@ -102,7 +102,7 @@ void onMqttMessage(String& topic, String& payload) {
 
 void subscribeTopics() {
   static const char* SUFFIXES[] = {
-    "state", "quota", "rank", "approval", "approval_end", "time"
+    "state", "quota", "rank", "approval", "approval_end", "time", "choreo", "tts"
   };
   char topic[48];
   for (const char* sfx : SUFFIXES) {
