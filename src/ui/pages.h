@@ -65,6 +65,7 @@ UiAction pageDetailTap(int16_t x, int16_t y);
 void pageSettingsDraw(NovaCanvas& c, const NovaSettings& cfg);
 UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg);
 void pageSettingsSetTab(uint8_t tab);
+bool pageSettingsTick(uint32_t nowMs);
 
 void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 UiAction pageApprovalTap(int16_t x, int16_t y);
