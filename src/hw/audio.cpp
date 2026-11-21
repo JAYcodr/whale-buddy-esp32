@@ -24,7 +24,12 @@ static constexpr int AUDIO_VOL = 60;
 static constexpr int AUDIO_AMP = 6000;
 
 static QueueHandle_t s_beepQ = nullptr;
-struct BeepReq { uint16_t freq; uint16_t dur; };
+struct BeepReq {
+  uint16_t f0;
+  uint16_t f1;
+  uint16_t dur;
+  uint8_t  vol;
+};
 
 static bool i2sInit() {
   i2s_config_t cfg = {};
@@ -74,16 +79,27 @@ static void beepTask(void*) {
   BeepReq r;
   int16_t buf[256];
   while (xQueueReceive(s_beepQ, &r, portMAX_DELAY) == pdTRUE) {
-    int total = AUDIO_SR * r.dur / 1000;
+    int total = AUDIO_SR * (int)r.dur / 1000;
+    if (total <= 0) continue;
+    int fade = AUDIO_SR * 5 / 1000;  // 5 ms attack/release prevents click/pop
+    if (fade * 2 > total) fade = total / 2;
+    float ampScale = (r.vol > 100 ? 100 : r.vol) / 100.0f;
     float phase = 0.0f;
-    float dphase = 2.0f * (float)M_PI * r.freq / (float)AUDIO_SR;
     for (int n = 0; n < total; n += 256) {
       int chunk = total - n;
       if (chunk > 256) chunk = 256;
       for (int i = 0; i < chunk; i++) {
-        buf[i] = (int16_t)(AUDIO_AMP * sinf(phase));
-        phase += dphase;
-        if (phase > 2*M_PI) phase -= 2*M_PI;
+        int idx = n + i;
+        float t = (total > 1) ? (float)idx / (float)(total - 1) : 0.0f;
+        float freq = (float)r.f0 + ((float)r.f1 - (float)r.f0) * t;
+        float env = 1.0f;
+        if (fade > 0) {
+          if (idx < fade) env = (float)idx / (float)fade;
+          else if (idx >= total - fade) env = (float)(total - 1 - idx) / (float)fade;
+        }
+        buf[i] = (int16_t)(AUDIO_AMP * ampScale * env * sinf(phase));
+        phase += 2.0f * (float)M_PI * freq / (float)AUDIO_SR;
+        if (phase > 2.0f * (float)M_PI) phase -= 2.0f * (float)M_PI;
       }
       size_t written;
       i2s_write(I2S_NUM_0, buf, chunk * sizeof(int16_t), &written, portMAX_DELAY);
@@ -100,14 +116,18 @@ bool hwAudioInit() {
   if (!i2sInit())          { Serial.println("hwAudio: I2S init failed");   return false; }
   if (!es8311CodecInit())  { Serial.println("hwAudio: ES8311 init failed"); return false; }
 
-  s_beepQ = xQueueCreate(8, sizeof(BeepReq));
+  s_beepQ = xQueueCreate(16, sizeof(BeepReq));
   if (!s_beepQ) return false;
   xTaskCreatePinnedToCore(beepTask, "beep", 4096, nullptr, 5, nullptr, tskNO_AFFINITY);
   return true;
 }
 
-void hwBeep(uint16_t freqHz, uint16_t durMs) {
-  if (!s_beepQ) return;
-  BeepReq r{ freqHz, durMs };
+void hwTone(uint16_t f0Hz, uint16_t f1Hz, uint16_t durMs, uint8_t volPct) {
+  if (!s_beepQ || durMs == 0 || volPct == 0) return;
+  BeepReq r{ f0Hz, f1Hz, durMs, volPct };
   xQueueSend(s_beepQ, &r, 0);
+}
+
+void hwBeep(uint16_t freqHz, uint16_t durMs) {
+  hwTone(freqHz, freqHz, durMs, 100);
 }

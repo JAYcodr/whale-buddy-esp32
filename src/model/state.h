@@ -1,0 +1,118 @@
+#pragma once
+#include <stdint.h>
+
+struct QuotaBar {
+  uint8_t  pct;
+  char     tag[4];
+  uint32_t resetSec;
+};
+
+struct QuotaCard {
+  char     id[8];
+  char     name[24];
+  char     kind[8];  // "bal" | "win" | "na"
+  double   val;
+  char     cur[8];
+  char     why[24];
+  uint32_t ageSec;
+  QuotaBar bars[2];
+  uint8_t  nBars;
+};
+
+constexpr int MAX_RANK_ROWS = 24;
+
+struct RankRow {
+  uint8_t r;
+  char    m[28];
+  char    e[10];
+  bool    isNew;
+  float   s;
+  uint8_t b;
+  uint8_t f;
+  uint8_t k;
+  uint8_t a;
+  uint8_t q;
+  char    dur[10];
+  char    cost[10];
+};
+
+struct NovaState {
+  // Identity & network
+  char     deviceId[16];
+  char     fwVer[16];
+  char     ip[20];
+  char     apSsid[24];
+  int8_t   rssi;
+  bool     wifiConnected;
+  bool     wifiApMode;
+  bool     mqttConnected;
+  uint32_t lastMqttRxMs;
+
+  // DSH live state
+  uint16_t run;
+  uint16_t wait;
+  uint16_t sess;
+  char     msg[96];
+  int8_t   ctxPct;
+  char     activeModel[32];
+  uint32_t stateRxMs;
+  uint32_t stateGen;
+
+  // Quota cards
+  QuotaCard cards[3];
+  uint8_t   nCards;
+  uint32_t  quotaRxMs;
+  uint32_t  quotaGen;
+
+  // ModelDial rank
+  char     rankSrc[24];
+  char     rankLic[16];
+  uint32_t rankAt;
+  RankRow  rows[MAX_RANK_ROWS];
+  uint8_t  nRows;
+  uint32_t rankRxMs;
+  uint32_t rankGen;
+
+  // Approval
+  bool     approvalActive;
+  char     apId[40];
+  char     apTool[32];
+  char     apReason[160];
+  uint32_t apTtlMs;
+  uint32_t apArrivedMs;
+  uint32_t apGen;
+
+  // Device telemetry
+  float    fps;
+  uint32_t pushUs;
+  uint32_t droppedFps;
+  uint32_t freeHeap;
+  uint32_t freePsram;
+  uint16_t battMv;
+  uint8_t  battPct;
+  bool     usbPresent;
+  bool     charging;
+  bool     faceDown;
+  uint8_t  hour;
+  uint8_t  minute;
+  uint8_t  second;
+  bool     timeValid;
+};
+
+void novaStateInit(const char* devId, const char* fwVer);
+void novaStateRead(NovaState* out);
+
+template <typename Fn>
+void novaStateWithLock(Fn&& fn);
+
+// Non-template lock helpers used by novaStateWithLock
+void novaStateLock();
+void novaStateUnlock();
+NovaState& novaStateUnsafeRef();
+
+template <typename Fn>
+void novaStateWithLock(Fn&& fn) {
+  novaStateLock();
+  fn(novaStateUnsafeRef());
+  novaStateUnlock();
+}

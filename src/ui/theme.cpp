@@ -1,0 +1,341 @@
+#include "ui/theme.h"
+#include <math.h>
+
+extern const AaFont g_fontPf14;
+extern const AaFont g_fontPf17;
+extern const AaFont g_fontDin14;
+extern const AaFont g_fontDin18;
+extern const AaFont g_fontDin26;
+
+namespace ui {
+
+const AaFont* fontCjk14()   { return &g_fontPf14; }
+const AaFont* fontCjk16()   { return &g_fontPf17; }
+const AaFont* fontAscii14() { return &g_fontDin14; }
+const AaFont* fontAscii18() { return &g_fontDin18; }
+const AaFont* fontNum24()   { return &g_fontDin26; }
+
+namespace {
+
+inline uint16_t blendAlpha255(uint16_t bg, uint16_t fg, uint8_t a) {
+  if (a == 0) return bg;
+  if (a == 255) return fg;
+  uint32_t inv = 255 - a;
+  uint32_t r = (((fg >> 11) & 0x1F) * a + ((bg >> 11) & 0x1F) * inv + 127) / 255;
+  uint32_t g = (((fg >> 5)  & 0x3F) * a + ((bg >> 5)  & 0x3F) * inv + 127) / 255;
+  uint32_t b = ((fg         & 0x1F) * a + (bg         & 0x1F) * inv + 127) / 255;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+inline uint16_t blendAlpha15(uint16_t bg, uint16_t fg, uint8_t a) {
+  if (a == 0) return bg;
+  if (a >= 15) return fg;
+  uint32_t inv = 15 - a;
+  uint32_t r = (((fg >> 11) & 0x1F) * a + ((bg >> 11) & 0x1F) * inv + 7) / 15;
+  uint32_t g = (((fg >> 5)  & 0x3F) * a + ((bg >> 5)  & 0x3F) * inv + 7) / 15;
+  uint32_t b = ((fg         & 0x1F) * a + (bg         & 0x1F) * inv + 7) / 15;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+inline void blendPixel(uint16_t* fb, int16_t W, int16_t H, int16_t x, int16_t y, uint16_t col, uint8_t a) {
+  if (x < 0 || y < 0 || x >= W || y >= H || a == 0) return;
+  uint16_t& dst = fb[(int32_t)y * W + x];
+  dst = blendAlpha255(dst, col, a);
+}
+
+uint16_t decodeUtf8Cp(const char*& p) {
+  uint8_t b0 = (uint8_t)*p++;
+  if (b0 < 0x80) return b0;
+  if ((b0 & 0xE0) == 0xC0) {
+    uint8_t b1 = (uint8_t)*p;
+    if ((b1 & 0xC0) != 0x80) return '?';
+    p++;
+    return (uint16_t)(((b0 & 0x1F) << 6) | (b1 & 0x3F));
+  }
+  if ((b0 & 0xF0) == 0xE0) {
+    uint8_t b1 = (uint8_t)p[0];
+    uint8_t b2 = b1 ? (uint8_t)p[1] : 0;
+    if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80) return '?';
+    p += 2;
+    return (uint16_t)(((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F));
+  }
+  if ((b0 & 0xF8) == 0xF0) {
+    for (int i = 0; i < 3 && (*p & 0xC0) == 0x80; i++) p++;
+    return '?';
+  }
+  return '?';
+}
+
+const AaGlyph* lookupGlyph(const AaFont* f, uint16_t cp, const AaFont** outFont) {
+  for (const AaFont* cur = f; cur != nullptr; cur = cur->fallback) {
+    int32_t lo = 0;
+    int32_t hi = (int32_t)cur->glyphCount - 1;
+    while (lo <= hi) {
+      int32_t mid = (lo + hi) >> 1;
+      uint16_t mcp = cur->glyphs[mid].cp;
+      if (mcp == cp) {
+        if (outFont) *outFont = cur;
+        return &cur->glyphs[mid];
+      }
+      if (mcp < cp) lo = mid + 1;
+      else hi = mid - 1;
+    }
+  }
+  return nullptr;
+}
+
+inline uint8_t clamp255(float v) {
+  if (v <= 0.0f) return 0;
+  if (v >= 1.0f) return 255;
+  return (uint8_t)(v * 255.0f + 0.5f);
+}
+
+}  // namespace
+
+TextMetrics measureText(NovaCanvas& /*c*/, const AaFont* font, const char* s) {
+  TextMetrics m{ 0, 0, 0, 0 };
+  if (!font || !s || !s[0]) return m;
+
+  int32_t curX = 0;
+  int32_t minX = 0x7FFF, minY = 0x7FFF, maxX = -0x7FFF, maxY = -0x7FFF;
+  bool hasInk = false;
+
+  const char* p = s;
+  while (*p) {
+    uint16_t cp = decodeUtf8Cp(p);
+    const AaFont* usedFont = nullptr;
+    const AaGlyph* g = lookupGlyph(font, cp, &usedFont);
+    if (!g) {
+      curX += font->lineHeight / 2;
+      continue;
+    }
+    if (g->w > 0 && g->h > 0) {
+      int32_t gx0 = curX + g->xOff;
+      int32_t gy0 = g->yOff;
+      int32_t gx1 = gx0 + g->w;
+      int32_t gy1 = gy0 + g->h;
+      if (gx0 < minX) minX = gx0;
+      if (gy0 < minY) minY = gy0;
+      if (gx1 > maxX) maxX = gx1;
+      if (gy1 > maxY) maxY = gy1;
+      hasInk = true;
+    }
+    curX += g->xAdv;
+  }
+
+  if (hasInk) {
+    m.x1 = (int16_t)minX;
+    m.y1 = (int16_t)minY;
+    m.w  = (uint16_t)(maxX - minX);
+    m.h  = (uint16_t)(maxY - minY);
+  } else {
+    m.w = (uint16_t)curX;
+  }
+  return m;
+}
+
+void drawText(NovaCanvas& c, const AaFont* font, int16_t x, int16_t baselineY,
+              const char* s, uint16_t fg, uint16_t /*bg*/) {
+  if (!font || !s || !s[0]) return;
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) return;
+  const int16_t W = (int16_t)c.width();
+  const int16_t H = (int16_t)c.height();
+
+  int32_t curX = x;
+  const char* p = s;
+  while (*p) {
+    uint16_t cp = decodeUtf8Cp(p);
+    const AaFont* usedFont = nullptr;
+    const AaGlyph* g = lookupGlyph(font, cp, &usedFont);
+    if (!g) {
+      curX += font->lineHeight / 2;
+      continue;
+    }
+    if (g->w > 0 && g->h > 0) {
+      const uint8_t* src = usedFont->data + g->dataOff;
+      const int16_t dstX0 = (int16_t)(curX + g->xOff);
+      const int16_t dstY0 = (int16_t)(baselineY + g->yOff);
+      const uint16_t gw = g->w;
+      const uint16_t gh = g->h;
+      uint32_t pxIdx = 0;
+
+      for (uint16_t row = 0; row < gh; row++) {
+        int16_t py = dstY0 + (int16_t)row;
+        if (py < 0 || py >= H) {
+          pxIdx += gw;
+          continue;
+        }
+        uint16_t* rowFb = fb + (int32_t)py * W;
+        for (uint16_t col = 0; col < gw; col++) {
+          uint8_t byte = src[pxIdx >> 1];
+          uint8_t a4 = (pxIdx & 1) ? (byte & 0x0F) : (byte >> 4);
+          pxIdx++;
+          if (a4 == 0) continue;
+          int16_t px = dstX0 + (int16_t)col;
+          if (px < 0 || px >= W) continue;
+          rowFb[px] = (a4 >= 15) ? fg : blendAlpha15(rowFb[px], fg, a4);
+        }
+      }
+    }
+    curX += g->xAdv;
+  }
+}
+
+void aaFillCircle(NovaCanvas& c, int16_t cx, int16_t cy, int16_t r, uint16_t col) {
+  if (r <= 0) return;
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) { c.fillCircle(cx, cy, r, col); return; }
+  const int16_t W = (int16_t)c.width();
+  const int16_t H = (int16_t)c.height();
+  const float rOuter = (float)r + 0.5f;
+
+  for (int16_t dy = -r; dy <= r; dy++) {
+    int16_t py = cy + dy;
+    if (py < 0 || py >= H) continue;
+    for (int16_t dx = -r; dx <= r; dx++) {
+      int16_t px = cx + dx;
+      if (px < 0 || px >= W) continue;
+      float d = sqrtf((float)(dx * dx + dy * dy));
+      if (d <= rOuter - 1.0f) {
+        fb[(int32_t)py * W + px] = col;
+      } else if (d < rOuter) {
+        blendPixel(fb, W, H, px, py, col, clamp255(rOuter - d));
+      }
+    }
+  }
+}
+
+void aaDrawCircle(NovaCanvas& c, int16_t cx, int16_t cy, int16_t r, uint16_t col) {
+  if (r <= 0) return;
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) { c.drawCircle(cx, cy, r, col); return; }
+  const int16_t W = (int16_t)c.width();
+  const int16_t H = (int16_t)c.height();
+  const float rf = (float)r;
+
+  // Scan thin annulus in quadrant [0..r] and mirror 4 ways (~160 pixels for r=78).
+  for (int16_t dy = 0; dy <= r + 1; dy++) {
+    float maxDx = sqrtf(fmaxf(0.0f, (rf + 1.0f) * (rf + 1.0f) - (float)dy * (float)dy));
+    float minDx = ((float)dy >= rf - 1.0f) ? 0.0f
+                  : sqrtf(fmaxf(0.0f, (rf - 1.0f) * (rf - 1.0f) - (float)dy * (float)dy));
+    int16_t xStart = (int16_t)floorf(minDx);
+    int16_t xEnd   = (int16_t)ceilf(maxDx);
+    for (int16_t dx = xStart; dx <= xEnd; dx++) {
+      float d = fabsf(sqrtf((float)(dx * dx + dy * dy)) - rf);
+      if (d >= 1.0f) continue;
+      uint8_t a = clamp255(1.0f - d);
+      blendPixel(fb, W, H, cx + dx, cy + dy, col, a);
+      if (dx > 0) blendPixel(fb, W, H, cx - dx, cy + dy, col, a);
+      if (dy > 0) blendPixel(fb, W, H, cx + dx, cy - dy, col, a);
+      if (dx > 0 && dy > 0) blendPixel(fb, W, H, cx - dx, cy - dy, col, a);
+    }
+  }
+}
+
+void aaFillRoundRect(NovaCanvas& c, int16_t x, int16_t y, int16_t w, int16_t h,
+                     int16_t r, uint16_t fill, uint16_t border) {
+  if (w <= 0 || h <= 0) return;
+  if (r * 2 > w) r = w / 2;
+  if (r * 2 > h) r = h / 2;
+  if (r <= 1) {
+    c.fillRect(x, y, w, h, fill);
+    if (border != fill) c.drawRect(x, y, w, h, border);
+    return;
+  }
+
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) {
+    c.fillRoundRect(x, y, w, h, r, fill);
+    if (border != fill) c.drawRoundRect(x, y, w, h, r, border);
+    return;
+  }
+
+  const int16_t W = (int16_t)c.width();
+  const int16_t H = (int16_t)c.height();
+  const bool hasBorder = (border != fill);
+
+  // Fast solid interior bands (zero sqrt overhead).
+  c.fillRect(x + r, y + 1, w - 2 * r, h - 2, fill);
+  c.fillRect(x + 1, y + r, r - 1, h - 2 * r, fill);
+  c.fillRect(x + w - r, y + r, r - 1, h - 2 * r, fill);
+
+  if (hasBorder) {
+    c.drawFastHLine(x + r, y, w - 2 * r, border);
+    c.drawFastHLine(x + r, y + h - 1, w - 2 * r, border);
+    c.drawFastVLine(x, y + r, h - 2 * r, border);
+    c.drawFastVLine(x + w - 1, y + r, h - 2 * r, border);
+  } else {
+    c.drawFastHLine(x + r, y, w - 2 * r, fill);
+    c.drawFastHLine(x + r, y + h - 1, w - 2 * r, fill);
+    c.drawFastVLine(x, y + r, h - 2 * r, fill);
+    c.drawFastVLine(x + w - 1, y + r, h - 2 * r, fill);
+  }
+
+  // Smooth AA corners over r x r quadrants. Center sits at (r-1, r-1) so d == r-1 aligns with flat edges.
+  const float rCenter = (float)(r - 1);
+  const float rOuterEdge = rCenter + 0.5f;
+  const float rInnerEdge = rCenter - 0.5f;
+  for (int16_t cy = 0; cy < r; cy++) {
+    for (int16_t cx = 0; cx < r; cx++) {
+      float dx = (float)(r - 1 - cx);
+      float dy = (float)(r - 1 - cy);
+      float d = sqrtf(dx * dx + dy * dy);
+      if (d > rOuterEdge + 0.5f) continue;
+
+      int16_t xs[4] = { (int16_t)(x + cx), (int16_t)(x + w - 1 - cx),
+                        (int16_t)(x + cx), (int16_t)(x + w - 1 - cx) };
+      int16_t ys[4] = { (int16_t)(y + cy), (int16_t)(y + cy),
+                        (int16_t)(y + h - 1 - cy), (int16_t)(y + h - 1 - cy) };
+
+      if (!hasBorder) {
+        uint8_t a = (d <= rInnerEdge) ? 255 : clamp255(rOuterEdge - d + 0.5f);
+        for (int q = 0; q < 4; q++) blendPixel(fb, W, H, xs[q], ys[q], fill, a);
+      } else if (d <= rInnerEdge - 0.5f) {
+        for (int q = 0; q < 4; q++) blendPixel(fb, W, H, xs[q], ys[q], fill, 255);
+      } else if (d <= rCenter) {
+        float t = d - (rInnerEdge - 0.5f);
+        uint16_t mixed = blendAlpha255(fill, border, clamp255(t));
+        for (int q = 0; q < 4; q++) blendPixel(fb, W, H, xs[q], ys[q], mixed, 255);
+      } else {
+        uint8_t a = clamp255(rOuterEdge - d + 0.5f);
+        for (int q = 0; q < 4; q++) blendPixel(fb, W, H, xs[q], ys[q], border, a);
+      }
+    }
+  }
+}
+
+void aaDrawRoundRect(NovaCanvas& c, int16_t x, int16_t y, int16_t w, int16_t h,
+                     int16_t r, uint16_t border) {
+  if (w <= 0 || h <= 0) return;
+  if (r * 2 > w) r = w / 2;
+  if (r * 2 > h) r = h / 2;
+  if (r <= 1) { c.drawRect(x, y, w, h, border); return; }
+
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) { c.drawRoundRect(x, y, w, h, r, border); return; }
+
+  const int16_t W = (int16_t)c.width();
+  const int16_t H = (int16_t)c.height();
+  c.drawFastHLine(x + r, y, w - 2 * r, border);
+  c.drawFastHLine(x + r, y + h - 1, w - 2 * r, border);
+  c.drawFastVLine(x, y + r, h - 2 * r, border);
+  c.drawFastVLine(x + w - 1, y + r, h - 2 * r, border);
+
+  const float rf = (float)(r - 1);
+  for (int16_t cy = 0; cy < r; cy++) {
+    for (int16_t cx = 0; cx < r; cx++) {
+      float dx = (float)(r - 1 - cx);
+      float dy = (float)(r - 1 - cy);
+      float d = fabsf(sqrtf(dx * dx + dy * dy) - rf);
+      if (d >= 1.0f) continue;
+      uint8_t a = clamp255(1.0f - d);
+      blendPixel(fb, W, H, x + cx,         y + cy,         border, a);
+      blendPixel(fb, W, H, x + w - 1 - cx, y + cy,         border, a);
+      blendPixel(fb, W, H, x + cx,         y + h - 1 - cy, border, a);
+      blendPixel(fb, W, H, x + w - 1 - cx, y + h - 1 - cy, border, a);
+    }
+  }
+}
+
+}  // namespace ui

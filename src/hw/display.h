@@ -17,6 +17,7 @@ constexpr int SAFE_H     = HW_H - 2 * SAFE_INSET;
 
 bool hwDisplayInit();
 void hwDisplayPush();
+void hwDisplayPushRect(int16_t x, int16_t y, int16_t w, int16_t h);
 void hwDisplayBrightness(uint8_t lvl_0_4);
 void hwDisplaySleep(bool off);
 Arduino_Canvas* hwCanvas();

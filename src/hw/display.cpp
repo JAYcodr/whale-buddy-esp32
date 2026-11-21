@@ -64,7 +64,10 @@ bool hwDisplayInit() {
   s_canvas = new Arduino_Canvas(HW_W, HW_H, s_gfx);
   // canvas->begin() internally calls gfx->begin() which calls bus init.
   // Calling them separately would double-init the SPI bus → ESP_ERR_INVALID_STATE.
-  if (!s_canvas->begin()) { Serial.println("hwDisplay: canvas begin failed"); return false; }
+#ifndef BOARD_DISPLAY_QSPI_HZ
+#define BOARD_DISPLAY_QSPI_HZ GFX_NOT_DEFINED
+#endif
+  if (!s_canvas->begin(BOARD_DISPLAY_QSPI_HZ)) { Serial.println("hwDisplay: canvas begin failed"); return false; }
   // UTF-8 decode for u8g2 CJK fonts — without this, print() treats each
   // byte of a multi-byte codepoint as its own glyph lookup → mojibake.
   s_canvas->setUTF8Print(true);
@@ -209,11 +212,9 @@ void hwDisplayPush() {
   }
   s_gfx->endWrite();
 #elif BOARD_DISPLAY_SCALE == 1
-  // Native one-shot blit. Used on QSPI panels that can't tolerate
-  // many small draw calls per frame and where memory budget can't
-  // afford a full-frame upscaled buffer (no PSRAM).
-  s_gfx->draw16bitRGBBitmap(BOARD_DISPLAY_OFFSET_X, BOARD_DISPLAY_OFFSET_Y,
-                            src, BOARD_HW_W, BOARD_HW_H);
+  // Native 1:1 blit via hwDisplayPushRect (zero-copy full-width fast path).
+  hwDisplayPushRect(0, 0, HW_W, HW_H);
+  return;
 #else
   // 2× integer upscale, per-row, with optional centring offset.
   // OFFSET_X/Y are 0 on full-fill boards (1.8).
@@ -241,4 +242,88 @@ void hwDisplayPush() {
     const int BAR_X = (LCD_W_PHYS - BAR_W) / 2;
     s_gfx->fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, BAR_H / 2, BORDER_RED);
   }
+}
+
+void hwDisplayPushRect(int16_t x, int16_t y, int16_t w, int16_t h) {
+  if (!s_canvas || !s_gfx || w <= 0 || h <= 0) return;
+
+#if BOARD_DISPLAY_SCALE == 1 && !BOARD_DISPLAY_LETTERBOX && !BOARD_DISPLAY_PUSH_STREAMED
+  int16_t x0 = x < 0 ? 0 : x;
+  int16_t y0 = y < 0 ? 0 : y;
+  int16_t x1 = (x + w) > HW_W ? HW_W : (x + w);
+  int16_t y1 = (y + h) > HW_H ? HW_H : (y + h);
+  if (x1 <= x0 || y1 <= y0) return;
+
+  // SH8601 QSPI requires even col/row windows and width > 16 to avoid column drop.
+  x0 &= ~1;
+  x1 = (x1 + 1) & ~1;
+  if (x1 > HW_W) x1 = HW_W;
+  if (x1 - x0 < 18) {
+    x1 = x0 + 18;
+    if (x1 > HW_W) {
+      x1 = HW_W;
+      x0 = (x1 - 18) & ~1;
+      if (x0 < 0) x0 = 0;
+    }
+  }
+  y0 &= ~1;
+  y1 = (y1 + 1) & ~1;
+  if (y1 > HW_H) y1 = HW_H;
+
+  const int16_t rw = x1 - x0;
+  const int16_t rh = y1 - y0;
+  uint16_t* src = (uint16_t*)s_canvas->getFramebuffer();
+  if (!src) return;
+
+  // Wide regions (>= 240 px): push full-width band zero-copy from framebuffer,
+  // avoiding slow PSRAM-to-PSRAM row copies.
+  if (rw >= 240) {
+    x0 = 0;
+    s_gfx->draw16bitRGBBitmap(BOARD_DISPLAY_OFFSET_X, y0 + BOARD_DISPLAY_OFFSET_Y,
+                              src + (int32_t)y0 * HW_W, HW_W, rh);
+  } else {
+    const size_t needBytes = (size_t)rw * rh * sizeof(uint16_t);
+    static uint16_t* s_fastRectBuf = nullptr;   // 64 KB internal RAM for character-sized rects
+    static uint16_t* s_psramRectBuf = nullptr;  // fallback for tall narrow rects
+    uint16_t* dst = nullptr;
+    if (needBytes <= 65536) {
+      if (!s_fastRectBuf) {
+        s_fastRectBuf = (uint16_t*)heap_caps_malloc(65536, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      }
+      dst = s_fastRectBuf;
+    }
+    if (!dst) {
+      if (!s_psramRectBuf) {
+        s_psramRectBuf = (uint16_t*)heap_caps_malloc(
+            (size_t)HW_W * HW_H * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      }
+      dst = s_psramRectBuf;
+    }
+    if (!dst) {
+      s_gfx->draw16bitRGBBitmap(BOARD_DISPLAY_OFFSET_X, y0 + BOARD_DISPLAY_OFFSET_Y,
+                                src + (int32_t)y0 * HW_W, HW_W, rh);
+      return;
+    }
+    for (int16_t row = 0; row < rh; row++) {
+      memcpy(dst + (int32_t)row * rw,
+             src + (int32_t)(y0 + row) * HW_W + x0,
+             (size_t)rw * sizeof(uint16_t));
+    }
+    s_gfx->draw16bitRGBBitmap(x0 + BOARD_DISPLAY_OFFSET_X, y0 + BOARD_DISPLAY_OFFSET_Y,
+                              dst, rw, rh);
+  }
+
+  if (s_borderAlertOn) {
+    const int BAR_W = 200;
+    const int BAR_H = 8;
+    const int BAR_Y = 18;
+    const int BAR_X = (LCD_W_PHYS - BAR_W) / 2;
+    if (y0 < BAR_Y + BAR_H && y1 > BAR_Y) {
+      s_gfx->fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, BAR_H / 2, BORDER_RED);
+    }
+  }
+#else
+  (void)x; (void)y; (void)w; (void)h;
+  hwDisplayPush();
+#endif
 }

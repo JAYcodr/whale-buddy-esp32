@@ -4,3 +4,19 @@
 data/
 .superpowers/
 docs/superpowers/
+__pycache__/
+*.py[cod]
+
+# Secrets & local env
+.env
+.env.*
+*secret*
+*.cookie
+*.key
+
+# Host plugin dependencies
+host-plugin/node_modules/
+
+# Host simulator build & transient outputs
+tools/sim/build/
+tools/sim/out/

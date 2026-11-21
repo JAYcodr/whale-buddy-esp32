@@ -6,14 +6,14 @@
 #define LCD_W_PHYS  368
 #define LCD_H_PHYS  448
 
-// Logical canvas (half of physical — upscale done in hwDisplayPush).
+// Native 368×448 canvas (1:1 physical pixels on SH8601 AMOLED, PSRAM framebuffer).
 // BOARD_ prefix required here: display.h wraps these as constexpr int HW_W = BOARD_HW_W;
-// without the prefix the preprocessor would expand "constexpr int HW_W = HW_W" to "constexpr int 184 = 184".
-#define BOARD_HW_W        184
-#define BOARD_HW_H        224
+// without the prefix the preprocessor would expand "constexpr int HW_W = HW_W" to "constexpr int 368 = 368".
+#define BOARD_HW_W        368
+#define BOARD_HW_H        448
 
-// Safe draw area: symmetric inset from bezel corners (calibrated with DEBUG_SAFE_BOX)
-#define BOARD_SAFE_INSET  8
+// Safe draw area: symmetric inset from bezel corners (16 px on native 368×448)
+#define BOARD_SAFE_INSET  16
 
 // QSPI to SH8601
 #define PIN_LCD_SDIO0  4
@@ -65,7 +65,8 @@
 #define BOARD_HAS_PSRAM            1
 #define BOARD_DISPLAY_OFFSET_X     0
 #define BOARD_DISPLAY_OFFSET_Y     0
-#define BOARD_DISPLAY_SCALE        2
+#define BOARD_DISPLAY_SCALE        1
+#define BOARD_DISPLAY_QSPI_HZ      80000000
 #define BOARD_HAS_PA_CTRL          1
 #define BOARD_HAS_AXP2101          1
 #define BOARD_LCD_RST_VIA_PMU      0

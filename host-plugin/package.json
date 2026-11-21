@@ -1,0 +1,33 @@
+{
+  "name": "dsh-plugin-nova-buddy",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Nova Buddy desktop companion bridge: MQTT state, quota cards, ModelDial radar, and remote tool approval for ESP32-S3 AMOLED.",
+  "bin": {
+    "nova-buddy": "./bin/nova-buddy.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "bin",
+    "cordis.patch.yml",
+    "locale/en.json",
+    "locale/zh.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dependencies": {
+    "mqtt": "^5.10.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
