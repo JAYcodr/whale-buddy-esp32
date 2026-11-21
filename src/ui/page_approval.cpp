@@ -63,3 +63,11 @@ UiAction pageApprovalTap(int16_t x, int16_t y) {
   if (BTN_TO_PC.contains(x, y)) return UiAction{ UiAction::TO_PC, 0 };
   return UiAction{};
 }
+
+bool pageApprovalHitRect(int16_t x, int16_t y, const NovaState&, const NovaSettings&, ui::Rect* out) {
+  if (!out) return false;
+  if (BTN_ALLOW.contains(x, y)) { *out = BTN_ALLOW; return true; }
+  if (BTN_DENY.contains(x, y))  { *out = BTN_DENY;  return true; }
+  if (BTN_TO_PC.contains(x, y)) { *out = BTN_TO_PC; return true; }
+  return false;
+}

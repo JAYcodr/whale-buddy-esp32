@@ -338,4 +338,140 @@ void aaDrawRoundRect(NovaCanvas& c, int16_t x, int16_t y, int16_t w, int16_t h,
   }
 }
 
+void drawSwitch(NovaCanvas& c, Rect r, bool on, uint16_t accent) {
+  if (r.w <= 0 || r.h <= 0) return;
+  int16_t rad = r.h / 2;
+  uint16_t trackBg = on ? accent : COL_TRACK;
+  uint16_t trackBd = on ? accent : COL_BORDER;
+  uint16_t knobCol = on ? COL_TEXT : COL_DIM;
+  aaFillRoundRect(c, r.x, r.y, r.w, r.h, rad, trackBg, trackBd);
+
+  int16_t knobR = (r.h >= 28) ? 12 : (r.h - 6) / 2;
+  if (knobR < 4) knobR = 4;
+  int16_t cy = r.y + r.h / 2;
+  int16_t cx = on ? (r.x + r.w - rad) : (r.x + rad);
+  aaFillCircle(c, cx, cy, knobR, knobCol);
+}
+
+void drawSegmented(NovaCanvas& c, Rect r, const char* const* labels, int n, int sel,
+                   uint16_t accent, const AaFont* f) {
+  if (n <= 0 || !labels || r.w <= 8 || r.h <= 8) return;
+  const AaFont* font = f ? f : fontCjk14();
+  aaFillRoundRect(c, r.x, r.y, r.w, r.h, 11, COL_TRACK, COL_BORDER);
+
+  const int16_t pad = 3;
+  const int16_t innerW = r.w - 2 * pad;
+  const int16_t segH = r.h - 2 * pad;
+  for (int i = 0; i < n; i++) {
+    int16_t x0 = (int16_t)(r.x + pad + (int32_t)i * innerW / n);
+    int16_t x1 = (int16_t)(r.x + pad + (int32_t)(i + 1) * innerW / n);
+    int16_t sw = x1 - x0;
+    if (i > 0 && i != sel && (i - 1) != sel) {
+      c.drawFastVLine(x0, r.y + 7, r.h - 14, COL_BORDER);
+    }
+    Rect segR{ x0, (int16_t)(r.y + pad), sw, segH };
+    if (i == sel) {
+      aaFillRoundRect(c, segR.x, segR.y, segR.w, segR.h, 8, accent, accent);
+      drawTextCenteredInRect(c, font, segR, labels[i], COL_BG, accent);
+    } else {
+      drawTextCenteredInRect(c, font, segR, labels[i], COL_DIM, COL_TRACK);
+    }
+  }
+}
+
+void drawLevelBar(NovaCanvas& c, Rect r, int levels, int cur, uint16_t accent,
+                  bool firstIsMute) {
+  if (levels <= 0 || r.w <= 8 || r.h <= 8) return;
+  if (cur < 0) cur = 0;
+  if (cur >= levels) cur = levels - 1;
+
+  aaFillRoundRect(c, r.x, r.y, r.w, r.h, 11, COL_TRACK, COL_BORDER);
+
+  const int16_t pad = 3;
+  const int16_t gap = 3;
+  const int16_t innerW = r.w - 2 * pad - (levels - 1) * gap;
+  const int16_t segH = r.h - 2 * pad;
+  if (innerW <= levels) return;
+
+  for (int i = 0; i < levels; i++) {
+    int16_t x0 = (int16_t)(r.x + pad + (int32_t)i * innerW / levels + i * gap);
+    int16_t x1 = (int16_t)(r.x + pad + (int32_t)(i + 1) * innerW / levels + i * gap);
+    int16_t sw = x1 - x0;
+
+    uint16_t bg, bd, fg;
+    if (firstIsMute && i == 0) {
+      if (cur == 0) {
+        bg = COL_RED;
+        bd = COL_RED;
+        fg = COL_BG;
+      } else {
+        bg = COL_CARD_HI;
+        bd = COL_BORDER;
+        fg = COL_MUTED;
+      }
+    } else if (i == cur) {
+      bg = accent;
+      bd = accent;
+      fg = COL_BG;
+    } else if (i < cur && (!firstIsMute || i > 0)) {
+      bg = blend565(COL_TRACK, accent, 145);
+      bd = blend565(COL_BORDER, accent, 175);
+      fg = accent;
+    } else {
+      bg = COL_CARD_HI;
+      bd = COL_BORDER;
+      fg = COL_DIM;
+    }
+
+    aaFillRoundRect(c, x0, r.y + pad, sw, segH, 7, bg, bd);
+    if (firstIsMute && i == 0) {
+      drawTextCenteredInRect(c, fontCjk14(), { x0, (int16_t)(r.y + pad), sw, segH },
+                             "静音", fg, bg);
+    }
+  }
+}
+
+void drawSectionLabel(NovaCanvas& c, int16_t x, int16_t baseY, const char* s) {
+  drawText(c, fontCjk14(), x, baseY, s, COL_DIM, COL_CARD);
+}
+
+void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius) {
+  if (r.w <= 0 || r.h <= 0) return;
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) return;
+
+  const int16_t W = (int16_t)c.width();
+  const int16_t H = (int16_t)c.height();
+  int16_t rad = radius;
+  if (rad * 2 > r.w) rad = r.w / 2;
+  if (rad * 2 > r.h) rad = r.h / 2;
+  if (rad < 0) rad = 0;
+
+  int16_t x0 = r.x < 0 ? 0 : r.x;
+  int16_t y0 = r.y < 0 ? 0 : r.y;
+  int16_t x1 = (r.x + r.w) > W ? W : (r.x + r.w);
+  int16_t y1 = (r.y + r.h) > H ? H : (r.y + r.h);
+  const int32_t rMaxSq = (rad > 1) ? (int32_t)rad * (int32_t)rad : 0;
+
+  for (int16_t py = y0; py < y1; py++) {
+    int16_t ly = py - r.y;
+    int16_t dy = 0;
+    if (rad > 1) {
+      if (ly < rad) dy = rad - 1 - ly;
+      else if (ly >= r.h - rad) dy = ly - (r.h - rad);
+    }
+    uint16_t* row = fb + (int32_t)py * W;
+    for (int16_t px = x0; px < x1; px++) {
+      if (dy > 0) {
+        int16_t lx = px - r.x;
+        int16_t dx = 0;
+        if (lx < rad) dx = rad - 1 - lx;
+        else if (lx >= r.w - rad) dx = lx - (r.w - rad);
+        if (dx > 0 && (int32_t)dx * dx + (int32_t)dy * dy > rMaxSq) continue;
+      }
+      row[px] = blend565(row[px], 0xFFFF, 46);  // +18% brightness feedback
+    }
+  }
+}
+
 }  // namespace ui

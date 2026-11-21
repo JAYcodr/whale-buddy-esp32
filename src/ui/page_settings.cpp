@@ -245,3 +245,30 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
   if (BTN_BACK.contains(x, y)) return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
   return UiAction{};
 }
+
+bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState&, const NovaSettings&, ui::Rect* out) {
+  if (!out) return false;
+  if (TAB_BASIC.contains(x, y)) { *out = TAB_BASIC; return true; }
+  if (TAB_ADV.contains(x, y))   { *out = TAB_ADV;   return true; }
+  if (s_tab == 0) {
+    for (int i = 0; i < 3; i++) {
+      if (HOME_BTNS[i].contains(x, y)) { *out = HOME_BTNS[i]; return true; }
+      if (PWR_BTNS[i].contains(x, y))  { *out = PWR_BTNS[i];  return true; }
+    }
+    for (int i = 0; i < 5; i++) {
+      if (SND_STEPS[i].contains(x, y)) { *out = SND_STEPS[i]; return true; }
+      if (BRT_STEPS[i].contains(x, y)) { *out = BRT_STEPS[i]; return true; }
+    }
+    if (BTN_REPROV.contains(x, y)) { *out = BTN_REPROV; return true; }
+  } else {
+    if (BTN_TTS_TOGGLE.contains(x, y))    { *out = BTN_TTS_TOGGLE;    return true; }
+    if (BTN_QUIET_TOGGLE.contains(x, y))  { *out = BTN_QUIET_TOGGLE;  return true; }
+    if (BTN_CHOREO_TOGGLE.contains(x, y)) { *out = BTN_CHOREO_TOGGLE; return true; }
+    for (int i = 0; i < 4; i++) {
+      if (SLEEP_BTNS[i].contains(x, y)) { *out = SLEEP_BTNS[i]; return true; }
+    }
+    if (BTN_TEST_SND.contains(x, y)) { *out = BTN_TEST_SND; return true; }
+  }
+  if (BTN_BACK.contains(x, y)) { *out = BTN_BACK; return true; }
+  return false;
+}

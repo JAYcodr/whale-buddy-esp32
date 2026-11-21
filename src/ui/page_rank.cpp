@@ -174,3 +174,12 @@ UiAction pageRankTap(int16_t x, int16_t y) {
   }
   return UiAction{};
 }
+
+bool pageRankHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings&, ui::Rect* out) {
+  if (!out || st.nRows == 0) return false;
+  if (BTN_MODE.contains(x, y)) {
+    *out = BTN_MODE;
+    return true;
+  }
+  return false;
+}

@@ -116,3 +116,15 @@ UiAction pageQuotaTap(int16_t, int16_t y) {
   }
   return UiAction{};
 }
+
+bool pageQuotaHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings&, ui::Rect* out) {
+  if (!out) return false;
+  for (int i = 0; i < st.nCards && i < 3; i++) {
+    ui::Rect r{ 20, (int16_t)(66 + i * 122), 328, 112 };
+    if (r.contains(x, y)) {
+      *out = r;
+      return true;
+    }
+  }
+  return false;
+}
