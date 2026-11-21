@@ -19,6 +19,8 @@ export function createNovaBridge(options = {}) {
   let quotaPayload = null;
   let rankPayload = null;
   let choreoPayload = null;
+  let recentAnims = [];
+  let recentMood = '';
   let lastStateJson = '';
   let lastStateSentAt = 0;
   let lastChoreoAt = 0;
@@ -134,9 +136,11 @@ export function createNovaBridge(options = {}) {
     if (minCooldownMs > 0 && now - lastChoreoAt < minCooldownMs) return null;
     if (!aiCfg.llm?.primary?.apiKey && !aiCfg.llm?.fallback?.apiKey) return null;
     lastChoreoAt = now;
-    const c = await generateChoreography(buildContextSummary(reason), aiCfg, log);
+    const c = await generateChoreography(buildContextSummary(reason), aiCfg, log, { recentAnims, recentMood });
     if (c) {
       choreoPayload = c;
+      recentMood = c.mood || '';
+      recentAnims = c.steps.map((s) => s.anim);
       publishAll('choreo', choreoPayload, { qos: 1, retain: true });
     }
     return c;

@@ -169,9 +169,15 @@ void uiTaskFn(void*) {
   uint32_t key1DownAt = 0;
   bool     key1LongFired = false;
   uint32_t lastInteractMs = millis();
-  uint32_t clickAnimUntilMs = 0;
-  uint32_t oneShotUntilMs = 0;
+  bool     clickAnimActive = false;
+  uint32_t clickSafetyEndMs = 0;
+  uint32_t lastTapVoiceMs = 0;
+  bool     oneShotActive = false;
+  uint32_t oneShotSafetyEndMs = 0;
   NvaAnimKey oneShotKey = NvaAnimKey::SUCCESS;
+  NvaAnimKey bgAutoKey = NvaAnimKey::IDLE;
+  NvaAnimKey bgLastNonIdle = NvaAnimKey::QUOTA;
+  uint32_t   bgNextSwitchCycle = 2;
 
   uint32_t lastApGen = 0;
   uint32_t lastStateGen = 0;
@@ -341,15 +347,22 @@ void uiTaskFn(void*) {
             static constexpr const char* kTapVoices[3] = {
               "/audio/tap0.adp", "/audio/tap1.adp", "/audio/tap2.adp"
             };
-            clickAnimUntilMs = nowMs + 2600;
-            nvaSetState(NvaAnimKey::CLICK);
-            if (!sfxSpeakFile(kTapVoices[tapVoiceIdx % 3], cfg.soundPct, st.hour, st.timeValid)) {
-              sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+            clickAnimActive = true;
+            clickSafetyEndMs = nowMs + 13500u;
+            nvaSetState(NvaAnimKey::CLICK, true, true);
+            if ((nowMs - lastTapVoiceMs) >= 800u) {
+              lastTapVoiceMs = nowMs;
+              if (!sfxSpeakFile(kTapVoices[tapVoiceIdx % 3], cfg.soundPct, st.hour, st.timeValid)) {
+                sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+              }
+              tapVoiceIdx++;
             }
-            tapVoiceIdx++;
           } else if (act.value == 1) {
-            if (!sfxSpeakFile("/audio/run.adp", cfg.soundPct, st.hour, st.timeValid)) {
-              sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+            if ((nowMs - lastTapVoiceMs) >= 800u) {
+              lastTapVoiceMs = nowMs;
+              if (!sfxSpeakFile("/audio/run.adp", cfg.soundPct, st.hour, st.timeValid)) {
+                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+              }
             }
           } else {
             sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
@@ -359,21 +372,27 @@ void uiTaskFn(void*) {
           netPublishDecision(st.apId, true, false);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
           oneShotKey = NvaAnimKey::SUCCESS;
-          oneShotUntilMs = nowMs + 2800;
+          oneShotActive = true;
+          oneShotSafetyEndMs = nowMs + 13500u;
+          nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::ACCEPT, cfg.soundPct);
           break;
         case UiAction::DENY:
           netPublishDecision(st.apId, false, false);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
           oneShotKey = NvaAnimKey::ERROR;
-          oneShotUntilMs = nowMs + 2800;
+          oneShotActive = true;
+          oneShotSafetyEndMs = nowMs + 8500u;
+          nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::DENY, cfg.soundPct);
           break;
         case UiAction::TO_PC:
           netPublishDecision(st.apId, false, true);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
           oneShotKey = NvaAnimKey::THINKING;
-          oneShotUntilMs = nowMs + 2400;
+          oneShotActive = true;
+          oneShotSafetyEndMs = nowMs + 13500u;
+          nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::RANK_REDRAW:
@@ -477,10 +496,12 @@ void uiTaskFn(void*) {
       }
     }
 
-    // Detect task completion to celebrate briefly with SUCCESS animation.
+    // Detect task completion to celebrate cleanly with full SUCCESS animation.
     if (lastRunCount > 0 && st.run == 0 && !st.approvalActive) {
       oneShotKey = NvaAnimKey::SUCCESS;
-      oneShotUntilMs = nowMs + 2800;
+      oneShotActive = true;
+      oneShotSafetyEndMs = nowMs + 13500u;
+      nvaSetState(oneShotKey, true, true);
     }
     lastRunCount = st.run;
 
@@ -515,36 +536,59 @@ void uiTaskFn(void*) {
       needFull = true;
     }
 
-    // Drive all 9 Nova animation states cleanly (click > one-shot > demo > approval/run > walk/sleep/choreo/idle).
+    // Drive all 9 Nova animation states cleanly: play one-shots & choreo steps to full cycle end
+    // (inspired by dsh-pet AnimationFlow & aipets Director / ClipSelector).
     int demoIdx = pageHomeDemoOverride();
     int choreoAnim = pageHomeChoreoAnim();
-    if (clickAnimUntilMs != 0 && (int32_t)(nowMs - clickAnimUntilMs) < 0) {
-      nvaSetState(NvaAnimKey::CLICK);
+    if (st.approvalActive || st.wait > 0) {
+      clickAnimActive = false;
+      oneShotActive = false;
+      nvaSetState(NvaAnimKey::WAITING, false);
     } else if (demoIdx >= 0 && demoIdx <= 8) {
-      clickAnimUntilMs = 0;
-      nvaSetState((NvaAnimKey)demoIdx);
-    } else if (oneShotUntilMs != 0 && (int32_t)(nowMs - oneShotUntilMs) < 0) {
-      clickAnimUntilMs = 0;
-      nvaSetState(oneShotKey);
-    } else {
-      clickAnimUntilMs = 0;
-      oneShotUntilMs = 0;
-      if (st.approvalActive || st.wait > 0) {
-        nvaSetState(NvaAnimKey::WAITING);
-      } else if (st.run > 0) {
-        nvaSetState(NvaAnimKey::WORKING);
-      } else if (pageHomeIsWalking()) {
-        nvaSetState(NvaAnimKey::THINKING);
-      } else if ((nowMs - lastInteractMs) >= (snap.battery.usbPresent ? 90000u : 45000u)) {
-        nvaSetState(NvaAnimKey::SLEEP);
-      } else if (choreoAnim >= 0 && choreoAnim <= 8) {
-        nvaSetState((NvaAnimKey)choreoAnim);
-      } else if (st.sess > 0 && ((nowMs / 18000u) % 3u) == 1u) {
-        nvaSetState(NvaAnimKey::THINKING);
-      } else if (((nowMs / 25000u) % 5u) == 4u) {
-        nvaSetState(NvaAnimKey::QUOTA);
+      clickAnimActive = false;
+      oneShotActive = false;
+      nvaSetState((NvaAnimKey)demoIdx, false);
+    } else if (clickAnimActive) {
+      if ((nvaActiveState() == NvaAnimKey::CLICK && nvaIsEnded()) ||
+          (int32_t)(nowMs - clickSafetyEndMs) >= 0) {
+        clickAnimActive = false;
       } else {
-        nvaSetState(NvaAnimKey::IDLE);
+        nvaSetState(NvaAnimKey::CLICK, true);
+      }
+    } else if (oneShotActive) {
+      if ((nvaActiveState() == oneShotKey && nvaIsEnded()) ||
+          (int32_t)(nowMs - oneShotSafetyEndMs) >= 0) {
+        oneShotActive = false;
+      } else {
+        nvaSetState(oneShotKey, true);
+      }
+    }
+
+    if (!st.approvalActive && st.wait == 0 && demoIdx < 0 && !clickAnimActive && !oneShotActive) {
+      if (st.run > 0) {
+        nvaSetState(NvaAnimKey::WORKING, false);
+      } else if (pageHomeIsWalking()) {
+        nvaSetState(NvaAnimKey::THINKING, false);
+      } else if ((nowMs - lastInteractMs) >= (snap.battery.usbPresent ? 90000u : 45000u)) {
+        nvaSetState(NvaAnimKey::SLEEP, false);
+      } else if (choreoAnim >= 0 && choreoAnim <= 8) {
+        nvaSetState((NvaAnimKey)choreoAnim, false);
+      } else {
+        uint32_t cyc = nvaLoopCycles();
+        if (cyc >= bgNextSwitchCycle) {
+          if (bgAutoKey == NvaAnimKey::IDLE) {
+            NvaAnimKey next = (st.sess > 0 && bgLastNonIdle != NvaAnimKey::THINKING)
+                                ? NvaAnimKey::THINKING
+                                : (bgLastNonIdle != NvaAnimKey::QUOTA ? NvaAnimKey::QUOTA : NvaAnimKey::WAITING);
+            bgAutoKey = next;
+            bgLastNonIdle = next;
+            bgNextSwitchCycle = cyc + 1;  // play 1 full ~10s cycle before switching back
+          } else {
+            bgAutoKey = NvaAnimKey::IDLE;
+            bgNextSwitchCycle = cyc + 2;  // rest in IDLE for 2 full cycles (~20s)
+          }
+        }
+        nvaSetState(bgAutoKey, false);
       }
     }
     nvaTick(nowMs);

@@ -41,8 +41,26 @@ describe('AI choreography sanitizer and ADPCM encoder', () => {
     const choreo = normalizeChoreo(extractJsonObject(raw));
     assert.equal(choreo.t, 'choreo');
     assert.equal(choreo.steps.length, 2);
-    assert.deepEqual(choreo.steps[0], { x: 288, speed: 'run', anim: 'quota', dur: 3500, say: '看看余额' });
-    assert.deepEqual(choreo.steps[1], { x: 80, speed: 'walk', anim: 'idle', dur: 1800, say: '休息一下' });
+    assert.deepEqual(choreo.steps[0], { x: 288, speed: 'run', anim: 'quota', dur: 10000, say: '看看余额' });
+    assert.deepEqual(choreo.steps[1], { x: 80, speed: 'walk', anim: 'idle', dur: 10000, say: '休息一下' });
+  });
+
+  it('diversifies repeated animations across a 5-step choreography loop', () => {
+    const rep = {
+      mood: '反复发呆',
+      steps: [
+        { x: 100, speed: 'walk', anim: 'idle', dur: 11000, say: '1' },
+        { x: 140, speed: 'walk', anim: 'idle', dur: 11000, say: '2' },
+        { x: 180, speed: 'walk', anim: 'idle', dur: 11000, say: '3' },
+        { x: 220, speed: 'walk', anim: 'idle', dur: 11000, say: '4' },
+        { x: 260, speed: 'walk', anim: 'idle', dur: 11000, say: '5' },
+      ],
+    };
+    const choreo = normalizeChoreo(rep, { night: false, recentAnims: ['idle'] });
+    const anims = choreo.steps.map((s) => s.anim);
+    assert.equal(new Set(anims).size, 5);
+    assert.notEqual(anims[0], 'idle');
+    assert.notEqual(anims[0], anims[4]);
   });
 
   it('evaluates overnight quiet hours accurately', () => {

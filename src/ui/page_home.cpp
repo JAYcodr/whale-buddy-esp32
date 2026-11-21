@@ -15,22 +15,33 @@ constexpr int16_t PET_MAX_X    = 288;
 constexpr int16_t PET_BASE_Y   = 296;
 constexpr ui::Rect PILL_RECT{ 96, 308, 176, 28 };
 
-float   s_petX           = 184.0f;
-float   s_targetX        = 184.0f;
-bool    s_runSpeed       = false;
-bool    s_userTargetLock = false;
-uint32_t s_lastStepFrame = 0;
-uint32_t s_nextRoamFrame = 90;
-int     s_sparkFrames    = 0;
-int     s_demoAnim       = -1;  // -1 = auto
+float    s_petX             = 184.0f;
+float    s_targetX          = 184.0f;
+bool     s_runSpeed         = false;
+bool     s_userTargetLock   = false;
+bool     s_facingRight      = false;
+uint32_t s_lastStepFrame    = 0;
+uint32_t s_prevRoamMs       = 0;
+uint32_t s_walkLeadUntilMs  = 0;
+uint32_t s_nextRoamMs       = 8000;
+int      s_sparkFrames      = 0;
+int      s_demoAnim         = -1;  // -1 = auto
 
-uint32_t s_seenChoreoGen  = 0;
-uint8_t  s_choreoIdx      = 0;
-uint32_t s_choreoStepEnd  = 0;
-int      s_choreoAnim     = -1;
+uint32_t s_seenChoreoGen    = 0;
+uint8_t  s_choreoIdx        = 0;
+bool     s_choreoArrived    = true;
+bool     s_choreoStepInit   = false;
+uint32_t s_choreoStepEnd    = 0;
+uint32_t s_choreoStartCycle = 0;
+int      s_choreoAnim       = -1;
 
-char     s_bubbleBuf[48]  = "";
-int      s_bubbleFrames   = 0;
+uint32_t s_squashStartMs    = 0;
+bool     s_squashActive     = false;
+bool     s_pendingSquashTap = false;
+
+char     s_bubbleBuf[48]    = "";
+uint32_t s_bubbleUntilMs    = 0;
+uint32_t s_pendingBubbleMs  = 0;
 
 int16_t s_prevX0 = 94, s_prevY0 = 110, s_prevX1 = 274, s_prevY1 = 304;
 bool    s_hasPrevBox = false;
@@ -43,11 +54,46 @@ const char* const kPetQuotes[] = {
 };
 uint8_t s_quoteIdx = 0;
 
-void setBubble(const char* txt, int frames) {
+void setBubble(const char* txt, uint32_t durMs, uint32_t nowMs = 0) {
   if (!txt || !txt[0]) return;
   strncpy(s_bubbleBuf, txt, sizeof(s_bubbleBuf) - 1);
   s_bubbleBuf[sizeof(s_bubbleBuf) - 1] = '\0';
-  s_bubbleFrames = frames;
+  if (nowMs > 0) {
+    s_bubbleUntilMs = nowMs + durMs;
+    s_pendingBubbleMs = 0;
+  } else {
+    s_pendingBubbleMs = durMs;
+  }
+}
+
+// Ported from dsh-pet/src/shared/physics/squash.ts: ease-in compress (0..0.45) + easeOutBack bounce (0.45..1).
+float calcSquashScaleY(uint32_t nowMs) {
+  if (!s_squashActive) return 1.0f;
+  uint32_t elapsed = nowMs - s_squashStartMs;
+  constexpr uint32_t SQ_DUR_MS = 320;
+  constexpr float SQ_MIN = 0.86f;
+  if (elapsed >= SQ_DUR_MS) {
+    s_squashActive = false;
+    return 1.0f;
+  }
+  float u = (float)elapsed / (float)SQ_DUR_MS;
+  if (u < 0.45f) {
+    float p = u / 0.45f;
+    return 1.0f - (1.0f - SQ_MIN) * p * p;
+  }
+  float p = (u - 0.45f) / 0.55f;
+  float pm1 = p - 1.0f;
+  constexpr float c1 = 1.70158f;
+  constexpr float c3 = c1 + 1.0f;
+  float f = 1.0f + c3 * pm1 * pm1 * pm1 + c1 * pm1 * pm1;
+  if (f < 0.0f) f = 0.0f;
+  float sy = SQ_MIN + (1.0f - SQ_MIN) * f;
+  return (sy > 1.10f) ? 1.10f : sy;
+}
+
+bool spriteAllowsMirror(NvaAnimKey k) {
+  return k == NvaAnimKey::IDLE || k == NvaAnimKey::CLICK ||
+         k == NvaAnimKey::SUCCESS || k == NvaAnimKey::SLEEP;
 }
 
 void drawSpark(NovaCanvas& c, int16_t x, int16_t y, uint16_t col, int16_t size) {
@@ -59,12 +105,42 @@ void updateRoam(const NovaState& st, uint32_t frame) {
   if (frame == s_lastStepFrame) return;
   s_lastStepFrame = frame;
 
+  if (s_pendingSquashTap) {
+    s_pendingSquashTap = false;
+    pageHomeTriggerSquash(st.nowMs);
+  }
+  if (s_pendingBubbleMs > 0) {
+    s_bubbleUntilMs = st.nowMs + s_pendingBubbleMs;
+    s_pendingBubbleMs = 0;
+  }
+
+  uint32_t dtMs = (s_prevRoamMs == 0 || st.nowMs <= s_prevRoamMs) ? 33u : (st.nowMs - s_prevRoamMs);
+  if (dtMs > 120u) dtMs = 120u;
+  s_prevRoamMs = st.nowMs;
+
   float diff = s_targetX - s_petX;
   float adiff = diff < 0 ? -diff : diff;
+  if (adiff > 6.0f) s_facingRight = (diff > 0.0f);
+
   if (adiff > 1.2f) {
-    float step = s_runSpeed ? 2.4f : 0.85f;
-    if (adiff < step) s_petX = s_targetX;
-    else s_petX += (diff > 0) ? step : -step;
+    if (s_walkLeadUntilMs == 0 || (int32_t)(st.nowMs - s_walkLeadUntilMs) >= 0) {
+      float maxSpeedPxPerSec = s_runSpeed ? 92.0f : 38.0f;
+      if (adiff < 16.0f) {
+        // Gentle ease-out deceleration on approach (inspired by dsh-pet walk tail settle).
+        float factor = adiff / 16.0f;
+        if (factor < 0.35f) factor = 0.35f;
+        maxSpeedPxPerSec *= factor;
+      }
+      float step = maxSpeedPxPerSec * ((float)dtMs / 1000.0f);
+      if (adiff <= step) {
+        s_petX = s_targetX;
+        s_runSpeed = false;
+        s_userTargetLock = false;
+        pageHomeTriggerSquash(st.nowMs);
+      } else {
+        s_petX += (diff > 0) ? step : -step;
+      }
+    }
   } else {
     s_petX = s_targetX;
     s_runSpeed = false;
@@ -74,37 +150,66 @@ void updateRoam(const NovaState& st, uint32_t frame) {
   if (st.choreoGen != s_seenChoreoGen) {
     s_seenChoreoGen = st.choreoGen;
     s_choreoIdx = 0;
+    s_choreoArrived = false;
+    s_choreoStepInit = false;
     s_choreoStepEnd = 0;
   }
 
   // Execute LLM choreography script when in autonomous idle/patrol mode.
+  // Never advance to the next step mid-animation: require arrival + min duration + >=1 full clip cycle.
   if (st.nChoreoSteps > 0 && s_demoAnim < 0 && st.run == 0 && st.wait == 0 &&
       !st.approvalActive && !s_userTargetLock) {
-    if (s_choreoStepEnd == 0 || (int32_t)(st.nowMs - s_choreoStepEnd) >= 0) {
+    if (!s_choreoStepInit) {
       if (s_choreoIdx >= st.nChoreoSteps) s_choreoIdx = 0;
       const ChoreoStep& step = st.choreoSteps[s_choreoIdx];
       s_targetX = (float)step.x;
+      float walkDist = fabsf(s_targetX - s_petX);
       s_runSpeed = step.run;
       s_choreoAnim = step.anim;
-      s_choreoStepEnd = st.nowMs + step.durMs;
-      if (step.say[0]) setBubble(step.say, 150);
-      s_choreoIdx = (uint8_t)((s_choreoIdx + 1) % st.nChoreoSteps);
+      s_walkLeadUntilMs = (walkDist > 6.0f) ? (st.nowMs + 220u) : 0;
+      s_choreoArrived = (walkDist <= 1.2f);
+      uint32_t dur = step.durMs >= 10000u ? step.durMs : 10000u;
+      s_choreoStepEnd = st.nowMs + dur;
+      s_choreoStartCycle = nvaLoopCycles();
+      s_choreoStepInit = true;
+      if (step.say[0]) setBubble(step.say, dur > 8500u ? 8500u : dur, st.nowMs);
+      return;
+    }
+
+    float remWalk = fabsf(s_targetX - s_petX);
+    if (!s_choreoArrived && remWalk <= 1.2f) {
+      s_choreoArrived = true;
+      const ChoreoStep& cur = st.choreoSteps[s_choreoIdx];
+      uint32_t dur = cur.durMs >= 10000u ? cur.durMs : 10000u;
+      s_choreoStepEnd = st.nowMs + dur;
+      s_choreoStartCycle = nvaLoopCycles();
+    }
+
+    if (s_choreoArrived && (int32_t)(st.nowMs - s_choreoStepEnd) >= 0) {
+      bool cycleComplete = (nvaLoopCycles() > s_choreoStartCycle);
+      bool safetyExpired = ((int32_t)(st.nowMs - (s_choreoStepEnd + 5000u)) >= 0);
+      if (cycleComplete || safetyExpired) {
+        s_choreoIdx = (uint8_t)((s_choreoIdx + 1) % st.nChoreoSteps);
+        s_choreoStepInit = false;
+      }
     }
     return;
   }
   s_choreoAnim = -1;
+  s_choreoStepInit = false;
 
-  // Built-in local fallback patrol when no LLM script is active.
-  if (s_petX == s_targetX && frame >= s_nextRoamFrame && st.wait == 0 && !st.approvalActive) {
+  // Built-in local fallback patrol when no LLM script is active (millisecond-based, not frame-based).
+  if (s_petX == s_targetX && (int32_t)(st.nowMs - s_nextRoamMs) >= 0 && st.wait == 0 && !st.approvalActive) {
     if (s_demoAnim == (int)NvaAnimKey::SLEEP) {
-      s_nextRoamFrame = frame + 180;
+      s_nextRoamMs = st.nowMs + 12000u;
       return;
     }
     static constexpr int16_t kStops[6] = { 108, 184, 260, 140, 228, 184 };
-    uint32_t idx = (frame / 113u + st.second) % 6;
+    uint32_t idx = (st.nowMs / 13000u + st.second) % 6;
     s_targetX = (float)kStops[idx];
+    s_walkLeadUntilMs = st.nowMs + 220u;
     s_runSpeed = (st.run > 0);
-    s_nextRoamFrame = frame + (st.run > 0 ? 180 : 260);
+    s_nextRoamMs = st.nowMs + (st.run > 0 ? 13000u : 18000u);
   }
 }
 
@@ -121,12 +226,18 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
   int16_t hop = walking ? (int16_t)(fabsf(sinf(frame * 0.28f)) * 5.0f) : 0;
   const int16_t bottomY = PET_BASE_Y + oy - hop;
 
-  int16_t curX0 = cx - 76;
-  int16_t curX1 = cx + 76;
-  int16_t curY0 = bottomY - 174;
+  int16_t curX0 = cx - 84;
+  int16_t curX1 = cx + 84;
+  int16_t curY0 = bottomY - 190;
   int16_t curY1 = PET_BASE_Y + 6;
 
-  if (s_bubbleFrames > 0 && s_bubbleBuf[0]) {
+  bool showBubble = (s_bubbleBuf[0] && s_bubbleUntilMs != 0 && (int32_t)(s_bubbleUntilMs - st.nowMs) > 0);
+  if (s_bubbleBuf[0] && !showBubble && s_bubbleUntilMs != 0) {
+    s_bubbleBuf[0] = '\0';
+    s_bubbleUntilMs = 0;
+  }
+
+  if (showBubble) {
     curX0 = (cx - 104 < curX0) ? (cx - 104) : curX0;
     curX1 = (cx + 104 > curX1) ? (cx + 104) : curX1;
     curY0 = STAGE_TOP;
@@ -174,12 +285,14 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
     s_sparkFrames--;
   }
 
-  if (!nvaDraw(c, cx, bottomY)) {
+  bool flipX = s_facingRight && spriteAllowsMirror(nvaActiveState());
+  float squashY = calcSquashScaleY(st.nowMs);
+  if (!nvaDraw(c, cx, bottomY, flipX, squashY)) {
     ui::aaFillCircle(c, cx, bottomY - 70, 34, auraCol);
     ui::aaFillCircle(c, cx - 10, bottomY - 80, 9, rgb565(224, 246, 255));
   }
 
-  if (s_bubbleFrames > 0 && s_bubbleBuf[0]) {
+  if (showBubble) {
     ui::TextMetrics bm = ui::measureText(c, ui::fontCjk14(), s_bubbleBuf);
     int16_t bw = (int16_t)bm.w + 24;
     if (bw > UI_W - 24) bw = UI_W - 24;
@@ -189,8 +302,6 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
     int16_t by = STAGE_TOP + 6;
     ui::aaFillRoundRect(c, bx, by, bw, 28, 14, ui::COL_CARD_HI, ui::COL_ACCENT);
     ui::drawTextCenteredInRect(c, ui::fontCjk14(), { bx, by, bw, 28 }, s_bubbleBuf, ui::COL_TEXT, ui::COL_CARD_HI);
-    s_bubbleFrames--;
-    if (s_bubbleFrames == 0) s_bubbleBuf[0] = '\0';
   }
 
   if (outDx) *outDx = uX0;
@@ -251,6 +362,11 @@ int pageHomeChoreoAnim() {
 bool pageHomeIsWalking() {
   float diff = s_targetX - s_petX;
   return (diff < -1.2f || diff > 1.2f);
+}
+
+void pageHomeTriggerSquash(uint32_t nowMs) {
+  s_squashStartMs = nowMs;
+  s_squashActive = true;
 }
 
 void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, uint32_t frame,
@@ -331,7 +447,8 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     if (s_demoAnim < 0) s_demoAnim = 1;
     else if (s_demoAnim >= 8) s_demoAnim = -1;
     else s_demoAnim++;
-    setBubble((s_demoAnim < 0) ? "恢复自动状态" : "切换动作!", 90);
+    s_pendingSquashTap = true;
+    setBubble((s_demoAnim < 0) ? "恢复自动状态" : "切换动作!", 3500u, st.nowMs);
     return UiAction{ UiAction::PET_TAP, 2 };
   }
 
@@ -341,7 +458,8 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     if (dx < 0) dx = -dx;
     if (dx <= 62 && y >= 112) {
       s_sparkFrames = 24;
-      setBubble(kPetQuotes[s_quoteIdx % 4], 110);
+      s_pendingSquashTap = true;
+      setBubble(kPetQuotes[s_quoteIdx % 4], 6500u, st.nowMs);
       s_quoteIdx++;
       return UiAction{ UiAction::PET_TAP, 0 };
     }
@@ -349,10 +467,11 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     if (tx < PET_MIN_X) tx = PET_MIN_X;
     if (tx > PET_MAX_X) tx = PET_MAX_X;
     s_targetX = (float)tx;
+    s_walkLeadUntilMs = st.nowMs;
     s_runSpeed = true;
     s_userTargetLock = true;
-    s_nextRoamFrame = s_lastStepFrame + 220;
-    setBubble("跑过来啦~", 90);
+    s_nextRoamMs = st.nowMs + 14000u;
+    setBubble("跑过来啦~", 4500u, st.nowMs);
     return UiAction{ UiAction::PET_TAP, 1 };
   }
 

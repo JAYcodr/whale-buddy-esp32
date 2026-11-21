@@ -1,4 +1,5 @@
 #include "anim/nva.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,11 +48,18 @@ NvaPack s_resPacks[3];         // IDLE, SUCCESS, ERROR
 NvaPack s_streamPack;          // shared on-demand slot
 NvaAnimKey s_streamKey = NvaAnimKey::COUNT;
 
-NvaAnimKey s_desiredKey = NvaAnimKey::IDLE;
+volatile NvaAnimKey s_desiredKey = NvaAnimKey::IDLE;
+volatile bool       s_desiredOnce = false;
+volatile uint32_t   s_desiredRestartGen = 0;
+
 NvaAnimKey s_activeKey  = NvaAnimKey::IDLE;
+bool       s_activeOnce = false;
+uint32_t   s_seenRestartGen = 0;
 uint16_t   s_frameIdx   = 0;
 uint8_t    s_activeFps  = 12;
 uint32_t   s_nextFrameMs = 0;
+volatile bool     s_clipEnded = false;
+volatile uint32_t s_loopCycles = 0;
 
 // Double-buffered decoded index frame (0 = transparent, 1..ncolors = palette).
 constexpr size_t MAX_FRAME_PIXELS = 192 * 224;
@@ -256,17 +264,43 @@ void decodeTaskFn(void*) {
     s_needDecode = false;
 
     NvaAnimKey target = s_desiredKey;
-    if (target != s_activeKey) {
+    bool targetOnce = s_desiredOnce;
+    uint32_t restartGen = s_desiredRestartGen;
+    bool switching = (target != s_activeKey || restartGen != s_seenRestartGen);
+
+    if (switching) {
       s_activeKey = target;
-      s_frameIdx  = 0;
-    }
-    NvaPack* pk = acquirePack(s_activeKey);
-    if (pk && pk->valid) {
-      s_activeFps = pk->fps > 0 ? pk->fps : 12;
-      if (pk->nframes > 0) {
-        s_frameIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
+      s_activeOnce = targetOnce;
+      s_seenRestartGen = restartGen;
+      s_frameIdx = 0;
+      s_clipEnded = false;
+      NvaPack* pk = acquirePack(s_activeKey);
+      if (pk && pk->valid) {
+        s_activeFps = pk->fps > 0 ? pk->fps : 12;
+        decodeFrameToBack(*pk, 0);
       }
+      continue;
+    }
+
+    s_activeOnce = targetOnce;
+    if (s_activeOnce && s_clipEnded) continue;
+
+    NvaPack* pk = acquirePack(s_activeKey);
+    if (pk && pk->valid && pk->nframes > 0) {
+      s_activeFps = pk->fps > 0 ? pk->fps : 12;
+      if (s_activeOnce && (uint32_t)(s_frameIdx + 1) >= pk->nframes) {
+        if (target == s_desiredKey && restartGen == s_desiredRestartGen) {
+          s_clipEnded = true;
+          s_loopCycles++;
+        }
+        continue;
+      }
+      uint16_t nextIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
+      s_frameIdx = nextIdx;
       decodeFrameToBack(*pk, s_frameIdx);
+      if (nextIdx == 0 && target == s_desiredKey && restartGen == s_desiredRestartGen) {
+        s_loopCycles++;
+      }
     }
   }
 }
@@ -314,28 +348,45 @@ bool nvaInit(const char* rootDir) {
 
 bool nvaAvailable() { return s_ready; }
 
-void nvaSetState(NvaAnimKey key) {
+void nvaSetState(NvaAnimKey key, bool once, bool restart) {
   if ((uint8_t)key >= (uint8_t)NvaAnimKey::COUNT) return;
-  if (s_desiredKey == key) return;
+  if (s_desiredKey == key && s_desiredOnce == once && !restart) return;
   s_desiredKey = key;
+  s_desiredOnce = once;
+  if (restart || s_desiredKey != s_activeKey) {
+    s_clipEnded = false;
+  }
+  if (restart) {
+    s_desiredRestartGen++;
+  }
   s_nextFrameMs = 0;
 #ifndef NOVA_HOST_SIM
   s_needDecode = true;
   if (s_decodeTask) xTaskNotifyGive(s_decodeTask);
 #else
-  if (s_desiredKey != s_activeKey) {
+  if (s_desiredKey != s_activeKey || s_desiredRestartGen != s_seenRestartGen) {
     s_activeKey = s_desiredKey;
+    s_activeOnce = s_desiredOnce;
+    s_seenRestartGen = s_desiredRestartGen;
     s_frameIdx  = 0;
+    s_clipEnded = false;
+    NvaPack* pk = acquirePack(s_activeKey);
+    if (pk && pk->valid) {
+      s_activeFps = pk->fps > 0 ? pk->fps : 12;
+      decodeFrameToBack(*pk, s_frameIdx);
+    }
   }
-  NvaPack* pk = acquirePack(s_activeKey);
-  if (pk && pk->valid) decodeFrameToBack(*pk, s_frameIdx);
 #endif
 }
 
 NvaAnimKey nvaCurrentState() { return s_desiredKey; }
+NvaAnimKey nvaActiveState() { return s_activeKey; }
+bool nvaIsEnded() { return s_clipEnded; }
+uint32_t nvaLoopCycles() { return s_loopCycles; }
 
 void nvaTick(uint32_t nowMs) {
   if (!s_ready) return;
+  if (s_activeOnce && s_clipEnded && s_desiredOnce && s_desiredKey == s_activeKey) return;
   uint8_t fps = s_activeFps > 0 ? s_activeFps : 12;
   uint32_t stepMs = 1000 / fps;
   if (s_nextFrameMs == 0) s_nextFrameMs = nowMs;
@@ -349,20 +400,37 @@ void nvaTick(uint32_t nowMs) {
   s_needDecode = true;
   if (s_decodeTask) xTaskNotifyGive(s_decodeTask);
 #else
-  if (s_desiredKey != s_activeKey) {
+  bool switching = (s_desiredKey != s_activeKey || s_desiredRestartGen != s_seenRestartGen);
+  if (switching) {
     s_activeKey = s_desiredKey;
+    s_activeOnce = s_desiredOnce;
+    s_seenRestartGen = s_desiredRestartGen;
     s_frameIdx  = 0;
+    s_clipEnded = false;
+    NvaPack* pk = acquirePack(s_activeKey);
+    if (pk && pk->valid) {
+      s_activeFps = pk->fps > 0 ? pk->fps : 12;
+      decodeFrameToBack(*pk, s_frameIdx);
+    }
+    return;
   }
+  s_activeOnce = s_desiredOnce;
   NvaPack* pk = acquirePack(s_activeKey);
-  if (pk && pk->valid) {
+  if (pk && pk->valid && pk->nframes > 0) {
     s_activeFps = pk->fps > 0 ? pk->fps : 12;
-    if (pk->nframes > 0) s_frameIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
+    if (s_activeOnce && (uint32_t)(s_frameIdx + 1) >= pk->nframes) {
+      s_clipEnded = true;
+      s_loopCycles++;
+      return;
+    }
+    s_frameIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
     decodeFrameToBack(*pk, s_frameIdx);
+    if (s_frameIdx == 0) s_loopCycles++;
   }
 #endif
 }
 
-bool nvaDraw(NovaCanvas& c, int16_t centerX, int16_t bottomY) {
+bool nvaDraw(NovaCanvas& c, int16_t centerX, int16_t bottomY, bool flipX, float scaleY) {
   if (!s_ready || !s_frontReady) return false;
 #ifndef NOVA_HOST_SIM
   xSemaphoreTake(s_mtx, portMAX_DELAY);
@@ -370,25 +438,57 @@ bool nvaDraw(NovaCanvas& c, int16_t centerX, int16_t bottomY) {
   const uint8_t* src = s_frameBuf[s_frontIdx];
   const int16_t w = (int16_t)s_frontW;
   const int16_t h = (int16_t)s_frontH;
-  const int16_t x0 = centerX - w / 2;
-  const int16_t y0 = bottomY - h;
-
   uint16_t* fb = ((Arduino_Canvas&)c).getFramebuffer();
   const int16_t fbW = c.width();
   const int16_t fbH = c.height();
 
   if (fb) {
-    for (int16_t row = 0; row < h; row++) {
-      const int16_t dy = y0 + row;
-      if (dy < 0 || dy >= fbH) continue;
-      const uint8_t* srow = src + (int32_t)row * w;
-      uint16_t* drow = fb + (int32_t)dy * fbW;
-      for (int16_t col = 0; col < w; col++) {
-        uint8_t idx = srow[col];
-        if (idx) {
-          const int16_t dx = x0 + col;
-          if (dx >= 0 && dx < fbW) {
-            drow[dx] = s_frontPal[idx];
+    bool unitScale = (scaleY > 0.995f && scaleY < 1.005f);
+    if (!flipX && unitScale) {
+      const int16_t x0 = centerX - w / 2;
+      const int16_t y0 = bottomY - h;
+      for (int16_t row = 0; row < h; row++) {
+        const int16_t dy = y0 + row;
+        if (dy < 0 || dy >= fbH) continue;
+        const uint8_t* srow = src + (int32_t)row * w;
+        uint16_t* drow = fb + (int32_t)dy * fbW;
+        for (int16_t col = 0; col < w; col++) {
+          uint8_t idx = srow[col];
+          if (idx) {
+            const int16_t dx = x0 + col;
+            if (dx >= 0 && dx < fbW) drow[dx] = s_frontPal[idx];
+          }
+        }
+      }
+    } else {
+      if (scaleY < 0.78f) scaleY = 0.78f;
+      if (scaleY > 1.14f) scaleY = 1.14f;
+      float scaleX = unitScale ? 1.0f : (1.0f / sqrtf(scaleY));
+      if (scaleX < 0.88f) scaleX = 0.88f;
+      if (scaleX > 1.16f) scaleX = 1.16f;
+
+      const int16_t dstW = (int16_t)(w * scaleX + 0.5f);
+      const int16_t dstH = (int16_t)(h * scaleY + 0.5f);
+      if (dstW > 0 && dstH > 0) {
+        const int16_t x0 = centerX - dstW / 2;
+        const int16_t y0 = bottomY - dstH;
+        const int32_t stepX = ((int32_t)w << 16) / dstW;
+        const int32_t stepY = ((int32_t)h << 16) / dstH;
+
+        for (int16_t row = 0; row < dstH; row++) {
+          const int16_t dy = y0 + row;
+          if (dy < 0 || dy >= fbH) continue;
+          int16_t sy = (int16_t)(((int32_t)row * stepY) >> 16);
+          if (sy >= h) sy = h - 1;
+          const uint8_t* srow = src + (int32_t)sy * w;
+          uint16_t* drow = fb + (int32_t)dy * fbW;
+          for (int16_t col = 0; col < dstW; col++) {
+            const int16_t dx = x0 + col;
+            if (dx < 0 || dx >= fbW) continue;
+            int16_t sx = (int16_t)(((int32_t)col * stepX) >> 16);
+            if (sx >= w) sx = w - 1;
+            uint8_t idx = srow[flipX ? (w - 1 - sx) : sx];
+            if (idx) drow[dx] = s_frontPal[idx];
           }
         }
       }

@@ -40,6 +40,7 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st);
 int pageHomeDemoOverride();  // -1 = auto, >=0 = NvaAnimKey index
 int pageHomeChoreoAnim();    // -1 = none, >=0 = NvaAnimKey index from LLM script
 bool pageHomeIsWalking();
+void pageHomeTriggerSquash(uint32_t nowMs);
 
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st);
 UiAction pageQuotaTap(int16_t x, int16_t y);

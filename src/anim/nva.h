@@ -17,10 +17,14 @@ enum class NvaAnimKey : uint8_t {
 
 bool nvaInit(const char* rootDir = "/pets/nova");
 bool nvaAvailable();
-void nvaSetState(NvaAnimKey key);
+void nvaSetState(NvaAnimKey key, bool once = false, bool restart = false);
 NvaAnimKey nvaCurrentState();
+NvaAnimKey nvaActiveState();
+bool nvaIsEnded();
+uint32_t nvaLoopCycles();
 void nvaTick(uint32_t nowMs);
 
 // Blit current decoded frame centered inside (cx, bottomY) onto canvas.
+// Supports optional horizontal mirror (flipX) and bottom-anchored Q-bounce scaleY.
 // Returns true if a frame was drawn.
-bool nvaDraw(NovaCanvas& c, int16_t centerX, int16_t bottomY);
+bool nvaDraw(NovaCanvas& c, int16_t centerX, int16_t bottomY, bool flipX = false, float scaleY = 1.0f);
