@@ -7,30 +7,68 @@ namespace {
 constexpr ui::Rect BTN_DENY { 36, 302, 140, 52 };
 constexpr ui::Rect BTN_ALLOW{ 192, 302, 140, 52 };
 constexpr ui::Rect BTN_TO_PC{ 36, 366, 296, 44 };
+
+constexpr int16_t kBarX   = 36;
+constexpr int16_t kBarY   = 92;
+constexpr int16_t kBarW   = 296;
+constexpr int16_t kBarH   = 8;
+constexpr int16_t kBarRad = kBarH / 2;
+
+struct ApprovalTiming {
+  uint32_t rem;
+  uint32_t ttl;
+  bool     urgent;
+  uint16_t frameCol;
+};
+
+ApprovalTiming computeTiming(const NovaState& st, uint32_t nowMs) {
+  uint32_t elapsed = (nowMs >= st.apArrivedMs) ? (nowMs - st.apArrivedMs) : 0;
+  uint32_t ttl = st.apTtlMs ? st.apTtlMs : 15000u;
+  uint32_t rem = (elapsed >= ttl) ? 0 : (ttl - elapsed);
+  bool urgent = (rem <= 3000u);
+  uint16_t frameCol = ui::COL_AMBER;
+  if (urgent) {
+    // 2Hz breathing (500ms period) between COL_RED and a muted card-blended red.
+    uint32_t ph = nowMs % 500u;
+    uint8_t t = (ph < 250u) ? (uint8_t)(ph * 255u / 250u)
+                            : (uint8_t)((500u - ph) * 255u / 250u);
+    frameCol = ui::blend565(ui::COL_RED, ui::blend565(ui::COL_RED, ui::COL_CARD, 128), t);
+  }
+  return ApprovalTiming{ rem, ttl, urgent, frameCol };
+}
 }  // namespace
+
+void pageApprovalDrawBar(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
+  ApprovalTiming t = computeTiming(st, nowMs);
+  // Reset bar rect to card background before AA track/fill to avoid corner alpha buildup.
+  c.fillRect(kBarX, kBarY, kBarW, kBarH, ui::COL_CARD);
+  ui::aaFillRoundRect(c, kBarX, kBarY, kBarW, kBarH, kBarRad, ui::COL_TRACK, ui::COL_TRACK);
+
+  int16_t fw = (int16_t)(((uint64_t)kBarW * t.rem + t.ttl / 2) / t.ttl);
+  if (fw > 0) {
+    if (fw < kBarH) fw = kBarH;
+    if (fw > kBarW) fw = kBarW;
+    ui::aaFillRoundRect(c, kBarX, kBarY, fw, kBarH, kBarRad, t.frameCol, t.frameCol);
+  }
+}
 
 void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
   c.fillScreen(ui::COL_BG);
 
-  uint32_t elapsed = (nowMs >= st.apArrivedMs) ? (nowMs - st.apArrivedMs) : 0;
-  uint32_t ttl = st.apTtlMs ? st.apTtlMs : 15000;
-  uint32_t rem = (elapsed >= ttl) ? 0 : (ttl - elapsed);
-  uint8_t pct = (uint8_t)((uint64_t)rem * 100 / ttl);
-  bool urgent = (rem <= 3000);
-  uint16_t frameCol = urgent ? ui::COL_RED : ui::COL_AMBER;
+  ApprovalTiming t = computeTiming(st, nowMs);
 
-  ui::drawCard(c, 20, 32, 328, 394, ui::COL_CARD, frameCol, 22);
+  ui::drawCard(c, 20, 32, 328, 394, ui::COL_CARD, t.frameCol, 22);
 
   // Alert indicator & large numeric countdown
-  ui::aaFillCircle(c, 42, 62, 5, frameCol);
+  ui::aaFillCircle(c, 42, 62, 5, t.frameCol);
   ui::drawText(c, ui::fontCjk16(), 56, 69, "请求工具确认", ui::COL_TEXT, ui::COL_CARD);
 
   char secStr[16];
-  snprintf(secStr, sizeof(secStr), "%us", (unsigned)((rem + 999) / 1000));
-  ui::drawTextRight(c, ui::fontNum24(), 330, 74, secStr, frameCol, ui::COL_CARD);
+  snprintf(secStr, sizeof(secStr), "%us", (unsigned)((t.rem + 999) / 1000));
+  ui::drawTextRight(c, ui::fontNum24(), 330, 74, secStr, t.frameCol, ui::COL_CARD);
 
   // Smooth countdown progress bar
-  ui::drawProgressBar(c, 36, 92, 296, 8, pct, frameCol);
+  pageApprovalDrawBar(c, st, nowMs);
 
   // Tool header card
   ui::drawCard(c, 36, 112, 296, 46, ui::COL_CARD_HI, ui::COL_BORDER, 12);

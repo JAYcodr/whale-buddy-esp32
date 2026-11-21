@@ -128,6 +128,7 @@ void uiTaskFn(void*) {
   bool uiAnimating = false;
   bool needRankList = false;
   bool wasRankFlinging = false;
+  bool wasApprovalActive = false;
 
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
@@ -162,6 +163,7 @@ void uiTaskFn(void*) {
   uint32_t lastQuotaBucket = 0;
   uint8_t  lastMinute = 255;
   uint8_t  lastSecond = 255;
+  uint32_t lastUrgentBreathMs = 0;
   uint8_t  lastBattPct = 255;
   uint8_t  lastBurnStep = 0;
   bool     lastSleepState = false;
@@ -230,28 +232,6 @@ void uiTaskFn(void*) {
     }
     applyCpuMhz(wantMhz);
 
-    // Handle new approval arrival: wake idle screen (unless face-down napping).
-    if (st.apGen != lastApGen) {
-      lastApGen = st.apGen;
-      hasPressedRect = false;
-      needFull = true;
-      if (st.approvalActive) {
-        if (!snap.faceDown && screenOff) {
-          hwDisplaySleep(false);
-          hwDisplayBrightness(cfg.brightLevel);
-          screenOff = false;
-        }
-        if (!snap.faceDown) {
-          sfxPlay(SfxKind::APPROVAL_ARRIVE, cfg.soundPct);
-          lastInteractMs = nowMs;
-        }
-      }
-    }
-
-    // Raise WiFi power mode during approval or active interaction.
-    bool needLowLatencyNet = st.approvalActive || st.wifiApMode || ((nowMs - lastInteractMs) < 5000);
-    netSetPowerSave(needLowLatencyNet ? NetPsMode::PERFORMANCE : NetPsMode::LOW_POWER);
-
     // Process discrete input events from task_bus.
     auto wakeScreen = [&]() {
       lastInteractMs = nowMs;
@@ -290,6 +270,42 @@ void uiTaskFn(void*) {
       frame++;
       fpsFrames++;
     };
+
+    // Handle approval arrival / dismissal transitions (placed after playTransition).
+    if (st.apGen != lastApGen) {
+      lastApGen = st.apGen;
+      hasPressedRect = false;
+      if (st.approvalActive) {
+        if (!snap.faceDown && screenOff) {
+          hwDisplaySleep(false);
+          hwDisplayBrightness(cfg.brightLevel);
+          screenOff = false;
+        }
+        if (!snap.faceDown) {
+          sfxPlay(SfxKind::APPROVAL_ARRIVE, cfg.soundPct);
+          lastInteractMs = nowMs;
+        }
+        if (!wasApprovalActive) {
+          wasApprovalActive = true;
+          if (!screenOff && !dimmedForNap && !snap.faceDown) {
+            playTransition(TransKind::FADE, 150);
+          } else {
+            needFull = true;
+          }
+        } else {
+          needFull = true;
+        }
+      } else if (wasApprovalActive) {
+        wasApprovalActive = false;
+        playTransition(TransKind::FADE, 150);
+      } else {
+        needFull = true;
+      }
+    }
+
+    // Raise WiFi power mode during approval or active interaction.
+    bool needLowLatencyNet = st.approvalActive || st.wifiApMode || ((nowMs - lastInteractMs) < 5000);
+    netSetPowerSave(needLowLatencyNet ? NetPsMode::PERFORMANCE : NetPsMode::LOW_POWER);
 
     auto handleAction = [&](const UiAction& act, int slideDir = 0, int swipeOrigin = -1) {
       if (act.kind == UiAction::NONE) return;
@@ -401,29 +417,41 @@ void uiTaskFn(void*) {
         case UiAction::APPROVE:
           netPublishDecision(st.apId, true, false);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          novaStateRead(&st);
+          lastApGen = st.apGen;
+          wasApprovalActive = false;
           oneShotKey = NvaAnimKey::SUCCESS;
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::ACCEPT, cfg.soundPct);
+          playTransition(TransKind::FADE, 150);
           break;
         case UiAction::DENY:
           netPublishDecision(st.apId, false, false);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          novaStateRead(&st);
+          lastApGen = st.apGen;
+          wasApprovalActive = false;
           oneShotKey = NvaAnimKey::ERROR;
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 8500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::DENY, cfg.soundPct);
+          playTransition(TransKind::FADE, 150);
           break;
         case UiAction::TO_PC:
           netPublishDecision(st.apId, false, true);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          novaStateRead(&st);
+          lastApGen = st.apGen;
+          wasApprovalActive = false;
           oneShotKey = NvaAnimKey::THINKING;
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playTransition(TransKind::FADE, 150);
           break;
         case UiAction::RANK_REDRAW:
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
@@ -623,9 +651,19 @@ void uiTaskFn(void*) {
       lastSleepState    = curSleepState;
       needFull          = true;
     }
-    if (st.approvalActive && st.second != lastSecond) {
-      lastSecond = st.second;
-      needFull = true;
+    if (st.approvalActive && !screenOff && !dimmedForNap) {
+      if (st.second != lastSecond) {
+        lastSecond = st.second;
+        needFull = true;
+      }
+      uint32_t apElapsed = (nowMs >= st.apArrivedMs) ? (nowMs - st.apArrivedMs) : 0;
+      uint32_t apTtl = st.apTtlMs ? st.apTtlMs : 15000u;
+      uint32_t apRem = (apElapsed >= apTtl) ? 0 : (apTtl - apElapsed);
+      // Sample 4 phases of the 2Hz breathing border cleanly without AA border accumulation.
+      if (apRem <= 3000u && (nowMs - lastUrgentBreathMs) >= 125u) {
+        lastUrgentBreathMs = nowMs;
+        needFull = true;
+      }
     }
     if (pageSettingsTick(nowMs) && nav.currentPage() == UiPage::SETTINGS) {
       needFull = true;
@@ -705,7 +743,9 @@ void uiTaskFn(void*) {
     // Frame rate target depends on active page & power profile.
     bool animPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::HOME);
     bool interactive = tpActive || pageRankIsFlinging() || uiAnimating;
-    uint8_t targetFps = animPage ? settingsEffectiveFps(snap.battery.usbPresent) : (interactive ? 60 : 10);
+    uint8_t targetFps = animPage
+                          ? settingsEffectiveFps(snap.battery.usbPresent)
+                          : (interactive ? 60 : (st.approvalActive ? 30 : 10));
     if (screenOff || dimmedForNap) targetFps = 5;
     int64_t frameUs = 1000000LL / targetFps;
 
@@ -732,6 +772,13 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         pageHomeDrawStage(*canvas, st, cfg, frame, &dx, &dy, &dw, &dh);
         hwDisplayPushRect(dx, dy, dw, dh);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        frame++;
+        fpsFrames++;
+      } else if (st.approvalActive) {
+        int64_t t0 = esp_timer_get_time();
+        pageApprovalDrawBar(*canvas, st, nowMs);
+        hwDisplayPushRect(36, 92, 296, 8);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         frame++;
         fpsFrames++;
