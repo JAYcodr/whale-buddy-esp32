@@ -52,7 +52,7 @@ bool pageHomeIsWalking();
 void pageHomeTriggerSquash(uint32_t nowMs);
 
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st);
-UiAction pageQuotaTap(int16_t x, int16_t y);
+UiAction pageQuotaTap(int16_t x, int16_t y, const NovaState& st);
 
 void pageRankDraw(NovaCanvas& c, const NovaState& st);
 UiAction pageRankTap(int16_t x, int16_t y);
