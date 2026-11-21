@@ -3,6 +3,7 @@
 #include "model/settings.h"
 #include "model/state.h"
 #include "ui/canvas.h"
+#include "ui/theme.h"
 #include <stdint.h>
 
 enum class UiPage : uint8_t {
@@ -51,12 +52,19 @@ bool pageHomeIsWalking();
 void pageHomeTriggerSquash(uint32_t nowMs);
 
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st);
-UiAction pageQuotaTap(int16_t x, int16_t y);
+UiAction pageQuotaTap(int16_t x, int16_t y, const NovaState& st);
+bool pageQuotaTick(uint32_t nowMs);
 
 void pageRankDraw(NovaCanvas& c, const NovaState& st);
+void pageRankDrawList(NovaCanvas& c, const NovaState& st);
 UiAction pageRankTap(int16_t x, int16_t y);
 bool pageRankScrollPx(int16_t deltaY, uint8_t nRows);
 void pageRankResetScroll();
+void pageRankTouchDown(int16_t y, uint32_t ms);
+bool pageRankTouchMove(int16_t y, uint32_t ms, uint8_t nRows);
+void pageRankTouchUp(uint32_t ms, uint8_t nRows);
+bool pageRankTick(uint32_t nowMs);
+bool pageRankIsFlinging();
 
 void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg);
 UiAction pageDetailTap(int16_t x, int16_t y);
@@ -64,6 +72,15 @@ UiAction pageDetailTap(int16_t x, int16_t y);
 void pageSettingsDraw(NovaCanvas& c, const NovaSettings& cfg);
 UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg);
 void pageSettingsSetTab(uint8_t tab);
+bool pageSettingsTick(uint32_t nowMs);
 
 void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
+void pageApprovalDrawBar(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 UiAction pageApprovalTap(int16_t x, int16_t y);
+
+bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageQuotaHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageRankHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageDetailHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageApprovalHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);

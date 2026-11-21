@@ -14,6 +14,7 @@ public:
 
   UiAction onSwipe(int16_t dx, int16_t dy);
   UiAction onTap(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg);
+  bool pressedRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out) const;
 
   void draw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame, uint32_t nowMs);
 

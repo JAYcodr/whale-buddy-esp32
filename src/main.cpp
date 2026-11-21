@@ -18,74 +18,12 @@
 #include "ui/canvas.h"
 #include "ui/nav.h"
 #include "ui/pages.h"
+#include "ui/theme.h"
+#include "ui/transition.h"
 
 namespace {
 
 constexpr uint32_t KEY1_LONG_MS = 800;
-constexpr uint32_t PAGE_SLIDE_MS = 180;
-constexpr int16_t  SLIDE_SPLIT_Y = 46;  // Keep top clock/status steady; slide pills + page content.
-
-uint16_t* s_slideFrom = nullptr;
-uint16_t* s_slideTo   = nullptr;
-
-void runHorizontalSlide(Arduino_Canvas& canvas, UiNav& nav, const NovaState& st,
-                        const NovaSettings& cfg, uint32_t frame, uint32_t nowMs, int slideDir) {
-  uint16_t* fb = canvas.getFramebuffer();
-  if (!fb) {
-    nav.draw(canvas, st, cfg, frame, nowMs);
-    hwDisplayPush();
-    return;
-  }
-
-  const size_t pxCount = (size_t)UI_W * UI_H;
-  const size_t fbBytes = pxCount * sizeof(uint16_t);
-  if (!s_slideFrom) s_slideFrom = (uint16_t*)heap_caps_malloc(fbBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!s_slideTo)   s_slideTo   = (uint16_t*)heap_caps_malloc(fbBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-
-  if (!s_slideFrom || !s_slideTo) {
-    nav.draw(canvas, st, cfg, frame, nowMs);
-    hwDisplayPush();
-    return;
-  }
-
-  memcpy(s_slideFrom, fb, fbBytes);
-  nav.draw(canvas, st, cfg, frame, nowMs);
-  memcpy(s_slideTo, fb, fbBytes);
-
-  // Header top band stays fixed from destination frame.
-  memcpy(fb, s_slideTo, (size_t)SLIDE_SPLIT_Y * UI_W * sizeof(uint16_t));
-
-  const int64_t tStartUs = esp_timer_get_time();
-  const int64_t durUs = (int64_t)PAGE_SLIDE_MS * 1000LL;
-  while (true) {
-    int64_t elapsedUs = esp_timer_get_time() - tStartUs;
-    if (elapsedUs >= durUs) break;
-    float u = (float)elapsedUs / (float)durUs;
-    float inv = 1.0f - u;
-    float ease = 1.0f - inv * inv * inv;
-    int offset = (int)(ease * UI_W + 0.5f);
-    if (offset < 0) offset = 0;
-    if (offset > UI_W) offset = UI_W;
-
-    int keepFrom = UI_W - offset;
-    for (int y = SLIDE_SPLIT_Y; y < UI_H; y++) {
-      uint16_t* dstRow = fb + (size_t)y * UI_W;
-      const uint16_t* srcFrom = s_slideFrom + (size_t)y * UI_W;
-      const uint16_t* srcTo   = s_slideTo   + (size_t)y * UI_W;
-      if (slideDir > 0) {
-        if (keepFrom > 0) memcpy(dstRow, srcFrom + offset, (size_t)keepFrom * sizeof(uint16_t));
-        if (offset > 0)   memcpy(dstRow + keepFrom, srcTo, (size_t)offset * sizeof(uint16_t));
-      } else {
-        if (offset > 0)   memcpy(dstRow, srcTo + keepFrom, (size_t)offset * sizeof(uint16_t));
-        if (keepFrom > 0) memcpy(dstRow + offset, srcFrom, (size_t)keepFrom * sizeof(uint16_t));
-      }
-    }
-    hwDisplayPush();
-  }
-
-  memcpy(fb, s_slideTo, fbBytes);
-  hwDisplayPush();
-}
 
 void sendUsbScreenshot() {
   Arduino_Canvas* c = hwCanvas();
@@ -187,9 +125,15 @@ void uiTaskFn(void*) {
   bool screenOff = false;
   bool dimmedForNap = false;
   bool needFull = true;
+  bool uiAnimating = false;
+  bool needRankList = false;
+  bool wasRankFlinging = false;
+  bool wasApprovalActive = false;
 
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
+  bool    hasPressedRect = false;
+  ui::Rect pressedRect{ 0, 0, 0, 0 };
   uint32_t key1DownAt = 0;
   bool     key1LongFired = false;
   uint32_t lastInteractMs = millis();
@@ -219,6 +163,7 @@ void uiTaskFn(void*) {
   uint32_t lastQuotaBucket = 0;
   uint8_t  lastMinute = 255;
   uint8_t  lastSecond = 255;
+  uint32_t lastUrgentBreathMs = 0;
   uint8_t  lastBattPct = 255;
   uint8_t  lastBurnStep = 0;
   bool     lastSleepState = false;
@@ -287,27 +232,6 @@ void uiTaskFn(void*) {
     }
     applyCpuMhz(wantMhz);
 
-    // Handle new approval arrival: wake idle screen (unless face-down napping).
-    if (st.apGen != lastApGen) {
-      lastApGen = st.apGen;
-      needFull = true;
-      if (st.approvalActive) {
-        if (!snap.faceDown && screenOff) {
-          hwDisplaySleep(false);
-          hwDisplayBrightness(cfg.brightLevel);
-          screenOff = false;
-        }
-        if (!snap.faceDown) {
-          sfxPlay(SfxKind::APPROVAL_ARRIVE, cfg.soundPct);
-          lastInteractMs = nowMs;
-        }
-      }
-    }
-
-    // Raise WiFi power mode during approval or active interaction.
-    bool needLowLatencyNet = st.approvalActive || st.wifiApMode || ((nowMs - lastInteractMs) < 5000);
-    netSetPowerSave(needLowLatencyNet ? NetPsMode::PERFORMANCE : NetPsMode::LOW_POWER);
-
     // Process discrete input events from task_bus.
     auto wakeScreen = [&]() {
       lastInteractMs = nowMs;
@@ -323,21 +247,84 @@ void uiTaskFn(void*) {
       }
     };
 
-    auto handleAction = [&](const UiAction& act, int slideDir = 0) {
+    auto playTransition = [&](TransKind kind, uint32_t ms) {
+      uint16_t* from = nullptr;
+      uint16_t* to   = nullptr;
+      uint16_t* fb   = canvas ? canvas->getFramebuffer() : nullptr;
+      if (screenOff || dimmedForNap || !canvas || !fb || !transBuffers(&from, &to)) {
+        if (canvas && !screenOff && !dimmedForNap) {
+          nav.draw(*canvas, st, cfg, frame, nowMs);
+        }
+        needFull = true;
+        return;
+      }
+      const size_t fbBytes = (size_t)UI_W * UI_H * sizeof(uint16_t);
+      memcpy(from, fb, fbBytes);
+      applyCpuMhz(240);
+      nav.draw(*canvas, st, cfg, frame, nowMs);
+      memcpy(to, fb, fbBytes);
+      uiAnimating = true;
+      transRun(*canvas, from, to, kind, ms);
+      uiAnimating = false;
+      needFull = false;
+      frame++;
+      fpsFrames++;
+    };
+
+    // Handle approval arrival / dismissal transitions (placed after playTransition).
+    if (st.apGen != lastApGen) {
+      lastApGen = st.apGen;
+      hasPressedRect = false;
+      if (st.approvalActive) {
+        if (!snap.faceDown && screenOff) {
+          hwDisplaySleep(false);
+          hwDisplayBrightness(cfg.brightLevel);
+          screenOff = false;
+        }
+        if (!snap.faceDown) {
+          sfxPlay(SfxKind::APPROVAL_ARRIVE, cfg.soundPct);
+          lastInteractMs = nowMs;
+        }
+        if (!wasApprovalActive) {
+          wasApprovalActive = true;
+          if (!screenOff && !dimmedForNap && !snap.faceDown) {
+            playTransition(TransKind::FADE, 150);
+          } else {
+            needFull = true;
+          }
+        } else {
+          needFull = true;
+        }
+      } else if (wasApprovalActive) {
+        wasApprovalActive = false;
+        playTransition(TransKind::FADE, 150);
+      } else {
+        needFull = true;
+      }
+    }
+
+    // Raise WiFi power mode during approval or active interaction.
+    bool needLowLatencyNet = st.approvalActive || st.wifiApMode || ((nowMs - lastInteractMs) < 5000);
+    netSetPowerSave(needLowLatencyNet ? NetPsMode::PERFORMANCE : NetPsMode::LOW_POWER);
+
+    auto handleAction = [&](const UiAction& act, int slideDir = 0, int swipeOrigin = -1) {
       if (act.kind == UiAction::NONE) return;
       if (act.kind != UiAction::PET_TAP || act.value == 2) needFull = true;
       switch (act.kind) {
-        case UiAction::GO_PAGE:
-          nav.setPage((UiPage)act.value);
+        case UiAction::GO_PAGE: {
+          UiPage prevPage = (swipeOrigin >= 0) ? (UiPage)swipeOrigin : nav.currentPage();
+          UiPage newPage  = (UiPage)act.value;
+          nav.setPage(newPage);
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          if (slideDir != 0 && canvas && !screenOff && !dimmedForNap) {
-            applyCpuMhz(240);
-            runHorizontalSlide(*canvas, nav, st, cfg, frame, nowMs, slideDir);
-            needFull = false;
-            frame++;
-            fpsFrames++;
+          if (prevPage != UiPage::SETTINGS && newPage == UiPage::SETTINGS) {
+            playTransition(TransKind::SHEET_UP, 220);
+          } else if (prevPage == UiPage::SETTINGS && newPage != UiPage::SETTINGS) {
+            playTransition(TransKind::SHEET_DOWN, 220);
+          } else if (slideDir != 0) {
+            playTransition(slideDir > 0 ? TransKind::SLIDE_LEFT : TransKind::SLIDE_RIGHT, 180);
           }
           break;
+        }
         case UiAction::SET_HOME:
           settingsMut().homePage = (HomePageKind)act.value;
           settingsSave();
@@ -430,33 +417,51 @@ void uiTaskFn(void*) {
         case UiAction::APPROVE:
           netPublishDecision(st.apId, true, false);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          novaStateRead(&st);
+          lastApGen = st.apGen;
+          wasApprovalActive = false;
           oneShotKey = NvaAnimKey::SUCCESS;
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::ACCEPT, cfg.soundPct);
+          playTransition(TransKind::FADE, 150);
           break;
         case UiAction::DENY:
           netPublishDecision(st.apId, false, false);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          novaStateRead(&st);
+          lastApGen = st.apGen;
+          wasApprovalActive = false;
           oneShotKey = NvaAnimKey::ERROR;
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 8500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::DENY, cfg.soundPct);
+          playTransition(TransKind::FADE, 150);
           break;
         case UiAction::TO_PC:
           netPublishDecision(st.apId, false, true);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          novaStateRead(&st);
+          lastApGen = st.apGen;
+          wasApprovalActive = false;
           oneShotKey = NvaAnimKey::THINKING;
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playTransition(TransKind::FADE, 150);
           break;
         case UiAction::RANK_REDRAW:
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playTransition(TransKind::FADE, 150);
+          break;
         case UiAction::SETTINGS_REDRAW:
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          if (act.value == 0 || act.value == 1) {
+            playTransition(TransKind::FADE, 150);
+          }
           break;
         default: break;
       }
@@ -476,18 +481,31 @@ void uiTaskFn(void*) {
         tpStartX = ev.x;
         tpStartY = ev.y;
         tpLastY  = ev.y;
+        if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
+          pageRankTouchDown(ev.y, ev.tsMs);
+        }
+        if (!dimmedForNap && canvas && nav.pressedRect(ev.x, ev.y, st, cfg, &pressedRect)) {
+          ui::drawPressedOverlay(*canvas, pressedRect, 12);
+          hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
+          hasPressedRect = true;
+        } else {
+          hasPressedRect = false;
+        }
       } else if (ev.type == InputEvtType::TOUCH_MOVE && tpActive) {
         wakeScreen();
+        int16_t adx = ev.x > tpStartX ? (ev.x - tpStartX) : (tpStartX - ev.x);
+        int16_t ady = ev.y > tpStartY ? (ev.y - tpStartY) : (tpStartY - ev.y);
+        if (hasPressedRect && (adx >= 12 || ady >= 12)) {
+          hasPressedRect = false;
+          needFull = true;
+        }
         if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
-          int16_t adx = ev.x > tpStartX ? (ev.x - tpStartX) : (tpStartX - ev.x);
-          int16_t ady = ev.y > tpStartY ? (ev.y - tpStartY) : (tpStartY - ev.y);
           if (!tpDraggedV && ady >= 12 && ady > adx) {
             tpDraggedV = true;
           }
           if (tpDraggedV) {
-            int16_t stepY = ev.y - tpLastY;
-            if (stepY != 0 && pageRankScrollPx(stepY, st.nRows)) {
-              needFull = true;
+            if (pageRankTouchMove(ev.y, ev.tsMs, st.nRows)) {
+              needRankList = true;
             }
           }
         }
@@ -495,15 +513,33 @@ void uiTaskFn(void*) {
       } else if (ev.type == InputEvtType::TOUCH_UP && tpActive) {
         tpActive = false;
         wakeScreen();
+        if (hasPressedRect) {
+          hasPressedRect = false;
+          needFull = true;
+        }
         if (tpDraggedV) {
           tpDraggedV = false;
+          if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
+            pageRankTouchUp(ev.tsMs, st.nRows);
+            if (!pageRankIsFlinging()) {
+              needFull = true;
+            }
+          }
           continue;
+        }
+        if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
+          pageRankTouchUp(ev.tsMs, st.nRows);
         }
         int16_t dx = ev.x - tpStartX;
         int16_t dy = ev.y - tpStartY;
+        UiPage prevPage = nav.currentPage();
         UiAction act = st.approvalActive ? UiAction{} : nav.onSwipe(dx, dy);
         if (act.kind != UiAction::NONE) {
-          handleAction(act, dx < 0 ? 1 : -1);
+          int16_t adx = dx < 0 ? -dx : dx;
+          int slideDir = (prevPage == UiPage::SETTINGS && dy >= 60 && dy > adx)
+                           ? 0
+                           : (dx < 0 ? 1 : -1);
+          handleAction(act, slideDir, (int)prevPage);
         } else {
           act = nav.onTap(ev.x, ev.y, st, cfg);
           handleAction(act);
@@ -514,9 +550,16 @@ void uiTaskFn(void*) {
         key1LongFired = false;
       } else if (ev.type == InputEvtType::KEY1_UP) {
         if (!key1LongFired && key1DownAt != 0) {
+          UiPage prev = nav.currentPage();
           nav.goHome(cfg.homePage);
-          needFull = true;
+          UiPage next = nav.currentPage();
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          if (next != prev) {
+            TransKind kind = ((int)next > (int)prev)
+                               ? TransKind::SLIDE_LEFT
+                               : TransKind::SLIDE_RIGHT;
+            playTransition(kind, 180);
+          }
         }
         key1DownAt = 0;
       } else if (ev.type == InputEvtType::AXP_SHORT) {
@@ -531,9 +574,13 @@ void uiTaskFn(void*) {
 
     if (snap.key1Down && key1DownAt != 0 && !key1LongFired && (nowMs - key1DownAt >= KEY1_LONG_MS)) {
       key1LongFired = true;
-      nav.setPage(UiPage::SETTINGS);
-      needFull = true;
-      sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+      if (nav.currentPage() != UiPage::SETTINGS) {
+        nav.setPage(UiPage::SETTINGS);
+        sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+        playTransition(TransKind::SHEET_UP, 220);
+      } else {
+        sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+      }
     }
 
     // Face-down nap dim/wake (skip during approval).
@@ -604,8 +651,24 @@ void uiTaskFn(void*) {
       lastSleepState    = curSleepState;
       needFull          = true;
     }
-    if (st.approvalActive && st.second != lastSecond) {
-      lastSecond = st.second;
+    if (st.approvalActive && !screenOff && !dimmedForNap) {
+      if (st.second != lastSecond) {
+        lastSecond = st.second;
+        needFull = true;
+      }
+      uint32_t apElapsed = (nowMs >= st.apArrivedMs) ? (nowMs - st.apArrivedMs) : 0;
+      uint32_t apTtl = st.apTtlMs ? st.apTtlMs : 15000u;
+      uint32_t apRem = (apElapsed >= apTtl) ? 0 : (apTtl - apElapsed);
+      // Sample 4 phases of the 2Hz breathing border cleanly without AA border accumulation.
+      if (apRem <= 3000u && (nowMs - lastUrgentBreathMs) >= 125u) {
+        lastUrgentBreathMs = nowMs;
+        needFull = true;
+      }
+    }
+    if (pageSettingsTick(nowMs) && nav.currentPage() == UiPage::SETTINGS) {
+      needFull = true;
+    }
+    if (pageQuotaTick(nowMs) && nav.currentPage() == UiPage::QUOTA) {
       needFull = true;
     }
 
@@ -666,9 +729,26 @@ void uiTaskFn(void*) {
     }
     nvaTick(nowMs);
 
+    if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
+      if (pageRankTick(nowMs)) {
+        needRankList = true;
+      }
+      bool curFlinging = pageRankIsFlinging();
+      if (wasRankFlinging && !curFlinging) {
+        needFull = true;
+      }
+      wasRankFlinging = curFlinging;
+    } else {
+      if (pageRankIsFlinging()) pageRankTick(nowMs);
+      wasRankFlinging = false;
+    }
+
     // Frame rate target depends on active page & power profile.
     bool animPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::HOME);
-    uint8_t targetFps = animPage ? settingsEffectiveFps(snap.battery.usbPresent) : 10;
+    bool interactive = tpActive || pageRankIsFlinging() || uiAnimating;
+    uint8_t targetFps = animPage
+                          ? settingsEffectiveFps(snap.battery.usbPresent)
+                          : (interactive ? 60 : (st.approvalActive ? 30 : 10));
     if (screenOff || dimmedForNap) targetFps = 5;
     int64_t frameUs = 1000000LL / targetFps;
 
@@ -679,6 +759,15 @@ void uiTaskFn(void*) {
         hwDisplayPush();
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needFull = false;
+        needRankList = false;
+        frame++;
+        fpsFrames++;
+      } else if (needRankList && !st.approvalActive && nav.currentPage() == UiPage::RANK) {
+        int64_t t0 = esp_timer_get_time();
+        pageRankDrawList(*canvas, st);
+        hwDisplayPushRect(0, 96, 368, 295);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        needRankList = false;
         frame++;
         fpsFrames++;
       } else if (animPage) {
@@ -686,6 +775,13 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         pageHomeDrawStage(*canvas, st, cfg, frame, &dx, &dy, &dw, &dh);
         hwDisplayPushRect(dx, dy, dw, dh);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        frame++;
+        fpsFrames++;
+      } else if (st.approvalActive) {
+        int64_t t0 = esp_timer_get_time();
+        pageApprovalDrawBar(*canvas, st, nowMs);
+        hwDisplayPushRect(36, 92, 296, 8);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         frame++;
         fpsFrames++;

@@ -24,7 +24,16 @@ void UiNav::goHome(HomePageKind home) {
 }
 
 UiAction UiNav::onSwipe(int16_t dx, int16_t dy) {
-  if (m_page == UiPage::SETTINGS) return UiAction{};
+  if (m_page == UiPage::SETTINGS) {
+    int16_t adx = dx < 0 ? -dx : dx;
+    int16_t ady = dy < 0 ? -dy : dy;
+    // Allow downward or rightward swipe to dismiss settings back to DETAIL.
+    if ((dy >= 60 && dy > adx) || (dx >= 48 && dx > ady)) {
+      m_page = UiPage::DETAIL;
+      return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
+    }
+    return UiAction{};
+  }
   int16_t adx = dx < 0 ? -dx : dx;
   int16_t ady = dy < 0 ? -dy : dy;
   if (adx < 48 || adx <= ady) return UiAction{};
@@ -46,11 +55,27 @@ UiAction UiNav::onTap(int16_t x, int16_t y, const NovaState& st, const NovaSetti
   }
   switch (m_page) {
     case UiPage::HOME:     return pageHomeTap(x, y, st);
-    case UiPage::QUOTA:    return pageQuotaTap(x, y);
+    case UiPage::QUOTA:    return pageQuotaTap(x, y, st);
     case UiPage::RANK:     return pageRankTap(x, y);
     case UiPage::DETAIL:   return pageDetailTap(x, y);
     case UiPage::SETTINGS: return pageSettingsTap(x, y, cfg);
     default:               return UiAction{};
+  }
+}
+
+bool UiNav::pressedRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg,
+                        ui::Rect* out) const {
+  if (!out) return false;
+  if (st.approvalActive) {
+    return pageApprovalHitRect(x, y, st, cfg, out);
+  }
+  switch (m_page) {
+    case UiPage::HOME:     return pageHomeHitRect(x, y, st, cfg, out);
+    case UiPage::QUOTA:    return pageQuotaHitRect(x, y, st, cfg, out);
+    case UiPage::RANK:     return pageRankHitRect(x, y, st, cfg, out);
+    case UiPage::DETAIL:   return pageDetailHitRect(x, y, st, cfg, out);
+    case UiPage::SETTINGS: return pageSettingsHitRect(x, y, st, cfg, out);
+    default:               return false;
   }
 }
 
