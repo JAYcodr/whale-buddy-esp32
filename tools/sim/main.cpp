@@ -168,9 +168,22 @@ static void mutateQuotaWarn(NovaState& st, NovaSettings&) {
   st.cards[1].bars[1].pct = 78;
 }
 
+// 空态用例必须喂宿主真实下发的原因码（fetchers.js 只发 no-session / no-key /
+// reauth / fetch-err，kind 只会是 "na"）。以前这里是 "none" + 中文 "缺少 Cookie"，
+// 走的是 whyText() 的未知兜底分支，真实路径一条都没覆盖到。
 static void mutateQuotaUnconf(NovaState& st, NovaSettings&) {
-  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "none");
-  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "缺少 Cookie");
+  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "na");
+  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "no-session");
+}
+
+static void mutateQuotaReauth(NovaState& st, NovaSettings&) {
+  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "na");
+  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "reauth");
+}
+
+static void mutateQuotaFetchErr(NovaState& st, NovaSettings&) {
+  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "na");
+  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "fetch-err");
 }
 
 static void mutateRankScrolled(NovaState& st, NovaSettings&) {
@@ -245,6 +258,8 @@ int main(int argc, char** argv) {
     { "quota_empty", UiPage::QUOTA, false, 0, 6500, mutateQuotaEmpty, nullptr },
     { "quota_warn", UiPage::QUOTA, false, 0, 6500, mutateQuotaWarn, nullptr },
     { "quota_unconf", UiPage::QUOTA, false, 0, 6500, mutateQuotaUnconf, nullptr },
+    { "quota_reauth", UiPage::QUOTA, false, 0, 6500, mutateQuotaReauth, nullptr },
+    { "quota_fetcherr", UiPage::QUOTA, false, 0, 6500, mutateQuotaFetchErr, nullptr },
     { "rank_scrolled", UiPage::RANK, false, 0, 6500, mutateRankScrolled, cleanupRankScroll },
     { "settings_muted", UiPage::SETTINGS, false, 0, 6500, mutateSettingsMuted, nullptr },
     { "approval_urgent", UiPage::HOME, true, 0, 25000, mutateApprovalUrgent, nullptr },
