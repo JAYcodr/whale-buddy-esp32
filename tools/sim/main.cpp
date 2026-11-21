@@ -205,6 +205,42 @@ static void mutateSettingsMuted(NovaState&, NovaSettings& cfg) {
   cfg.choreoEnabled = false;
 }
 
+// 主屏码头扩展：会话名 + 工具名 + 异常详情浮层。
+static void mutateDockDetail(NovaState& st, NovaSettings&) {
+  std::snprintf(st.sessTitle, sizeof(st.sessTitle), "修渲染管线");
+  std::snprintf(st.lastTool, sizeof(st.lastTool), "bash");
+}
+
+static void mutateDockError(NovaState& st, NovaSettings& cfg) {
+  mutateDockDetail(st, cfg);
+  st.run = 0;
+  st.turnError = true;
+  std::snprintf(st.errMsg, sizeof(st.errMsg),
+                "HTTP 429: rate limited (requestId=req_9f3a2c, status=429). "
+                "Provider returned a long message that needs wrapping to show fully.");
+  std::snprintf(st.msg, sizeof(st.msg), "本轮异常结束 · HTTP 429");
+}
+
+static void mutateDockErrorExpanded(NovaState& st, NovaSettings& cfg) {
+  mutateDockError(st, cfg);
+  st.dockExpanded = true;
+}
+
+// AP 配网页（wifiApMode && !wifiConnected）：决定 #3 加二维码前后的基准图。
+// burnStep 用来复现 issue #3 §5 说的烧屏 bug —— AP 卡片写死 24,80，不跟偏移。
+static void mutateApPortal(NovaState& st, NovaSettings&) {
+  st.wifiConnected = false;
+  st.wifiApMode = true;
+  st.mqttConnected = false;
+  std::snprintf(st.apSsid, sizeof(st.apSsid), "Nova-3468");
+  st.burnInStep = 0;
+}
+
+static void mutateApPortalBurn(NovaState& st, NovaSettings& cfg) {
+  mutateApPortal(st, cfg);
+  st.burnInStep = 7;  // burnOffsetX=+2, burnOffsetY=+1
+}
+
 static void mutateApprovalUrgent(NovaState& st, NovaSettings&) {
   st.apTtlMs = 20000;
   st.nowMs = 25000;
@@ -255,6 +291,11 @@ int main(int argc, char** argv) {
     { "settings", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr },
     { "settings_adv", UiPage::SETTINGS, false, 1, 6500, nullptr, nullptr },
     { "approval", UiPage::HOME, true, 0, 6500, nullptr, nullptr },
+    { "home_dock", UiPage::HOME, false, 0, 6500, mutateDockDetail, nullptr },
+    { "home_dock_err", UiPage::HOME, false, 0, 6500, mutateDockError, nullptr },
+    { "home_dock_detail", UiPage::HOME, false, 0, 6500, mutateDockErrorExpanded, nullptr },
+    { "home_ap", UiPage::HOME, false, 0, 6500, mutateApPortal, nullptr },
+    { "home_ap_burn", UiPage::HOME, false, 0, 6500, mutateApPortalBurn, nullptr },
     { "quota_empty", UiPage::QUOTA, false, 0, 6500, mutateQuotaEmpty, nullptr },
     { "quota_warn", UiPage::QUOTA, false, 0, 6500, mutateQuotaWarn, nullptr },
     { "quota_unconf", UiPage::QUOTA, false, 0, 6500, mutateQuotaUnconf, nullptr },

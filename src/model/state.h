@@ -71,6 +71,11 @@ struct NovaState {
   bool     turnError;
   int8_t   ctxPct;
   char     activeModel[32];
+  // 主屏码头的扩展信息（state 载荷平级字段，不塞进 err）
+  char     sessTitle[40];   // 当前会话标题
+  char     lastTool[24];    // 上一个工具名
+  char     errMsg[136];     // 本轮异常原文，供展开查看
+  bool     dockExpanded;    // 异常详情是否展开（纯本地 UI 状态）
   uint32_t stateRxMs;
   uint32_t stateGen;
 

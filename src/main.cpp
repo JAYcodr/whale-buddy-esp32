@@ -475,6 +475,11 @@ void uiTaskFn(void*) {
         case UiAction::TOKENS_REDRAW:
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
+        case UiAction::DOCK_TOGGLE:
+          novaStateWithLock([](NovaState& s) { s.dockExpanded = !s.dockExpanded; });
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          needFull = true;
+          break;
         default: break;
       }
     };

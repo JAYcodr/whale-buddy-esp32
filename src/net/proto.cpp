@@ -76,6 +76,9 @@ bool applyState(JsonDocument& doc, uint32_t nowMs) {
       st.ctxPct = -1;
     }
     safeStrCopy(st.activeModel, sizeof(st.activeModel), doc["model"] | "");
+    safeStrCopy(st.sessTitle, sizeof(st.sessTitle), doc["title"] | "");
+    safeStrCopy(st.lastTool, sizeof(st.lastTool), doc["tool"] | "");
+    safeStrCopy(st.errMsg, sizeof(st.errMsg), doc["errMsg"] | "");
     st.stateRxMs = nowMs;
     st.stateGen++;
     st.lastMqttRxMs = nowMs;

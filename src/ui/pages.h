@@ -38,6 +38,7 @@ struct UiAction {
     RANK_REDRAW,
     SETTINGS_REDRAW,
     TOKENS_REDRAW,
+    DOCK_TOGGLE,   // 主屏码头：展开/收起异常详情
   };
   Kind kind = NONE;
   int  value = 0;
