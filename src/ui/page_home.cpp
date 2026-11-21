@@ -12,8 +12,8 @@ constexpr int16_t STAGE_TOP    = 62;
 constexpr int16_t STAGE_BOTTOM = 304;
 constexpr int16_t PET_MIN_X    = 80;
 constexpr int16_t PET_MAX_X    = 288;
-constexpr int16_t PET_BASE_Y   = 296;
-constexpr ui::Rect PILL_RECT{ 96, 308, 176, 28 };
+constexpr int16_t PET_BASE_Y   = 298;
+constexpr ui::Rect PILL_RECT{ 86, 308, 196, 28 };
 
 float    s_petX             = 184.0f;
 float    s_targetX          = 184.0f;
@@ -39,11 +39,11 @@ uint32_t s_squashStartMs    = 0;
 bool     s_squashActive     = false;
 bool     s_pendingSquashTap = false;
 
-char     s_bubbleBuf[48]    = "";
+char     s_bubbleBuf[64]    = "";
 uint32_t s_bubbleUntilMs    = 0;
 uint32_t s_pendingBubbleMs  = 0;
 
-int16_t s_prevX0 = 94, s_prevY0 = 110, s_prevX1 = 274, s_prevY1 = 304;
+int16_t s_prevX0 = 72, s_prevY0 = 62, s_prevX1 = 296, s_prevY1 = 304;
 bool    s_hasPrevBox = false;
 
 const char* const kPetQuotes[] = {
@@ -52,12 +52,29 @@ const char* const kPetQuotes[] = {
   "今天也要加油!",
   "收到指令啦",
 };
+const char* const kWakeQuotes[] = {
+  "唔...醒啦，主人好!",
+  "睡饱啦，随时待命!",
+};
 uint8_t s_quoteIdx = 0;
+
+void copyUtf8Safe(char* dst, size_t cap, const char* src) {
+  if (!dst || cap == 0) return;
+  dst[0] = '\0';
+  if (!src || !src[0]) return;
+  size_t i = 0;
+  while (src[i]) {
+    size_t nx = ui::nextUtf8Boundary(src, i);
+    if (nx >= cap) break;
+    i = nx;
+  }
+  memcpy(dst, src, i);
+  dst[i] = '\0';
+}
 
 void setBubble(const char* txt, uint32_t durMs, uint32_t nowMs = 0) {
   if (!txt || !txt[0]) return;
-  strncpy(s_bubbleBuf, txt, sizeof(s_bubbleBuf) - 1);
-  s_bubbleBuf[sizeof(s_bubbleBuf) - 1] = '\0';
+  copyUtf8Safe(s_bubbleBuf, sizeof(s_bubbleBuf), txt);
   if (nowMs > 0) {
     s_bubbleUntilMs = nowMs + durMs;
     s_pendingBubbleMs = 0;
@@ -97,11 +114,12 @@ bool spriteAllowsMirror(NvaAnimKey k) {
 }
 
 void drawSpark(NovaCanvas& c, int16_t x, int16_t y, uint16_t col, int16_t size) {
-  c.drawLine(x - size, y, x + size, y, col);
-  c.drawLine(x, y - size, x, y + size, col);
+  ui::aaFillCircle(c, x, y, (size >= 3) ? 2 : 1, col);
+  c.drawLine(x - size - 1, y, x + size + 1, y, col);
+  c.drawLine(x, y - size - 1, x, y + size + 1, col);
 }
 
-void updateRoam(const NovaState& st, uint32_t frame) {
+void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
   if (frame == s_lastStepFrame) return;
   s_lastStepFrame = frame;
 
@@ -126,7 +144,6 @@ void updateRoam(const NovaState& st, uint32_t frame) {
     if (s_walkLeadUntilMs == 0 || (int32_t)(st.nowMs - s_walkLeadUntilMs) >= 0) {
       float maxSpeedPxPerSec = s_runSpeed ? 92.0f : 38.0f;
       if (adiff < 16.0f) {
-        // Gentle ease-out deceleration on approach (inspired by dsh-pet walk tail settle).
         float factor = adiff / 16.0f;
         if (factor < 0.35f) factor = 0.35f;
         maxSpeedPxPerSec *= factor;
@@ -155,9 +172,8 @@ void updateRoam(const NovaState& st, uint32_t frame) {
     s_choreoStepEnd = 0;
   }
 
-  // Execute LLM choreography script when in autonomous idle/patrol mode.
-  // Never advance to the next step mid-animation: require arrival + min duration + >=1 full clip cycle.
-  if (st.nChoreoSteps > 0 && s_demoAnim < 0 && st.run == 0 && st.wait == 0 &&
+  // Execute LLM choreography script when enabled and in autonomous idle/patrol mode.
+  if (cfg.choreoEnabled && st.nChoreoSteps > 0 && s_demoAnim < 0 && st.run == 0 && st.wait == 0 &&
       !st.approvalActive && !s_userTargetLock) {
     if (!s_choreoStepInit) {
       if (s_choreoIdx >= st.nChoreoSteps) s_choreoIdx = 0;
@@ -198,7 +214,7 @@ void updateRoam(const NovaState& st, uint32_t frame) {
   s_choreoAnim = -1;
   s_choreoStepInit = false;
 
-  // Built-in local fallback patrol when no LLM script is active (millisecond-based, not frame-based).
+  // Built-in local fallback patrol when no LLM script is active.
   if (s_petX == s_targetX && (int32_t)(st.nowMs - s_nextRoamMs) >= 0 && st.wait == 0 && !st.approvalActive) {
     if (s_demoAnim == (int)NvaAnimKey::SLEEP) {
       s_nextRoamMs = st.nowMs + 12000u;
@@ -213,9 +229,9 @@ void updateRoam(const NovaState& st, uint32_t frame) {
   }
 }
 
-void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
+void drawStageContent(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame,
                       int16_t* outDx, int16_t* outDy, int16_t* outDw, int16_t* outDh) {
-  updateRoam(st, frame);
+  updateRoam(st, cfg, frame);
 
   const int16_t ox = ui::burnOffsetX(st.burnInStep);
   const int16_t oy = ui::burnOffsetY(st.burnInStep);
@@ -226,9 +242,13 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
   int16_t hop = walking ? (int16_t)(fabsf(sinf(frame * 0.28f)) * 5.0f) : 0;
   const int16_t bottomY = PET_BASE_Y + oy - hop;
 
-  int16_t curX0 = cx - 100;
-  int16_t curX1 = cx + 100;
-  int16_t curY0 = bottomY - 196;
+  const int16_t sprW = nvaFrameWidth();
+  const int16_t sprH = nvaFrameHeight();
+  int16_t halfW = (sprW / 2) + 12;
+  if (halfW < 84) halfW = 84;
+  int16_t curX0 = cx - halfW;
+  int16_t curX1 = cx + halfW;
+  int16_t curY0 = bottomY - sprH - 12;
   int16_t curY1 = PET_BASE_Y + 6;
 
   bool showBubble = (s_bubbleBuf[0] && s_bubbleUntilMs != 0 && (int32_t)(s_bubbleUntilMs - st.nowMs) > 0);
@@ -237,10 +257,23 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
     s_bubbleUntilMs = 0;
   }
 
+  int16_t bx = 12, by = STAGE_TOP + 6, bw = 120;
   if (showBubble) {
-    curX0 = (cx - 104 < curX0) ? (cx - 104) : curX0;
-    curX1 = (cx + 104 > curX1) ? (cx + 104) : curX1;
-    curY0 = STAGE_TOP;
+    ui::TextMetrics bm = ui::measureText(c, ui::fontCjk14(), s_bubbleBuf);
+    bw = (int16_t)bm.w + 26;
+    if (bw > UI_W - 24) bw = UI_W - 24;
+    bx = cx - bw / 2;
+    if (bx < 12) bx = 12;
+    if (bx + bw > UI_W - 12) bx = UI_W - 12 - bw;
+
+    int16_t sprH = nvaFrameHeight();
+    by = bottomY - sprH - 36;
+    if (by < STAGE_TOP + 4) by = STAGE_TOP + 4;
+    if (by > STAGE_BOTTOM - 34) by = STAGE_BOTTOM - 34;
+
+    if (bx - 2 < curX0) curX0 = bx - 2;
+    if (bx + bw + 2 > curX1) curX1 = bx + bw + 2;
+    if (by - 2 < curY0) curY0 = by - 2;
   }
 
   if (curX0 < 0) curX0 = 0;
@@ -264,8 +297,8 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
 
   for (int i = 0; i < 3; i++) {
     float a = t * (busy ? 1.25f : 0.65f) + i * 2.0944f;
-    int16_t px = cx + (int16_t)(cosf(a) * 62.0f);
-    int16_t py = (bottomY - 82) + (int16_t)(sinf(a * 1.15f) * 34.0f);
+    int16_t px = cx + (int16_t)(cosf(a) * 76.0f);
+    int16_t py = (bottomY - 88) + (int16_t)(sinf(a * 1.15f) * 38.0f);
     if (px >= 4 && px < UI_W - 4 && py >= STAGE_TOP + 4 && py < STAGE_BOTTOM - 4) {
       ui::aaFillCircle(c, px, py, (i & 1) ? 2 : 3, (i & 1) ? ui::COL_MINT : ui::COL_ACCENT);
     }
@@ -275,9 +308,9 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
     float prog = 1.0f - (float)s_sparkFrames / 24.0f;
     for (int i = 0; i < 6; i++) {
       float a = prog * 0.7f + i * 1.0472f;
-      int d = 36 + (int)(prog * 36.0f);
+      int d = 44 + (int)(prog * 38.0f);
       int16_t sx = cx + (int16_t)(cosf(a) * d);
-      int16_t sy = (bottomY - 82) + (int16_t)(sinf(a) * d);
+      int16_t sy = (bottomY - 92) + (int16_t)(sinf(a) * d) - (int16_t)(prog * 12.0f);
       if (sx > 6 && sx < UI_W - 6 && sy > STAGE_TOP + 6 && sy < STAGE_BOTTOM - 6) {
         drawSpark(c, sx, sy, (i & 1) ? ui::COL_MINT : ui::COL_GOLD, (s_sparkFrames > 12) ? 3 : 2);
       }
@@ -288,18 +321,11 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
   bool flipX = s_facingRight && spriteAllowsMirror(nvaActiveState());
   float squashY = calcSquashScaleY(st.nowMs);
   if (!nvaDraw(c, cx, bottomY, flipX, squashY)) {
-    ui::aaFillCircle(c, cx, bottomY - 70, 34, auraCol);
-    ui::aaFillCircle(c, cx - 10, bottomY - 80, 9, rgb565(224, 246, 255));
+    ui::aaFillCircle(c, cx, bottomY - 76, 36, auraCol);
+    ui::aaFillCircle(c, cx - 10, bottomY - 86, 9, rgb565(224, 246, 255));
   }
 
   if (showBubble) {
-    ui::TextMetrics bm = ui::measureText(c, ui::fontCjk14(), s_bubbleBuf);
-    int16_t bw = (int16_t)bm.w + 24;
-    if (bw > UI_W - 24) bw = UI_W - 24;
-    int16_t bx = cx - bw / 2;
-    if (bx < 12) bx = 12;
-    if (bx + bw > UI_W - 12) bx = UI_W - 12 - bw;
-    int16_t by = STAGE_TOP + 6;
     ui::aaFillRoundRect(c, bx, by, bw, 28, 14, ui::COL_CARD_HI, ui::COL_ACCENT);
     ui::drawTextCenteredInRect(c, ui::fontCjk14(), { bx, by, bw, 28 }, s_bubbleBuf, ui::COL_TEXT, ui::COL_CARD_HI);
   }
@@ -310,12 +336,12 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
   if (outDh) *outDh = uY1 - uY0;
 }
 
-void drawStatusPill(NovaCanvas& c, const NovaState& st) {
+void drawStatusPill(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg) {
   const int16_t ox = ui::burnOffsetX(st.burnInStep);
   const int16_t oy = ui::burnOffsetY(st.burnInStep);
 
   uint16_t dotCol = ui::COL_ACCENT;
-  const char* stateTag = "待机陪伴中";
+  char tagBuf[48] = "待机陪伴中";
   if (s_demoAnim >= 0) {
     static constexpr const char* kDemoTags[9] = {
       "展示: 待机", "展示: 思考", "展示: 编码",
@@ -323,22 +349,34 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st) {
       "展示: 互动", "展示: 打盹", "展示: 舞动",
     };
     dotCol = ui::COL_VIOLET;
-    stateTag = kDemoTags[s_demoAnim % 9];
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), kDemoTags[s_demoAnim % 9]);
   } else if (st.wait > 0) {
     dotCol = ui::COL_AMBER;
-    stateTag = "等待确认";
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), "等待确认");
   } else if (st.run > 0) {
     dotCol = ui::COL_MINT;
-    stateTag = "思考执行中";
-  } else if (st.nChoreoSteps > 0 && st.choreoMood[0]) {
+    if (st.activeModel[0]) {
+      char raw[48];
+      snprintf(raw, sizeof(raw), "执行 · %s", st.activeModel);
+      ui::fitUtf8Line(c, ui::fontCjk14(), raw, 224, tagBuf, sizeof(tagBuf));
+    } else {
+      copyUtf8Safe(tagBuf, sizeof(tagBuf), "思考执行中");
+    }
+  } else if (st.turnError) {
+    dotCol = ui::COL_RED;
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), "上轮执行异常");
+  } else if (nvaActiveState() == NvaAnimKey::SLEEP) {
+    dotCol = ui::COL_VIOLET;
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), "打盹小憩中");
+  } else if (cfg.choreoEnabled && st.nChoreoSteps > 0 && st.choreoMood[0]) {
     dotCol = ui::COL_ACCENT;
-    stateTag = st.choreoMood;
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), st.choreoMood);
   } else if (!st.wifiConnected || !st.mqttConnected) {
     dotCol = ui::COL_ACCENT;
-    stateTag = "本地陪伴中";
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), "本地陪伴中");
   }
 
-  ui::TextMetrics tm = ui::measureText(c, ui::fontCjk14(), stateTag);
+  ui::TextMetrics tm = ui::measureText(c, ui::fontCjk14(), tagBuf);
   int16_t pw = (int16_t)tm.w + 34;
   if (pw > 280) pw = 280;
   int16_t px = (int16_t)((UI_W - pw) / 2 + ox);
@@ -346,13 +384,17 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st) {
   ui::drawCard(c, px, py, pw, 28, ui::COL_CARD, ui::COL_BORDER, 14);
   ui::aaFillCircle(c, px + 12, py + 14, 3, dotCol);
   ui::drawTextCenteredInRect(c, ui::fontCjk14(), { (int16_t)(px + 18), py, (int16_t)(pw - 22), 28 },
-                             stateTag, ui::COL_DIM, ui::COL_CARD);
+                             tagBuf, ui::COL_DIM, ui::COL_CARD);
 }
 
 }  // namespace
 
 int pageHomeDemoOverride() {
   return s_demoAnim;
+}
+
+void pageHomeSetDemoOverride(int idx) {
+  s_demoAnim = (idx >= 0 && idx <= 8) ? idx : -1;
 }
 
 int pageHomeChoreoAnim() {
@@ -369,12 +411,12 @@ void pageHomeTriggerSquash(uint32_t nowMs) {
   s_squashActive = true;
 }
 
-void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, uint32_t frame,
+void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame,
                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH) {
-  drawStageContent(c, st, frame, outX, outY, outW, outH);
+  drawStageContent(c, st, cfg, frame, outX, outY, outW, outH);
 }
 
-void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame) {
+void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
   c.fillScreen(ui::COL_BG);
   ui::drawTopBar(c, st, 0);
 
@@ -387,15 +429,18 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame) {
     ui::drawText(c, ui::fontCjk14(), 44, 158, step1, ui::COL_TEXT, ui::COL_CARD);
     ui::drawText(c, ui::fontCjk14(), 44, 188, "2. 浏览器访问: http://192.168.4.1", ui::COL_TEXT, ui::COL_CARD);
     ui::drawText(c, ui::fontCjk14(), 44, 218, "3. 填写 WiFi 密码与 MQTT Broker", ui::COL_TEXT, ui::COL_CARD);
-    ui::drawText(c, ui::fontCjk14(), 44, 256, "默认 Broker: 192.168.31.15:1883", ui::COL_DIM, ui::COL_CARD);
+
+    char brokerHint[64];
+    snprintf(brokerHint, sizeof(brokerHint), "当前 Broker: %s:%u", cfg.brokerHost, (unsigned)cfg.brokerPort);
+    ui::drawText(c, ui::fontCjk14(), 44, 256, brokerHint, ui::COL_DIM, ui::COL_CARD);
 
     ui::drawButton(c, BTN_CANCEL_PORTAL, "暂不配网", false, ui::COL_AMBER);
     return;
   }
 
   s_hasPrevBox = false;
-  drawStageContent(c, st, frame, nullptr, nullptr, nullptr, nullptr);
-  drawStatusPill(c, st);
+  drawStageContent(c, st, cfg, frame, nullptr, nullptr, nullptr, nullptr);
+  drawStatusPill(c, st, cfg);
 
   const int16_t ox = ui::burnOffsetX(st.burnInStep);
   const int16_t oy = ui::burnOffsetY(st.burnInStep);
@@ -403,7 +448,8 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame) {
   const int16_t dockY = (int16_t)(348 + oy);
   const int16_t dockW = 328;
   const int16_t dockH = 80;
-  ui::drawCard(c, dockX, dockY, dockW, dockH, ui::COL_CARD, ui::COL_BORDER, 18);
+  uint16_t dockBd = st.turnError ? ui::COL_RED : (st.wait > 0 ? ui::COL_AMBER : ui::COL_BORDER);
+  ui::drawCard(c, dockX, dockY, dockW, dockH, ui::COL_CARD, dockBd, 18);
 
   const bool hostLinked = (st.wifiConnected && st.mqttConnected && st.lastMqttRxMs > 0);
   if (hostLinked) {
@@ -423,15 +469,25 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame) {
       ui::drawTextCenteredInRect(c, ui::fontAscii14(), { px, py, pw, 24 }, ctxBuf, ctxCol, rgb565(18, 30, 48));
     }
 
-    char metaLine[96];
-    if (st.activeModel[0]) {
+    char metaLine[112];
+    uint16_t metaCol = ui::COL_DIM;
+    if (st.turnError) {
+      const char* errTxt = st.msg[0] ? st.msg : "本轮异常结束，请检查主机";
+      ui::fitUtf8Line(c, ui::fontCjk14(), errTxt, dockW - 32, metaLine, sizeof(metaLine));
+      metaCol = ui::COL_RED;
+    } else if ((st.run > 0 || st.wait > 0) && st.msg[0]) {
+      ui::fitUtf8Line(c, ui::fontCjk14(), st.msg, dockW - 32, metaLine, sizeof(metaLine));
+      metaCol = (st.wait > 0) ? ui::COL_AMBER : ui::COL_ACCENT;
+    } else if (st.activeModel[0]) {
       char raw[80];
       snprintf(raw, sizeof(raw), "当前模型 · %s", st.activeModel);
       ui::fitUtf8Line(c, ui::fontCjk14(), raw, dockW - 32, metaLine, sizeof(metaLine));
+    } else if (st.msg[0] && strcmp(st.msg, "待命中") != 0) {
+      ui::fitUtf8Line(c, ui::fontCjk14(), st.msg, dockW - 32, metaLine, sizeof(metaLine));
     } else {
       snprintf(metaLine, sizeof(metaLine), "轻触舞台逗诺瓦跑动 · 左右划切页");
     }
-    ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 62, metaLine, ui::COL_DIM, ui::COL_CARD);
+    ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 62, metaLine, metaCol, ui::COL_CARD);
   } else {
     ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 30, "离线陪伴模式 · 本地交互就绪", ui::COL_TEXT, ui::COL_CARD);
     ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 62, "点空白处让诺瓦跑过去 · 点胶囊换动作", ui::COL_DIM, ui::COL_CARD);
@@ -456,10 +512,14 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     int16_t curX = (int16_t)(s_petX + 0.5f);
     int16_t dx = x - curX;
     if (dx < 0) dx = -dx;
-    if (dx <= 62 && y >= 112) {
+    if (dx <= 68 && y >= 104) {
       s_sparkFrames = 24;
       s_pendingSquashTap = true;
-      setBubble(kPetQuotes[s_quoteIdx % 4], 6500u, st.nowMs);
+      if (nvaActiveState() == NvaAnimKey::SLEEP) {
+        setBubble(kWakeQuotes[s_quoteIdx % 2], 5500u, st.nowMs);
+      } else {
+        setBubble(kPetQuotes[s_quoteIdx % 4], 6500u, st.nowMs);
+      }
       s_quoteIdx++;
       return UiAction{ UiAction::PET_TAP, 0 };
     }

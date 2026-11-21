@@ -290,35 +290,29 @@ void hwDisplayPushRect(int16_t x, int16_t y, int16_t w, int16_t h) {
     s_gfx->draw16bitRGBBitmap(BOARD_DISPLAY_OFFSET_X, y0 + BOARD_DISPLAY_OFFSET_Y,
                               src + (int32_t)y0 * HW_W, HW_W, rh);
   } else {
-    const size_t needBytes = (size_t)rw * rh * sizeof(uint16_t);
-    static uint16_t* s_fastRectBuf = nullptr;   // 64 KB internal RAM for character-sized rects
-    static uint16_t* s_psramRectBuf = nullptr;  // fallback for tall narrow rects
-    uint16_t* dst = nullptr;
-    if (needBytes <= 65536) {
-      if (!s_fastRectBuf) {
-        s_fastRectBuf = (uint16_t*)heap_caps_malloc(65536, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-      }
-      dst = s_fastRectBuf;
+    static uint16_t* s_fastRectBuf = nullptr;   // 64 KB internal DMA-capable SRAM strip buffer
+    if (!s_fastRectBuf) {
+      s_fastRectBuf = (uint16_t*)heap_caps_malloc(65536, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
-    if (!dst) {
-      if (!s_psramRectBuf) {
-        s_psramRectBuf = (uint16_t*)heap_caps_malloc(
-            (size_t)HW_W * HW_H * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_fastRectBuf) {
+      int16_t stripRows = (int16_t)(65536 / ((size_t)rw * sizeof(uint16_t))) & ~1;
+      if (stripRows < 2) stripRows = 2;
+      for (int16_t sy = 0; sy < rh; sy += stripRows) {
+        int16_t sh = rh - sy;
+        if (sh > stripRows) sh = stripRows;
+        if ((sh & 1) && (sy + sh < rh)) sh--;
+        for (int16_t row = 0; row < sh; row++) {
+          memcpy(s_fastRectBuf + (int32_t)row * rw,
+                 src + (int32_t)(y0 + sy + row) * HW_W + x0,
+                 (size_t)rw * sizeof(uint16_t));
+        }
+        s_gfx->draw16bitRGBBitmap(x0 + BOARD_DISPLAY_OFFSET_X, y0 + sy + BOARD_DISPLAY_OFFSET_Y,
+                                  s_fastRectBuf, rw, sh);
       }
-      dst = s_psramRectBuf;
-    }
-    if (!dst) {
+    } else {
       s_gfx->draw16bitRGBBitmap(BOARD_DISPLAY_OFFSET_X, y0 + BOARD_DISPLAY_OFFSET_Y,
                                 src + (int32_t)y0 * HW_W, HW_W, rh);
-      return;
     }
-    for (int16_t row = 0; row < rh; row++) {
-      memcpy(dst + (int32_t)row * rw,
-             src + (int32_t)(y0 + row) * HW_W + x0,
-             (size_t)rw * sizeof(uint16_t));
-    }
-    s_gfx->draw16bitRGBBitmap(x0 + BOARD_DISPLAY_OFFSET_X, y0 + BOARD_DISPLAY_OFFSET_Y,
-                              dst, rw, rh);
   }
 
   if (s_borderAlertOn) {

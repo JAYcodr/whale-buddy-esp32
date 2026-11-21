@@ -1,20 +1,94 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { createNovaBridge } from '../lib/bridge.js';
 import { extractJsonObject, isQuietHours, normalizeChoreo } from '../lib/ai.js';
 import { wavToNvAdpcm } from '../lib/adpcm.js';
 
-describe('Nova Bridge session aggregation', () => {
-  it('tracks active running/waiting sessions and context pct', () => {
+function createMockMqttClient() {
+  const emitter = new EventEmitter();
+  const published = [];
+  return Object.assign(emitter, {
+    connected: true,
+    subscribed: [],
+    published,
+    subscribe(topics) {
+      this.subscribed.push(topics);
+    },
+    publish(topic, payload, opts) {
+      published.push({ topic, payload: JSON.parse(payload), opts });
+    },
+    end() {
+      this.connected = false;
+    },
+  });
+}
+
+describe('Nova Bridge session aggregation & device prefs', () => {
+  it('prioritizes waiting and running sessions over idle sessions and propagates turn errors', () => {
     const bridge = createNovaBridge({ brokerUrl: 'mqtt://127.0.0.1:1883' });
     bridge.onSessionEvent({ id: 's1', model: 'deepseek-v4' }, { type: 'turn/start', data: {} });
     bridge.onSessionEvent({ id: 's1' }, { type: 'tool/call', data: { toolName: 'Bash', command: 'pio run' } });
     bridge.onSessionEvent({ id: 's1' }, { type: 'context/usage', data: { percent: 42 } });
-    bridge.onSessionEvent({ id: 's2' }, { type: 'approval/asked', data: { toolName: 'Write' } });
 
-    bridge.onSessionDisposed({ id: 's2' });
+    // An idle session updates later, should NOT shadow active s1 tool message
+    bridge.onSessionEvent({ id: 's_idle', model: 'glm-5' }, { type: 'turn/end', data: { reason: 'completed' } });
+    let st = bridge.buildStatePayload();
+    assert.equal(st.run, 1);
+    assert.equal(st.sess, 2);
+    assert.equal(st.msg, 'Bash: pio run');
+    assert.equal(st.model, 'deepseek-v4');
+
+    // Tool result updates message cleanly
+    bridge.onSessionEvent({ id: 's1' }, { type: 'tool/result', data: {} });
+    st = bridge.buildStatePayload();
+    assert.equal(st.msg, '整理 Bash 结果...');
+
+    // Error turn end sets err=true
+    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/end', data: { reason: 'error' } });
+    st = bridge.buildStatePayload();
+    assert.equal(st.run, 0);
+    assert.equal(st.err, true);
+    assert.equal(st.msg, '本轮异常结束');
+
+    bridge.onSessionDisposed({ id: 's_idle' });
     bridge.stop();
-    assert.ok(true);
+  });
+
+  it('respects device prefs (muted/tts disabled skips TTS, quiet=false overrides quietHours)', async () => {
+    const mockClient = createMockMqttClient();
+    const synthCalls = [];
+    const bridge = createNovaBridge({
+      mqttConnect: () => mockClient,
+      fetchAllQuota: async () => ({ t: 'quota', cards: [] }),
+      fetchModelDialRank: async () => null,
+      synthesizeSpeech: async (text, opts) => {
+        synthCalls.push({ text, opts });
+        return Buffer.alloc(64, 1);
+      },
+    });
+    bridge.start();
+
+    // Device online with TTS muted (snd: 0) -> should skip TTS API entirely
+    mockClient.emit(
+      'message',
+      'nova/D93468/hello',
+      Buffer.from(JSON.stringify({ online: true, prefs: { snd: 0, tts: true, quiet: true, choreo: true } })),
+    );
+    assert.equal(await bridge.publishTts('静音测试', { force: true }), false);
+    assert.equal(synthCalls.length, 0);
+
+    // Device updates prefs: snd=75, tts=true, quiet=false -> TTS runs with ignoreQuiet=true
+    mockClient.emit(
+      'message',
+      'nova/D93468/up',
+      Buffer.from(JSON.stringify({ evt: 'prefs', snd: 75, tts: true, quiet: false, choreo: true })),
+    );
+    assert.equal(await bridge.publishTts('晚上好呀', { force: true }), true);
+    assert.equal(synthCalls.length, 1);
+    assert.equal(synthCalls[0].opts.ignoreQuiet, true);
+    assert.ok(mockClient.published.some((p) => p.topic === 'nova/D93468/tts'));
+    bridge.stop();
   });
 
   it('falls back immediately to next() when no device is online', async () => {

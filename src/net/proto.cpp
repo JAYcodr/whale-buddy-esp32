@@ -7,7 +7,6 @@
 #ifndef NOVA_HOST_SIM
 #include "hw/audio.h"
 #include "hw/bus.h"
-#include "model/settings.h"
 #include <esp_heap_caps.h>
 #include <mbedtls/base64.h>
 #endif
@@ -17,8 +16,23 @@ namespace {
 void safeStrCopy(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
   if (!src) { dst[0] = '\0'; return; }
-  strncpy(dst, src, cap - 1);
-  dst[cap - 1] = '\0';
+  size_t i = 0;
+  while (src[i]) {
+    uint8_t b = (uint8_t)src[i];
+    size_t len = 1;
+    if ((b & 0xE0) == 0xC0) len = 2;
+    else if ((b & 0xF0) == 0xE0) len = 3;
+    else if ((b & 0xF8) == 0xF0) len = 4;
+    if (i + len >= cap) break;
+    bool valid = true;
+    for (size_t k = 1; k < len; k++) {
+      if (((uint8_t)src[i + k] & 0xC0) != 0x80) { valid = false; break; }
+    }
+    if (!valid) break;
+    i += len;
+  }
+  memcpy(dst, src, i);
+  dst[i] = '\0';
 }
 
 bool applyTime(JsonDocument& doc) {
@@ -51,6 +65,11 @@ bool applyState(JsonDocument& doc, uint32_t nowMs) {
     st.wait = doc["wait"] | (uint16_t)0;
     st.sess = doc["sess"] | (uint16_t)0;
     safeStrCopy(st.msg, sizeof(st.msg), doc["msg"] | "");
+    bool hasErr = doc["err"] | false;
+    if (!hasErr && st.msg[0] && strstr(st.msg, "异常") != nullptr) {
+      hasErr = true;
+    }
+    st.turnError = hasErr && (st.run == 0);
     if (!doc["ctx"]["pct"].isNull()) {
       st.ctxPct = (int8_t)(doc["ctx"]["pct"] | 0);
     } else {
@@ -192,9 +211,9 @@ bool applyChoreo(JsonDocument& doc, uint32_t nowMs) {
       const char* spd = obj["speed"] | "walk";
       step.run = (strcmp(spd, "run") == 0);
       step.anim = animNameToIdx(obj["anim"] | "idle");
-      uint32_t dur = obj["dur"] | 4000;
+      uint32_t dur = obj["dur"] | 11000;
       if (dur < 1500) dur = 1500;
-      if (dur > 15000) dur = 15000;
+      if (dur > 30000) dur = 30000;
       step.durMs = (uint16_t)dur;
       safeStrCopy(step.say, sizeof(step.say), obj["say"] | "");
       n++;
@@ -255,10 +274,10 @@ bool applyTtsChunk(JsonDocument& doc) {
 
     static NovaState snap;
     novaStateRead(&snap);
-    uint8_t vol = settingsGet().soundPct;
-    bool quiet = snap.timeValid && (snap.hour >= 23 || snap.hour < 8);
-    if (vol > 0 && !quiet) {
-      hwPlayAdpcmOwned(owned, len, vol);
+    const NovaSettings& cfg = settingsGet();
+    bool quiet = cfg.quietHours && snap.timeValid && (snap.hour >= 23 || snap.hour < 8);
+    if (cfg.ttsEnabled && cfg.soundPct > 0 && !quiet) {
+      hwPlayAdpcmOwned(owned, len, cfg.soundPct);
     } else {
       free(owned);
     }
@@ -289,7 +308,7 @@ bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint
   return false;
 }
 
-size_t protoBuildHello(char* buf, size_t cap, const NovaState& st, bool online) {
+size_t protoBuildHello(char* buf, size_t cap, const NovaState& st, const NovaSettings& cfg, bool online) {
   JsonDocument doc;
   doc["online"] = online;
   if (online) {
@@ -300,6 +319,12 @@ size_t protoBuildHello(char* buf, size_t cap, const NovaState& st, bool online) 
     h["h"]   = 448;
     h["fps"] = 60;
     h["ip"]  = st.ip;
+
+    JsonObject p = doc["prefs"].to<JsonObject>();
+    p["snd"]    = cfg.soundPct;
+    p["tts"]    = cfg.ttsEnabled;
+    p["quiet"]  = cfg.quietHours;
+    p["choreo"] = cfg.choreoEnabled;
   }
   return serializeJson(doc, buf, cap);
 }
@@ -324,5 +349,15 @@ size_t protoBuildStat(char* buf, size_t cap, const NovaState& st) {
   doc["heap"] = st.freeHeap;
   doc["rssi"] = st.rssi;
   doc["mv"]   = st.battMv;
+  return serializeJson(doc, buf, cap);
+}
+
+size_t protoBuildPrefs(char* buf, size_t cap, const NovaSettings& cfg) {
+  JsonDocument doc;
+  doc["evt"]    = "prefs";
+  doc["snd"]    = cfg.soundPct;
+  doc["tts"]    = cfg.ttsEnabled;
+  doc["quiet"]  = cfg.quietHours;
+  doc["choreo"] = cfg.choreoEnabled;
   return serializeJson(doc, buf, cap);
 }

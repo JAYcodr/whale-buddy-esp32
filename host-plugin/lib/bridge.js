@@ -10,9 +10,13 @@ export function createNovaBridge(options = {}) {
   const deviceApproval = options.deviceApproval || 'prefer'; // 'prefer' | 'mirror' | 'off'
   const log = options.log || (() => {});
   const aiCfg = loadAiConfig(options);
+  const ttsSynth = options.synthesizeSpeech || synthesizeSpeechAdpcm;
+  const quotaFetcher = options.fetchAllQuota || fetchAllQuota;
+  const rankFetcher = options.fetchModelDialRank || fetchModelDialRank;
+  const mqttConnectFn = options.mqttConnect || ((url, opts) => mqtt.connect(url, opts));
 
-  const devices = new Map(); // id -> { online, lastSeen }
-  const sessions = new Map(); // sessionId -> { running, waiting, msg, ctxPct, model, updatedAt }
+  const devices = new Map(); // id -> { online, lastSeen, meta, prefs, stat }
+  const sessions = new Map(); // sessionId -> { running, waiting, error, lastTool, msg, ctxPct, model, updatedAt }
   const pendingApprovals = new Map(); // apId -> { resolve, deviceIds, timer }
 
   let client = null;
@@ -25,6 +29,7 @@ export function createNovaBridge(options = {}) {
   let lastStateSentAt = 0;
   let lastChoreoAt = 0;
   let lastTtsAt = 0;
+  let lastSyncQuotaAt = 0;
   let ttsSeqId = 1;
   let stateTimer = null;
   let quotaTimer = null;
@@ -41,6 +46,21 @@ export function createNovaBridge(options = {}) {
     return out;
   }
 
+  function ttsTargetIds() {
+    const out = [];
+    for (const [id, info] of devices.entries()) {
+      if (!info.online) continue;
+      const p = info.prefs;
+      if (p && (p.tts === false || p.snd === 0)) continue;
+      out.push(id);
+    }
+    return out;
+  }
+
+  function anyQuietOverride(ids) {
+    return ids.some((id) => devices.get(id)?.prefs?.quiet === false);
+  }
+
   function publishTo(id, suffix, obj, { qos = 1, retain = false } = {}) {
     if (!client?.connected) return;
     client.publish(`nova/${id}/${suffix}`, JSON.stringify(obj), { qos, retain });
@@ -55,27 +75,43 @@ export function createNovaBridge(options = {}) {
   function buildStatePayload() {
     let run = 0;
     let wait = 0;
-    let latestMsg = '';
-    let latestAt = 0;
-    let ctxPct;
-    let model = '';
+    let chosen = null;
+    let bestPrio = -1;
+    let latestModel = '';
+    let latestModelAt = -1;
+    let latestCtxPct;
+    let latestCtxAt = -1;
+
     for (const s of sessions.values()) {
       if (s.running) run++;
       if (s.waiting) wait++;
-      if (s.updatedAt >= latestAt) {
-        latestAt = s.updatedAt;
-        latestMsg = s.msg || latestMsg;
-        if (s.ctxPct != null) ctxPct = s.ctxPct;
-        if (s.model) model = s.model;
+      const prio = s.waiting ? 3 : (s.running ? 2 : (s.error ? 1 : 0));
+      if (!chosen || prio > bestPrio || (prio === bestPrio && s.updatedAt >= chosen.updatedAt)) {
+        chosen = s;
+        bestPrio = prio;
+      }
+      if (s.model && s.updatedAt >= latestModelAt) {
+        latestModel = s.model;
+        latestModelAt = s.updatedAt;
+      }
+      if (s.ctxPct != null && s.updatedAt >= latestCtxAt) {
+        latestCtxPct = s.ctxPct;
+        latestCtxAt = s.updatedAt;
       }
     }
+
+    const latestMsg = chosen?.msg || (run > 0 ? '正在处理...' : '待命中');
+    const model = chosen?.model || latestModel;
+    const ctxPct = chosen?.ctxPct != null ? chosen.ctxPct : latestCtxPct;
+
     const payload = {
       t: 'state',
       run,
       wait,
       sess: sessions.size,
-      msg: latestMsg || (run > 0 ? '正在处理...' : '待命中'),
+      msg: latestMsg,
     };
+    if (run === 0 && chosen?.error) payload.err = true;
     if (ctxPct != null) payload.ctx = { pct: Math.max(0, Math.min(100, Math.round(ctxPct))) };
     if (model) payload.model = model;
     return payload;
@@ -107,12 +143,12 @@ export function createNovaBridge(options = {}) {
   }
 
   async function refreshQuota() {
-    quotaPayload = await fetchAllQuota(options.credentials);
+    quotaPayload = await quotaFetcher(options.credentials);
     publishAll('quota', quotaPayload, { qos: 1, retain: true });
   }
 
   async function refreshRank(force = false) {
-    const r = await fetchModelDialRank(force);
+    const r = await rankFetcher(force);
     if (r) {
       rankPayload = r;
       publishAll('rank', rankPayload, { qos: 1, retain: true });
@@ -128,7 +164,8 @@ export function createNovaBridge(options = {}) {
     const ocCard = cards.find((c) => c.id === 'oc');
     const ocPct = ocCard?.bars?.[0]?.pct;
     const ocInfo = ocPct != null ? `，OpenCode本周已用${ocPct}%` : '';
-    return `触发=${reason}，DSH运行=${st.run}，等待=${st.wait}，会话=${st.sess}，${ds}${ocInfo}`;
+    const modInfo = st.model ? `，模型=${st.model}` : '';
+    return `触发=${reason}，DSH运行=${st.run}，等待=${st.wait}，会话=${st.sess}${modInfo}，${ds}${ocInfo}`;
   }
 
   async function refreshChoreo(reason = 'timer', minCooldownMs = 0) {
@@ -149,18 +186,30 @@ export function createNovaBridge(options = {}) {
   async function publishTts(text, opts = {}) {
     const now = Date.now();
     if (!opts.force && now - lastTtsAt < 4000) return false;
-    if (onlineIds().length === 0 || !client?.connected) return false;
-    lastTtsAt = now;
+    const targets = ttsTargetIds();
+    if (targets.length === 0 || !client?.connected) return false;
+    const synthOpts = {
+      ...opts,
+      ignoreQuiet: Boolean(opts.ignoreQuiet || anyQuietOverride(targets)),
+    };
     try {
-      const adp = await synthesizeSpeechAdpcm(text, opts, aiCfg);
+      const adp = await ttsSynth(text, synthOpts, aiCfg);
       if (!adp || adp.length <= 16) return false;
+      lastTtsAt = Date.now();
       const clipId = ttsSeqId++;
       const total = Math.ceil(adp.length / TTS_CHUNK_BYTES);
-      for (let seq = 0; seq < total; seq++) {
-        const slice = adp.subarray(seq * TTS_CHUNK_BYTES, (seq + 1) * TTS_CHUNK_BYTES);
-        publishAll('tts', { t: 'tts', id: clipId, seq, tot: total, b64: slice.toString('base64') }, { qos: 1, retain: false });
+      for (const id of targets) {
+        for (let seq = 0; seq < total; seq++) {
+          const slice = adp.subarray(seq * TTS_CHUNK_BYTES, (seq + 1) * TTS_CHUNK_BYTES);
+          publishTo(
+            id,
+            'tts',
+            { t: 'tts', id: clipId, seq, tot: total, b64: slice.toString('base64') },
+            { qos: 1, retain: false },
+          );
+        }
       }
-      log(`tts pushed clip=${clipId} bytes=${adp.length} chunks=${total}`);
+      log(`tts pushed clip=${clipId} bytes=${adp.length} chunks=${total} targets=${targets.length}`);
       return true;
     } catch (err) {
       log(`tts error: ${err.message}`);
@@ -183,14 +232,18 @@ export function createNovaBridge(options = {}) {
 
   function handleHello(id, data) {
     const online = data?.online !== false;
-    devices.set(id, { online, lastSeen: Date.now(), meta: data?.hello || null });
+    const prev = devices.get(id) || {};
+    const prefs = data?.prefs && typeof data.prefs === 'object' ? data.prefs : prev.prefs || null;
+    devices.set(id, { ...prev, online, lastSeen: Date.now(), meta: data?.hello || prev.meta || null, prefs });
     log(`device ${id} ${online ? 'online' : 'offline'}`);
     if (online) {
       pushTime(id);
       publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
-      if (choreoPayload) publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
+      if (choreoPayload && prefs?.choreo !== false) {
+        publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
+      }
     }
   }
 
@@ -208,18 +261,35 @@ export function createNovaBridge(options = {}) {
       }
     } else if (data?.evt === 'stat') {
       devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now(), stat: data });
+    } else if (data?.evt === 'prefs') {
+      const prev = devices.get(id) || {};
+      const prefs = {
+        snd: data.snd ?? prev.prefs?.snd ?? 75,
+        tts: data.tts ?? prev.prefs?.tts ?? true,
+        quiet: data.quiet ?? prev.prefs?.quiet ?? true,
+        choreo: data.choreo ?? prev.prefs?.choreo ?? true,
+      };
+      devices.set(id, { ...prev, online: true, lastSeen: Date.now(), prefs });
+      log(`device ${id} prefs updated: ${JSON.stringify(prefs)}`);
     } else if (data?.evt === 'sync') {
       devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now() });
       pushTime(id);
       publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
-      if (choreoPayload) publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
+      if (choreoPayload && devices.get(id)?.prefs?.choreo !== false) {
+        publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
+      }
+      const now = Date.now();
+      if (now - lastSyncQuotaAt > 15000) {
+        lastSyncQuotaAt = now;
+        refreshQuota().catch(() => {});
+      }
     }
   }
 
   function start() {
-    client = mqtt.connect(brokerUrl, {
+    client = mqttConnectFn(brokerUrl, {
       clientId: `nova-host-${process.pid}`,
       reconnectPeriod: 3000,
     });
@@ -256,7 +326,14 @@ export function createNovaBridge(options = {}) {
 
   function onSessionEvent(session, event) {
     const sid = String(session?.id || event?.sessionId || 'default');
-    const cur = sessions.get(sid) || { running: false, waiting: false, msg: '', updatedAt: Date.now() };
+    const cur = sessions.get(sid) || {
+      running: false,
+      waiting: false,
+      error: false,
+      lastTool: '',
+      msg: '',
+      updatedAt: Date.now(),
+    };
     const type = String(event?.type || '');
     const data = event?.data || {};
 
@@ -267,17 +344,26 @@ export function createNovaBridge(options = {}) {
       case 'turn/start':
         cur.running = true;
         cur.waiting = false;
+        cur.error = false;
+        cur.lastTool = '';
         cur.msg = '思考中...';
         break;
       case 'tool/call': {
         cur.running = true;
+        cur.error = false;
         const tool = String(data.toolName || data.name || 'tool');
-        const arg = String(data.command || data.path || data.query || '').slice(0, 32);
+        const arg = String(data.command || data.path || data.query || '').slice(0, 42);
+        cur.lastTool = tool;
         cur.msg = arg ? `${tool}: ${arg}` : `${tool}`;
         break;
       }
       case 'tool/result':
         cur.running = true;
+        if (data.isError || data.error) {
+          cur.msg = cur.lastTool ? `${cur.lastTool} 返回异常` : '工具执行异常';
+        } else if (cur.lastTool) {
+          cur.msg = `整理 ${cur.lastTool} 结果...`;
+        }
         break;
       case 'approval/asked':
         cur.waiting = true;
@@ -290,9 +376,10 @@ export function createNovaBridge(options = {}) {
         const wasRunning = cur.running;
         cur.running = false;
         cur.waiting = false;
-        cur.msg = data.reason === 'error' ? '本轮异常结束' : '待命中';
+        cur.error = data.reason === 'error';
+        cur.msg = cur.error ? '本轮异常结束' : '待命中';
         if (wasRunning) {
-          const line = data.reason === 'error'
+          const line = cur.error
             ? '唔，刚刚好像出了一点小差错，快来看看呀！'
             : '主人，刚刚的任务完成啦！';
           publishTts(line).catch(() => {});
@@ -388,6 +475,7 @@ export function createNovaBridge(options = {}) {
     onSessionEvent,
     onSessionDisposed,
     onApprovalRequest,
+    buildStatePayload,
     refreshQuota,
     refreshRank,
     refreshChoreo,

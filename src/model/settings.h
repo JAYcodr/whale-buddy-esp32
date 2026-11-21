@@ -1,6 +1,8 @@
 #pragma once
 #include <stdint.h>
 
+constexpr const char* NOVA_FW_VER = "0.3.1";
+
 enum class HomePageKind : uint8_t {
   PET   = 0,
   QUOTA = 1,
@@ -14,13 +16,17 @@ enum class PowerProfile : uint8_t {
 };
 
 struct NovaSettings {
-  HomePageKind homePage     = HomePageKind::PET;
-  PowerProfile powerProfile = PowerProfile::ADAPTIVE;
-  uint8_t      soundPct     = 75;
-  uint8_t      brightLevel  = 4;
-  bool         useNva       = true;
+  HomePageKind homePage      = HomePageKind::PET;
+  PowerProfile powerProfile  = PowerProfile::ADAPTIVE;
+  uint8_t      soundPct      = 75;
+  uint8_t      brightLevel   = 4;
+  bool         useNva        = true;
+  bool         ttsEnabled    = true;
+  bool         quietHours    = true;
+  bool         choreoEnabled = true;
+  uint16_t     batSleepSec   = 30;
   char         brokerHost[40] = "192.168.31.15";
-  uint16_t     brokerPort   = 1883;
+  uint16_t     brokerPort    = 1883;
 };
 
 void settingsLoad();

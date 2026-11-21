@@ -23,6 +23,8 @@ NvaAnimKey nvaActiveState();
 bool nvaIsEnded();
 uint32_t nvaLoopCycles();
 void nvaTick(uint32_t nowMs);
+int16_t nvaFrameWidth();
+int16_t nvaFrameHeight();
 
 // Blit current decoded frame centered inside (cx, bottomY) onto canvas.
 // Supports optional horizontal mirror (flipX) and bottom-anchored Q-bounce scaleY.

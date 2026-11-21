@@ -11,14 +11,14 @@
 
 ## 核心特性
 
-- **原生 `368×448` AMOLED · 60fps 局部脏矩形渲染**：主屏 Nova 鲸鱼娘 `.nva` 精灵动画通过 PSRAM 预解码与内部 SRAM 高速 DMA 局部刷新，稳定跑满 **60 fps / 0 丢帧**；全屏滑动切页采用 `180ms` PSRAM 双缓存平滑 `easeOutCubic` 合成。
-- **LVGL 风格 `4-bpp` 抗锯齿字体与 AA 几何图元**：`PingFang SC`（覆盖 ASCII + GB2312 一级 3,755 常用字与 UI 补充字符，共 3,890 字形）+ `DIN Alternate Bold` 数字仪表字体，配合亚像素抗锯齿圆角卡片、顶部胶囊、圆点与进度条。
+- **原生 `368×448` AMOLED · 60fps 局部脏矩形渲染**：主屏 Nova 鲸鱼娘 `NVA2` 96 色高清帧动画（162px 统一等比、纯黑抗锯齿融合与 XOR 帧间压缩）通过 PSRAM 解码与内部 SRAM 分带 DMA 局部刷新，实测稳定跑满 **60 fps**；全屏滑动切页采用 `180ms` PSRAM 双缓存平滑 `easeOutCubic` 合成。
+- **LVGL 风格 `4-bpp` 抗锯齿字体与 AA 几何图元**：`PingFang SC`（覆盖 ASCII + GB2312 一级 3,755 常用字与 UI/宠萌补充字符，共 3,902 字形）+ `DIN Alternate Bold` 数字仪表字体，配合亚像素抗锯齿圆角卡片、顶部胶囊、圆点与进度条。
 - **四屏循环交互 + 审批模态弹窗**：
-  - **宠物主屏**：运行/等待/会话统计、上下文占比、实时工具提示，支持轻触 Nova 互动粒子反馈。
-  - **订阅额度**：DeepSeek 账户余额（CNY）、OpenCode Go 与 OpenDesign 周期额度条与重置倒计时。
+  - **宠物主屏**：运行/等待/会话统计、上下文占比、`st.msg` 实时工具/异常状态提示，支持轻触 Nova 互动粒子与醒来反馈、空白处点按跑动与自动编排剧本。
+  - **订阅额度**：DeepSeek 账户余额（CNY）、OpenCode Go 与 OpenDesign 周期额度条，本地实时递增数据年龄与重置倒计时，轻触卡片可立即触发宿主同步。
   - **ModelDial 榜单**：同步 24 款主流编码模型，支持**触摸实时上下滑动**与点击右上角切换 **`B·F·K 维度`** / **`审美·耗时`**。
-  - **详情与偏好设置**：支持默认主页、功耗档位（自适应 / 长续航 / 灵动）、音效开关、5 档亮度与 AP 重新配网。
-- **WiFiManager 配网 + MQTT 双向桥接**：内置 Captive Portal 配网与自定义 Broker IP/端口；配套 `host-plugin/` DSH 插件负责状态汇总、配额抓取与一键测试推送。
+  - **详情与偏好设置（基础 / 进阶双页）**：支持默认主页、功耗档位（自适应 / 长续航 / 灵动）、5 档音量（静音~100%）与 5 档亮度、TTS 语音播报开关、夜间静音（23–08 点）开关、电池自动息屏时长（15s~2m）、AI 编排开关、语音试听与 AP 重新配网。
+- **WiFiManager 配网 + MQTT 双向桥接**：内置 Captive Portal 配网与自定义 Broker IP/端口；配套 `host-plugin/` DSH 插件负责多会话优先汇总、配额抓取、设备偏好联动与一键测试推送。
 
 ## 项目结构
 
@@ -52,7 +52,7 @@
 
 ```bash
 ./tools/sim/run.sh
-# 输出 tools/sim/out/page_{home,quota,rank,detail,settings,approval}.png
+# 输出 tools/sim/out/page_{home,quota,rank,detail,settings,settings_adv,approval}.png
 ```
 
 ### 2. 编译与烧录固件 & LittleFS 资源

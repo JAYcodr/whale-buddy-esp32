@@ -11,4 +11,6 @@ void netRequestReprovision();
 void netRequestCancelPortal();
 void netRequestWifiConnect(const char* ssid, const char* pass);
 void netPublishDecision(const char* approvalId, bool accept, bool toPc);
+void netPublishPrefs();
+void netPublishSync();
 void netSetPowerSave(NetPsMode mode);

@@ -123,11 +123,11 @@ void pageRankDraw(NovaCanvas& c, const NovaState& st) {
       ui::drawText(c, ui::fontAscii14(), rx + 94, ry + 45, "Q", ui::COL_VIOLET, rowBg);
       ui::drawProgressBar(c, rx + 108, ry + 37, 28, 6, row.q, ui::COL_VIOLET);
 
-      char meta[28];
-      if (row.dur[0] && row.cost[0]) snprintf(meta, sizeof(meta), "%s %s", row.dur, row.cost);
-      else if (row.dur[0]) snprintf(meta, sizeof(meta), "%s", row.dur);
-      else snprintf(meta, sizeof(meta), "%s", row.cost[0] ? row.cost : "--");
-      ui::fitUtf8Line(c, ui::fontCjk14(), meta, 112, meta, sizeof(meta));
+      char rawMeta[28], meta[28];
+      if (row.dur[0] && row.cost[0]) snprintf(rawMeta, sizeof(rawMeta), "%s %s", row.dur, row.cost);
+      else if (row.dur[0]) snprintf(rawMeta, sizeof(rawMeta), "%s", row.dur);
+      else snprintf(rawMeta, sizeof(rawMeta), "%s", row.cost[0] ? row.cost : "--");
+      ui::fitUtf8Line(c, ui::fontCjk14(), rawMeta, 112, meta, sizeof(meta));
       ui::drawText(c, ui::fontCjk14(), rx + 144, ry + 45, meta, ui::COL_DIM, rowBg);
     }
 

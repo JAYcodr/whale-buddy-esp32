@@ -21,8 +21,6 @@
 
 namespace {
 
-constexpr const char* FW_VER = "0.3.0";
-constexpr uint32_t SCREEN_OFF_BAT_MS = 30000;
 constexpr uint32_t KEY1_LONG_MS = 800;
 constexpr uint32_t PAGE_SLIDE_MS = 180;
 constexpr int16_t  SLIDE_SPLIT_Y = 46;  // Keep top clock/status steady; slide pills + page content.
@@ -120,7 +118,8 @@ void sendUsbScreenshot() {
   Serial.flush();
 }
 
-void pollSerialCommands() {
+void pollSerialCommands(UiNav& nav, bool& needFull,
+                        uint32_t& fpsFrames, int64_t& fpsWindowStartUs, int64_t& nextFrameAt) {
   static char line[192];
   static size_t pos = 0;
   while (Serial.available() > 0) {
@@ -134,16 +133,41 @@ void pollSerialCommands() {
           const char* cmd = doc["cmd"] | "";
           if (strcmp(cmd, "shot") == 0) {
             sendUsbScreenshot();
+            fpsFrames = 0;
+            fpsWindowStartUs = esp_timer_get_time();
+            nextFrameAt = fpsWindowStartUs;
+          } else if (strcmp(cmd, "stat") == 0) {
+            static NovaState snap;
+            novaStateRead(&snap);
+            Serial.printf("STAT fps=%.1f pushUs=%lu heap=%lu psram=%lu mhz=%u anim=%d\n",
+                          snap.fps, (unsigned long)snap.pushUs,
+                          (unsigned long)snap.freeHeap, (unsigned long)snap.freePsram,
+                          (unsigned)snap.cpuMhz, (int)nvaActiveState());
           } else if (strcmp(cmd, "reprov") == 0) {
             netRequestReprovision();
           } else if (strcmp(cmd, "wifi") == 0) {
             const char* ssid = doc["ssid"] | "";
             const char* pass = doc["pass"] | "";
             if (ssid[0]) netRequestWifiConnect(ssid, pass);
+          } else if (strcmp(cmd, "page") == 0) {
+            const char* p = doc["page"] | "home";
+            if (strcmp(p, "home") == 0)          { nav.setPage(UiPage::HOME); needFull = true; }
+            else if (strcmp(p, "quota") == 0)    { nav.setPage(UiPage::QUOTA); needFull = true; }
+            else if (strcmp(p, "rank") == 0)     { nav.setPage(UiPage::RANK); needFull = true; }
+            else if (strcmp(p, "detail") == 0)   { nav.setPage(UiPage::DETAIL); needFull = true; }
+            else if (strcmp(p, "settings") == 0) { pageSettingsSetTab(0); nav.setPage(UiPage::SETTINGS); needFull = true; }
+            else if (strcmp(p, "settings_adv") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
+          } else if (strcmp(cmd, "demo") == 0) {
+            int anim = doc["anim"] | -1;
+            pageHomeSetDemoOverride(anim);
+            needFull = true;
           }
         }
       } else if (strstr(line, "shot") != nullptr) {
         sendUsbScreenshot();
+        fpsFrames = 0;
+        fpsWindowStartUs = esp_timer_get_time();
+        nextFrameAt = fpsWindowStartUs;
       } else if (strstr(line, "reprov") != nullptr) {
         netRequestReprovision();
       }
@@ -192,10 +216,12 @@ void uiTaskFn(void*) {
   uint32_t lastMqttRxSeen = 0;
   bool     lastStaleFlag = false;
   uint32_t lastStaleShownSec = 0;
+  uint32_t lastQuotaBucket = 0;
   uint8_t  lastMinute = 255;
   uint8_t  lastSecond = 255;
   uint8_t  lastBattPct = 255;
   uint8_t  lastBurnStep = 0;
+  bool     lastSleepState = false;
   uint32_t curCpuMhz = getCpuFrequencyMhz();
 
   uint32_t frame = 0;
@@ -215,7 +241,7 @@ void uiTaskFn(void*) {
   for (;;) {
     esp_task_wdt_reset();
     uint32_t nowMs = millis();
-    pollSerialCommands();
+    pollSerialCommands(nav, needFull, fpsFrames, fpsWindowStartUs, nextFrameAt);
 
     const NovaSettings& cfg = settingsGet();
     BusSnapshot snap = hwBusSnapshot();
@@ -325,12 +351,45 @@ void uiTaskFn(void*) {
         case UiAction::SET_SOUND:
           settingsMut().soundPct = (uint8_t)((act.value < 0) ? 0 : (act.value > 100 ? 100 : act.value));
           settingsSave();
+          netPublishPrefs();
           if (settingsGet().soundPct > 0) sfxPlay(SfxKind::NAV_CHIRP, settingsGet().soundPct);
           break;
         case UiAction::SET_BRIGHT:
           settingsMut().brightLevel = (uint8_t)act.value;
           settingsSave();
           hwDisplayBrightness(settingsGet().brightLevel);
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_TTS:
+          settingsMut().ttsEnabled = (act.value != 0);
+          settingsSave();
+          netPublishPrefs();
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_QUIET:
+          settingsMut().quietHours = (act.value != 0);
+          settingsSave();
+          netPublishPrefs();
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_BATSLEEP:
+          settingsMut().batSleepSec = (uint16_t)(act.value >= 10 ? act.value : 30);
+          settingsSave();
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_CHOREO:
+          settingsMut().choreoEnabled = (act.value != 0);
+          settingsSave();
+          netPublishPrefs();
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::TEST_SOUND:
+          if (!sfxSpeakFile("/audio/tap0.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
+            sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+          }
+          break;
+        case UiAction::SYNC_HOST:
+          netPublishSync();
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::REPROVISION:
@@ -352,7 +411,7 @@ void uiTaskFn(void*) {
             nvaSetState(NvaAnimKey::CLICK, true, true);
             if ((nowMs - lastTapVoiceMs) >= 800u) {
               lastTapVoiceMs = nowMs;
-              if (!sfxSpeakFile(kTapVoices[tapVoiceIdx % 3], cfg.soundPct, st.hour, st.timeValid)) {
+              if (!sfxSpeakFile(kTapVoices[tapVoiceIdx % 3], cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
                 sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
               }
               tapVoiceIdx++;
@@ -360,7 +419,7 @@ void uiTaskFn(void*) {
           } else if (act.value == 1) {
             if ((nowMs - lastTapVoiceMs) >= 800u) {
               lastTapVoiceMs = nowMs;
-              if (!sfxSpeakFile("/audio/run.adp", cfg.soundPct, st.hour, st.timeValid)) {
+              if (!sfxSpeakFile("/audio/run.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
                 sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
               }
             }
@@ -396,6 +455,7 @@ void uiTaskFn(void*) {
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::RANK_REDRAW:
+        case UiAction::SETTINGS_REDRAW:
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         default: break;
@@ -489,18 +549,24 @@ void uiTaskFn(void*) {
     }
 
     // Battery idle screen-off (USB never turns off).
+    const uint32_t batOffMs = (uint32_t)(cfg.batSleepSec >= 10 ? cfg.batSleepSec : 30) * 1000u;
     if (!screenOff && !st.approvalActive && !snap.battery.usbPresent) {
-      if (nowMs - lastInteractMs > SCREEN_OFF_BAT_MS) {
+      if (nowMs - lastInteractMs > batOffMs) {
         hwDisplaySleep(true);
         screenOff = true;
       }
     }
 
-    // Detect task completion to celebrate cleanly with full SUCCESS animation.
+    // Detect task completion to celebrate cleanly or show error expression.
     if (lastRunCount > 0 && st.run == 0 && !st.approvalActive) {
-      oneShotKey = NvaAnimKey::SUCCESS;
+      if (st.turnError) {
+        oneShotKey = NvaAnimKey::ERROR;
+        oneShotSafetyEndMs = nowMs + 8500u;
+      } else {
+        oneShotKey = NvaAnimKey::SUCCESS;
+        oneShotSafetyEndMs = nowMs + 13500u;
+      }
       oneShotActive = true;
-      oneShotSafetyEndMs = nowMs + 13500u;
       nvaSetState(oneShotKey, true, true);
     }
     lastRunCount = st.run;
@@ -508,6 +574,10 @@ void uiTaskFn(void*) {
     bool isStale = (st.wifiConnected && st.mqttConnected && st.lastMqttRxMs > 0 &&
                     nowMs > st.lastMqttRxMs && (nowMs - st.lastMqttRxMs) > 45000);
     uint32_t staleBucket = isStale ? ((nowMs - st.lastMqttRxMs) / 5000) : 0;
+    uint32_t quotaBucket = (nav.currentPage() == UiPage::QUOTA && st.quotaRxMs > 0 && nowMs > st.quotaRxMs)
+                             ? ((nowMs - st.quotaRxMs) / 15000u)
+                             : 0u;
+    bool curSleepState = (nvaActiveState() == NvaAnimKey::SLEEP);
 
     // Detect state / heartbeat / burn-in pixel shift changes requiring a full redraw.
     if (st.stateGen != lastStateGen || st.quotaGen != lastQuotaGen || st.rankGen != lastRankGen ||
@@ -515,7 +585,8 @@ void uiTaskFn(void*) {
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
         st.mqttConnected != lastMqttUp || st.minute != lastMinute || st.battPct != lastBattPct ||
         st.lastMqttRxMs != lastMqttRxSeen || isStale != lastStaleFlag ||
-        staleBucket != lastStaleShownSec || burnStep != lastBurnStep) {
+        staleBucket != lastStaleShownSec || quotaBucket != lastQuotaBucket ||
+        burnStep != lastBurnStep || curSleepState != lastSleepState) {
       lastStateGen      = st.stateGen;
       lastQuotaGen      = st.quotaGen;
       lastRankGen       = st.rankGen;
@@ -526,9 +597,11 @@ void uiTaskFn(void*) {
       lastMqttRxSeen    = st.lastMqttRxMs;
       lastStaleFlag     = isStale;
       lastStaleShownSec = staleBucket;
+      lastQuotaBucket   = quotaBucket;
       lastMinute        = st.minute;
       lastBattPct       = st.battPct;
       lastBurnStep      = burnStep;
+      lastSleepState    = curSleepState;
       needFull          = true;
     }
     if (st.approvalActive && st.second != lastSecond) {
@@ -611,7 +684,7 @@ void uiTaskFn(void*) {
       } else if (animPage) {
         int16_t dx = 0, dy = 0, dw = 0, dh = 0;
         int64_t t0 = esp_timer_get_time();
-        pageHomeDrawStage(*canvas, st, frame, &dx, &dy, &dw, &dh);
+        pageHomeDrawStage(*canvas, st, cfg, frame, &dx, &dy, &dw, &dh);
         hwDisplayPushRect(dx, dy, dw, dh);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         frame++;
@@ -652,7 +725,7 @@ void setup() {
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
   char devId[16];
   snprintf(devId, sizeof(devId), "%02X%02X%02X", mac[3], mac[4], mac[5]);
-  novaStateInit(devId, FW_VER);
+  novaStateInit(devId, NOVA_FW_VER);
   Serial.printf("nova: deviceId=%s\n", devId);
 
   if (!nvaInit("/pets/nova")) {
@@ -667,7 +740,9 @@ void setup() {
     while (1) delay(1000);
   }
 
-  if (!sfxSpeakFile("/audio/boot.adp", settingsGet().soundPct, 12, false)) {
+  BusSnapshot initSnap = hwBusSnapshot();
+  if (!sfxSpeakFile("/audio/boot.adp", settingsGet().soundPct, initSnap.time.H,
+                    initSnap.timeValid, settingsGet().quietHours)) {
     sfxPlay(SfxKind::NEW_EVENT, settingsGet().soundPct);
   }
   xTaskCreatePinnedToCore(uiTaskFn, "task_ui", 10240, nullptr, 5, nullptr, 1);

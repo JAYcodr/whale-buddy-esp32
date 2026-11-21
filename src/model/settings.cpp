@@ -22,6 +22,11 @@ void settingsLoad() {
     s_cfg.brightLevel = prefs.getUChar("brt", 4);
     if (s_cfg.brightLevel > 4) s_cfg.brightLevel = 4;
     s_cfg.useNva = prefs.getBool("nva", true);
+    s_cfg.ttsEnabled = prefs.getBool("tts", true);
+    s_cfg.quietHours = prefs.getBool("quiet", true);
+    s_cfg.choreoEnabled = prefs.getBool("choreo", true);
+    uint16_t slp = prefs.getUShort("sleep_s", 30);
+    s_cfg.batSleepSec = (slp >= 10 && slp <= 600) ? slp : 30;
     String host = prefs.getString("mqtt_host", "192.168.31.15");
     strncpy(s_cfg.brokerHost, host.c_str(), sizeof(s_cfg.brokerHost) - 1);
     s_cfg.brokerHost[sizeof(s_cfg.brokerHost) - 1] = '\0';
@@ -41,6 +46,10 @@ void settingsSave() {
     prefs.putUChar("snd", s_cfg.soundPct);
     prefs.putUChar("brt", s_cfg.brightLevel);
     prefs.putBool("nva", s_cfg.useNva);
+    prefs.putBool("tts", s_cfg.ttsEnabled);
+    prefs.putBool("quiet", s_cfg.quietHours);
+    prefs.putBool("choreo", s_cfg.choreoEnabled);
+    prefs.putUShort("sleep_s", s_cfg.batSleepSec);
     prefs.putString("mqtt_host", s_cfg.brokerHost);
     prefs.putUShort("mqtt_port", s_cfg.brokerPort);
     prefs.end();

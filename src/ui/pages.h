@@ -21,6 +21,12 @@ struct UiAction {
     SET_POWER,
     SET_SOUND,
     SET_BRIGHT,
+    SET_TTS,
+    SET_QUIET,
+    SET_BATSLEEP,
+    SET_CHOREO,
+    TEST_SOUND,
+    SYNC_HOST,
     REPROVISION,
     CANCEL_PORTAL,
     PET_TAP,
@@ -28,16 +34,18 @@ struct UiAction {
     DENY,
     TO_PC,
     RANK_REDRAW,
+    SETTINGS_REDRAW,
   };
   Kind kind = NONE;
   int  value = 0;
 };
 
-void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame);
-void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, uint32_t frame,
+void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame);
+void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame,
                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st);
 int pageHomeDemoOverride();  // -1 = auto, >=0 = NvaAnimKey index
+void pageHomeSetDemoOverride(int idx);
 int pageHomeChoreoAnim();    // -1 = none, >=0 = NvaAnimKey index from LLM script
 bool pageHomeIsWalking();
 void pageHomeTriggerSquash(uint32_t nowMs);
@@ -55,6 +63,7 @@ UiAction pageDetailTap(int16_t x, int16_t y);
 
 void pageSettingsDraw(NovaCanvas& c, const NovaSettings& cfg);
 UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg);
+void pageSettingsSetTab(uint8_t tab);
 
 void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 UiAction pageApprovalTap(int16_t x, int16_t y);

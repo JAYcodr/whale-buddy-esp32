@@ -1,25 +1,29 @@
 #!/bin/bash
-# PlatformIO 包装脚本：绕开 ~/.platformio 这个坏掉的符号链接。
-#
-# 本机情况（2026-11 核实）：
-#   ~/.platformio -> /Volumes/hamelin-ssd/devtools/.platformio   ← 目标不存在
-#   真实位置：/Volumes/hamelin-ssd/01-项目工程/devtools/.platformio
-#   所以 pio 命令、以及 penv 里的 python 解释器都不可直接用。
+# PlatformIO 包装脚本：自动定位本机 .platformio 核心目录（绕开坏掉的 ~/.platformio 符号链接）。
 #
 # 用法：
 #   tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8
 #   tools/pio.sh run -t upload
 #   tools/pio.sh run -t uploadfs
-#   tools/pio.sh run -t erase
 #   tools/pio.sh device list
-#   tools/pio.sh lib list
 
 set -euo pipefail
 
-CORE="${PIO_CORE_DIR:-/Volumes/hamelin-ssd/01-项目工程/devtools/.platformio}"
+CORE="${PIO_CORE_DIR:-}"
+if [ -z "$CORE" ]; then
+  for cand in \
+    "/Volumes/hamelin-ssd/devtools/.platformio" \
+    "/Volumes/hamelin-ssd/01-项目工程/devtools/.platformio"
+  do
+    if [ -d "$cand" ]; then
+      CORE="$cand"
+      break
+    fi
+  done
+fi
 
-if [ ! -d "$CORE" ]; then
-  echo "错误：PlatformIO 核心目录不存在：$CORE" >&2
+if [ -z "$CORE" ] || [ ! -d "$CORE" ]; then
+  echo "错误：未找到 PlatformIO 核心目录（已检查 devtools/.platformio 与 01-项目工程/devtools/.platformio）" >&2
   echo "如已移到别处，用 PIO_CORE_DIR=/新路径 覆盖。" >&2
   exit 1
 fi

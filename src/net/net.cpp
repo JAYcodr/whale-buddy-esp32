@@ -17,7 +17,7 @@ namespace {
 
 struct NetTxMsg {
   char topic[48];
-  char payload[256];
+  char payload[320];
   bool retained;
   uint8_t qos;
 };
@@ -114,10 +114,11 @@ void subscribeTopics() {
 void publishHello(bool online) {
   static NovaState s_tmpSt;
   novaStateRead(&s_tmpSt);
+  const NovaSettings& cfg = settingsGet();
   char topic[48];
-  char payload[256];
+  char payload[320];
   snprintf(topic, sizeof(topic), "%s/hello", s_topicPrefix);
-  size_t n = protoBuildHello(payload, sizeof(payload), s_tmpSt, online);
+  size_t n = protoBuildHello(payload, sizeof(payload), s_tmpSt, cfg, online);
   s_mqtt.publish(topic, payload, (int)n, true, 1);
   if (online) {
     snprintf(topic, sizeof(topic), "%s/up", s_topicPrefix);
@@ -321,6 +322,26 @@ void netPublishDecision(const char* approvalId, bool accept, bool toPc) {
   NetTxMsg tx{};
   snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
   protoBuildDecision(tx.payload, sizeof(tx.payload), approvalId, accept, toPc);
+  tx.retained = false;
+  tx.qos = 1;
+  xQueueSend(s_txQ, &tx, 0);
+}
+
+void netPublishPrefs() {
+  if (!s_txQ) return;
+  NetTxMsg tx{};
+  snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
+  protoBuildPrefs(tx.payload, sizeof(tx.payload), settingsGet());
+  tx.retained = false;
+  tx.qos = 1;
+  xQueueSend(s_txQ, &tx, 0);
+}
+
+void netPublishSync() {
+  if (!s_txQ) return;
+  NetTxMsg tx{};
+  snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
+  snprintf(tx.payload, sizeof(tx.payload), "{\"evt\":\"sync\"}");
   tx.retained = false;
   tx.qos = 1;
   xQueueSend(s_txQ, &tx, 0);

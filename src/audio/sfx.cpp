@@ -2,8 +2,8 @@
 #include "hw/audio.h"
 #include <LittleFS.h>
 
-static bool isQuietTime(uint8_t hour, bool timeValid) {
-  return timeValid && (hour >= 23 || hour < 8);
+static bool isQuietTime(uint8_t hour, bool timeValid, bool respectQuiet) {
+  return respectQuiet && timeValid && (hour >= 23 || hour < 8);
 }
 
 void sfxPlay(SfxKind kind, uint8_t volPct) {
@@ -34,8 +34,8 @@ void sfxPlay(SfxKind kind, uint8_t volPct) {
   }
 }
 
-bool sfxSpeakFile(const char* path, uint8_t volPct, uint8_t hour, bool timeValid) {
-  if (volPct == 0 || isQuietTime(hour, timeValid) || !path || !path[0]) return false;
+bool sfxSpeakFile(const char* path, uint8_t volPct, uint8_t hour, bool timeValid, bool respectQuiet) {
+  if (volPct == 0 || isQuietTime(hour, timeValid, respectQuiet) || !path || !path[0]) return false;
   if (!LittleFS.exists(path)) return false;
   hwPlayAdpcmFile(path, volPct);
   return true;

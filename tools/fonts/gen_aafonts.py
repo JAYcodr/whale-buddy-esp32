@@ -12,8 +12,8 @@ DIN_PATH = "/System/Library/Fonts/Supplemental/DIN Alternate Bold.ttf"
 PINGFANG_INDEX = 7  # PingFang SC Medium
 
 PUNCT_AND_EXTRA = (
-    "，。、：；！？（）【】《》“”‘’—…·￥°×÷＋－／｜"
-    "浏渲诺瓦啰哒嘛呗呢嗯噢哈喽喔咔喵炫"
+    "，。、：；！？（）【】《》“”‘’「」—…·￥°×÷＋－／｜→"
+    "浏渲诺瓦啰哒嘛呗呢嗯噢哈喽喔咔喵炫盹憩唔嗨咦咧嘟啾噗"
 )
 
 

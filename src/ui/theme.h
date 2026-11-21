@@ -124,8 +124,14 @@ inline size_t nextUtf8Boundary(const char* s, size_t idx) {
 inline void fitUtf8Line(NovaCanvas& c, const AaFont* font, const char* src,
                         int16_t maxW, char* dst, size_t dstCap) {
   if (!dst || dstCap == 0) return;
+  if (!src || !src[0]) { dst[0] = '\0'; return; }
+  char srcCopy[192];
+  if (src == dst) {
+    strncpy(srcCopy, src, sizeof(srcCopy) - 1);
+    srcCopy[sizeof(srcCopy) - 1] = '\0';
+    src = srcCopy;
+  }
   dst[0] = '\0';
-  if (!src || !src[0]) return;
 
   size_t bestEnd = 0;
   size_t i = 0;

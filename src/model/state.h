@@ -27,7 +27,7 @@ struct ChoreoStep {
   bool     run;
   uint8_t  anim;   // NvaAnimKey index 0..8
   uint16_t durMs;
-  char     say[48];
+  char     say[64];
 };
 
 struct RankRow {
@@ -61,7 +61,8 @@ struct NovaState {
   uint16_t run;
   uint16_t wait;
   uint16_t sess;
-  char     msg[96];
+  char     msg[112];
+  bool     turnError;
   int8_t   ctxPct;
   char     activeModel[32];
   uint32_t stateRxMs;

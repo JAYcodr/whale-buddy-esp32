@@ -22,17 +22,10 @@ constexpr const char* ANIM_NAMES[(int)NvaAnimKey::COUNT] = {
   "idle", "thinking", "working", "waiting", "success", "error", "click", "sleep", "quota"
 };
 
-// Normalize slight bounding-box size differences so all 9 animations match idle (~142px body).
+// All 9 NVA2 packs are baked at uniform world scale from the 640x360 source stage,
+// so runtime base scale is 1:1 (no nearest-neighbor resize blur).
 constexpr float kAnimBaseScale[(int)NvaAnimKey::COUNT] = {
-  1.00f,  // idle     (142px)
-  1.01f,  // thinking (140px)
-  1.09f,  // working  (127px -> ~138px)
-  0.99f,  // waiting  (144px -> ~142px)
-  1.16f,  // success  (113px -> ~131px + jump/hands)
-  1.11f,  // error    (124px -> ~138px)
-  0.94f,  // click    (152px -> ~143px)
-  1.09f,  // sleep    (90px curled -> ~98px)
-  1.00f,  // quota    (rebuilt 142px crisp)
+  1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f,
 };
 
 // Resident keys stay cached in PSRAM; others load on demand into a shared buffer.
@@ -42,11 +35,13 @@ bool isResident(NvaAnimKey k) {
 
 struct NvaPack {
   bool     valid = false;
+  bool     isV2 = false;
+  uint32_t genId = 0;
   uint16_t w = 0;
   uint16_t h = 0;
   uint16_t nframes = 0;
   uint8_t  ncolors = 0;
-  uint8_t  fps = 12;
+  uint8_t  fps = 10;
   uint16_t pal565[256] = {};
   uint32_t* offsets = nullptr;   // nframes + 1 entries
   uint8_t*  blobs = nullptr;     // raw compressed blob data
@@ -60,6 +55,7 @@ bool    s_ready = false;
 NvaPack s_resPacks[3];         // IDLE, SUCCESS, ERROR
 NvaPack s_streamPack;          // shared on-demand slot
 NvaAnimKey s_streamKey = NvaAnimKey::COUNT;
+uint32_t s_packGenSeq = 1;
 
 volatile NvaAnimKey s_desiredKey = NvaAnimKey::IDLE;
 volatile bool       s_desiredOnce = false;
@@ -69,18 +65,21 @@ NvaAnimKey s_activeKey  = NvaAnimKey::IDLE;
 bool       s_activeOnce = false;
 uint32_t   s_seenRestartGen = 0;
 uint16_t   s_frameIdx   = 0;
-uint8_t    s_activeFps  = 12;
+uint8_t    s_activeFps  = 10;
 uint32_t   s_nextFrameMs = 0;
 volatile bool     s_clipEnded = false;
 volatile uint32_t s_loopCycles = 0;
 
 // Double-buffered decoded index frame (0 = transparent, 1..ncolors = palette).
-constexpr size_t MAX_FRAME_PIXELS = 192 * 224;
+constexpr size_t MAX_FRAME_PIXELS = 220 * 224;
 uint8_t*  s_frameBuf[2] = { nullptr, nullptr };
+uint8_t*  s_xorScratch  = nullptr;
 uint8_t   s_frontIdx = 0;
 uint16_t  s_frontW = 0, s_frontH = 0;
 uint16_t  s_frontPal[256] = {};
 bool      s_frontReady = false;
+uint32_t  s_lastPackGen = 0;
+uint16_t  s_lastFrameIdx = 0;
 
 #ifndef NOVA_HOST_SIM
 SemaphoreHandle_t s_mtx = nullptr;
@@ -110,6 +109,8 @@ void freePack(NvaPack& pk) {
   pk.blobsLen = 0;
   pk.rawLen = 0;
   pk.valid = false;
+  pk.isV2 = false;
+  pk.genId = 0;
 }
 
 uint8_t* allocBuffer(size_t bytes, bool preferPsram) {
@@ -128,13 +129,19 @@ uint8_t* allocBuffer(size_t bytes, bool preferPsram) {
 bool parsePack(NvaPack& pk) {
   if (!pk.rawFile || pk.rawLen < 12) return false;
   const uint8_t* d = pk.rawFile;
-  if (memcmp(d, "NVA1", 4) != 0) return false;
+  if (memcmp(d, "NVA2", 4) == 0) {
+    pk.isV2 = true;
+  } else if (memcmp(d, "NVA1", 4) == 0) {
+    pk.isV2 = false;
+  } else {
+    return false;
+  }
 
   pk.w       = readU16Le(d + 4);
   pk.h       = readU16Le(d + 6);
   pk.nframes = readU16Le(d + 8);
   pk.ncolors = d[10];
-  pk.fps     = d[11] > 0 ? d[11] : 12;
+  pk.fps     = d[11] > 0 ? d[11] : 10;
 
   if (pk.w == 0 || pk.h == 0 || pk.nframes == 0) return false;
   if ((size_t)pk.w * pk.h > MAX_FRAME_PIXELS) return false;
@@ -161,6 +168,7 @@ bool parsePack(NvaPack& pk) {
   pk.blobsLen = pk.rawLen - dataOff;
   if (pk.offsets[pk.nframes] > pk.blobsLen) return false;
 
+  pk.genId = s_packGenSeq++;
   pk.valid = true;
   return true;
 }
@@ -221,6 +229,27 @@ NvaPack* acquirePack(NvaAnimKey k) {
   return s_resPacks[0].valid ? &s_resPacks[0] : nullptr;
 }
 
+bool inflateZlib(const uint8_t* src, size_t srcLen, uint8_t* dst, size_t dstBytes) {
+#ifdef NOVA_HOST_SIM
+  uLongf outLen = (uLongf)dstBytes;
+  if (uncompress(dst, &outLen, src, (uLong)srcLen) != Z_OK) return false;
+  return outLen == dstBytes;
+#else
+  static tinfl_decompressor* s_decomp = nullptr;
+  if (!s_decomp) {
+    s_decomp = (tinfl_decompressor*)malloc(sizeof(tinfl_decompressor));
+    if (!s_decomp) return false;
+  }
+  size_t inBytes = srcLen;
+  size_t outLen = dstBytes;
+  tinfl_init(s_decomp);
+  tinfl_status status = tinfl_decompress(
+      s_decomp, src, &inBytes, dst, dst, &outLen,
+      TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+  return status == TINFL_STATUS_DONE && outLen == dstBytes;
+#endif
+}
+
 bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx) {
   if (!pk.valid || frameIdx >= pk.nframes) return false;
   const uint32_t sOff = pk.offsets[frameIdx];
@@ -232,28 +261,28 @@ bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx) {
   uint8_t* dst = s_frameBuf[backIdx];
   if (!dst) return false;
 
-#ifdef NOVA_HOST_SIM
-  uLongf outLen = (uLongf)pixBytes;
-  if (uncompress(dst, &outLen, pk.blobs + sOff, (uLong)(eOff - sOff)) != Z_OK) {
-    return false;
+  const uint8_t* blobPtr = pk.blobs + sOff;
+  size_t blobLen = (size_t)(eOff - sOff);
+  bool isDelta = false;
+  if (pk.isV2) {
+    if (blobLen < 2) return false;
+    isDelta = (blobPtr[0] == 1);
+    blobPtr += 1;
+    blobLen -= 1;
   }
-  if (outLen != pixBytes) return false;
-#else
-  static tinfl_decompressor* s_decomp = nullptr;
-  if (!s_decomp) {
-    s_decomp = (tinfl_decompressor*)malloc(sizeof(tinfl_decompressor));
-    if (!s_decomp) return false;
+
+  if (isDelta) {
+    if (!s_xorScratch || !s_frontReady || s_lastPackGen != pk.genId || s_lastFrameIdx + 1 != frameIdx) {
+      return false;
+    }
+    if (!inflateZlib(blobPtr, blobLen, s_xorScratch, pixBytes)) return false;
+    const uint8_t* prev = s_frameBuf[s_frontIdx];
+    for (size_t i = 0; i < pixBytes; i++) {
+      dst[i] = prev[i] ^ s_xorScratch[i];
+    }
+  } else {
+    if (!inflateZlib(blobPtr, blobLen, dst, pixBytes)) return false;
   }
-  size_t inBytes = (size_t)(eOff - sOff);
-  size_t outLen = pixBytes;
-  tinfl_init(s_decomp);
-  tinfl_status status = tinfl_decompress(
-      s_decomp,
-      pk.blobs + sOff, &inBytes,
-      dst, dst, &outLen,
-      TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-  if (status != TINFL_STATUS_DONE || outLen != pixBytes) return false;
-#endif
 
 #ifndef NOVA_HOST_SIM
   xSemaphoreTake(s_mtx, portMAX_DELAY);
@@ -262,6 +291,8 @@ bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx) {
   s_frontW   = pk.w;
   s_frontH   = pk.h;
   memcpy(s_frontPal, pk.pal565, (size_t)(pk.ncolors + 1) * sizeof(uint16_t));
+  s_lastPackGen = pk.genId;
+  s_lastFrameIdx = frameIdx;
   s_frontReady = true;
 #ifndef NOVA_HOST_SIM
   xSemaphoreGive(s_mtx);
@@ -289,7 +320,7 @@ void decodeTaskFn(void*) {
       s_clipEnded = false;
       NvaPack* pk = acquirePack(s_activeKey);
       if (pk && pk->valid) {
-        s_activeFps = pk->fps > 0 ? pk->fps : 12;
+        s_activeFps = pk->fps > 0 ? pk->fps : 10;
         decodeFrameToBack(*pk, 0);
       }
       continue;
@@ -300,7 +331,7 @@ void decodeTaskFn(void*) {
 
     NvaPack* pk = acquirePack(s_activeKey);
     if (pk && pk->valid && pk->nframes > 0) {
-      s_activeFps = pk->fps > 0 ? pk->fps : 12;
+      s_activeFps = pk->fps > 0 ? pk->fps : 10;
       if (s_activeOnce && (uint32_t)(s_frameIdx + 1) >= pk->nframes) {
         if (target == s_desiredKey && restartGen == s_desiredRestartGen) {
           s_clipEnded = true;
@@ -337,7 +368,8 @@ bool nvaInit(const char* rootDir) {
 
   s_frameBuf[0] = allocBuffer(MAX_FRAME_PIXELS, false);
   s_frameBuf[1] = allocBuffer(MAX_FRAME_PIXELS, false);
-  if (!s_frameBuf[0] || !s_frameBuf[1]) return false;
+  s_xorScratch  = allocBuffer(MAX_FRAME_PIXELS, true);
+  if (!s_frameBuf[0] || !s_frameBuf[1] || !s_xorScratch) return false;
 
   bool okIdle = loadPackFromFs(NvaAnimKey::IDLE, s_resPacks[0]);
   loadPackFromFs(NvaAnimKey::SUCCESS, s_resPacks[1]);
@@ -385,7 +417,7 @@ void nvaSetState(NvaAnimKey key, bool once, bool restart) {
     s_clipEnded = false;
     NvaPack* pk = acquirePack(s_activeKey);
     if (pk && pk->valid) {
-      s_activeFps = pk->fps > 0 ? pk->fps : 12;
+      s_activeFps = pk->fps > 0 ? pk->fps : 10;
       decodeFrameToBack(*pk, s_frameIdx);
     }
   }
@@ -396,11 +428,13 @@ NvaAnimKey nvaCurrentState() { return s_desiredKey; }
 NvaAnimKey nvaActiveState() { return s_activeKey; }
 bool nvaIsEnded() { return s_clipEnded; }
 uint32_t nvaLoopCycles() { return s_loopCycles; }
+int16_t nvaFrameWidth()  { return (s_ready && s_frontReady) ? (int16_t)s_frontW : 144; }
+int16_t nvaFrameHeight() { return (s_ready && s_frontReady) ? (int16_t)s_frontH : 162; }
 
 void nvaTick(uint32_t nowMs) {
   if (!s_ready) return;
   if (s_activeOnce && s_clipEnded && s_desiredOnce && s_desiredKey == s_activeKey) return;
-  uint8_t fps = s_activeFps > 0 ? s_activeFps : 12;
+  uint8_t fps = s_activeFps > 0 ? s_activeFps : 10;
   uint32_t stepMs = 1000 / fps;
   if (s_nextFrameMs == 0) s_nextFrameMs = nowMs;
   if ((int32_t)(nowMs - s_nextFrameMs) < 0) return;
@@ -422,7 +456,7 @@ void nvaTick(uint32_t nowMs) {
     s_clipEnded = false;
     NvaPack* pk = acquirePack(s_activeKey);
     if (pk && pk->valid) {
-      s_activeFps = pk->fps > 0 ? pk->fps : 12;
+      s_activeFps = pk->fps > 0 ? pk->fps : 10;
       decodeFrameToBack(*pk, s_frameIdx);
     }
     return;
@@ -430,7 +464,7 @@ void nvaTick(uint32_t nowMs) {
   s_activeOnce = s_desiredOnce;
   NvaPack* pk = acquirePack(s_activeKey);
   if (pk && pk->valid && pk->nframes > 0) {
-    s_activeFps = pk->fps > 0 ? pk->fps : 12;
+    s_activeFps = pk->fps > 0 ? pk->fps : 10;
     if (s_activeOnce && (uint32_t)(s_frameIdx + 1) >= pk->nframes) {
       s_clipEnded = true;
       s_loopCycles++;

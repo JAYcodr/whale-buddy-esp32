@@ -176,10 +176,27 @@ static void playAdpcmBytes(const uint8_t* hdr, const uint8_t* payload, size_t pa
 static void beepTask(void*) {
   AudioReq r;
   int16_t buf[256];
-  while (xQueueReceive(s_audioQ, &r, portMAX_DELAY) == pdTRUE) {
+#if BOARD_HAS_PA_CTRL
+  bool paOn = false;
+  auto setPa = [&](bool on) {
+    if (on == paOn) return;
+    digitalWrite(PIN_PA_CTRL, on ? HIGH : LOW);
+    paOn = on;
+    if (on) vTaskDelay(pdMS_TO_TICKS(10));
+  };
+#else
+  auto setPa = [](bool) {};
+#endif
+
+  for (;;) {
+    if (xQueueReceive(s_audioQ, &r, pdMS_TO_TICKS(600)) != pdTRUE) {
+      setPa(false);
+      continue;
+    }
     if (r.kind == AudioReqKind::TONE) {
       int total = AUDIO_SR * (int)r.dur / 1000;
       if (total <= 0) continue;
+      setPa(true);
       int fade = AUDIO_SR * 5 / 1000;
       if (fade * 2 > total) fade = total / 2;
       float ampScale = (r.vol > 100 ? 100 : r.vol) / 100.0f;
@@ -209,6 +226,7 @@ static void beepTask(void*) {
         if (f) {
           uint8_t hdr[16];
           if (f.read(hdr, sizeof(hdr)) == sizeof(hdr)) {
+            setPa(true);
             playAdpcmBytes(hdr, nullptr, 0, r.vol, r.voiceGen, &f);
           }
           f.close();
@@ -217,6 +235,7 @@ static void beepTask(void*) {
     } else if (r.kind == AudioReqKind::ADPCM_MEM) {
       if (r.ptr) {
         if (r.voiceGen == s_voiceGen && r.len > 16) {
+          setPa(true);
           playAdpcmBytes(r.ptr, r.ptr + 16, r.len - 16, r.vol, r.voiceGen, nullptr);
         }
         free(r.ptr);
@@ -228,7 +247,7 @@ static void beepTask(void*) {
 bool hwAudioInit() {
 #if BOARD_HAS_PA_CTRL
   pinMode(PIN_PA_CTRL, OUTPUT);
-  digitalWrite(PIN_PA_CTRL, HIGH);
+  digitalWrite(PIN_PA_CTRL, LOW);  // Keep speaker amp powered down until audio plays
 #endif
 
   if (!i2sInit())          { Serial.println("hwAudio: I2S init failed");   return false; }

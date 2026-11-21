@@ -44,6 +44,10 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
     return;
   }
 
+  const uint32_t localElapsed = (st.quotaRxMs > 0 && st.nowMs > st.quotaRxMs)
+                                  ? ((st.nowMs - st.quotaRxMs) / 1000u)
+                                  : 0u;
+
   for (int i = 0; i < st.nCards && i < 3; i++) {
     const QuotaCard& card = st.cards[i];
     const int16_t cx = 20;
@@ -55,11 +59,13 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
     ui::drawCard(c, cx, cy, cw, ch, ui::COL_CARD, ui::COL_BORDER, 18);
     ui::aaFillRoundRect(c, cx + 10, cy + 16, 4, ch - 32, 2, accent, accent);
 
-    // Header: Provider name + age badge
+    // Header: Provider name + live incrementing age badge
     ui::drawText(c, ui::fontCjk16(), cx + 22, cy + 31, card.name, ui::COL_TEXT, ui::COL_CARD);
     char ageBuf[16];
-    formatAge(card.ageSec, ageBuf, sizeof(ageBuf));
-    ui::drawTextRight(c, ui::fontCjk14(), cx + cw - 14, cy + 30, ageBuf, ui::COL_MUTED, ui::COL_CARD);
+    uint32_t liveAge = card.ageSec + localElapsed;
+    formatAge(liveAge, ageBuf, sizeof(ageBuf));
+    ui::drawTextRight(c, ui::fontCjk14(), cx + cw - 14, cy + 30, ageBuf,
+                      (liveAge >= 600) ? ui::COL_AMBER : ui::COL_MUTED, ui::COL_CARD);
 
     if (strcmp(card.kind, "bal") == 0) {
       char valBuf[24];
@@ -88,7 +94,8 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
         ui::drawTextRight(c, ui::fontAscii14(), cx + 240, rowY + 4, pctBuf, barCol, ui::COL_CARD);
 
         char rstBuf[16];
-        ui::fmtResetTime(qb.resetSec, rstBuf, sizeof(rstBuf));
+        uint32_t liveReset = (qb.resetSec > localElapsed) ? (qb.resetSec - localElapsed) : 0u;
+        ui::fmtResetTime(liveReset, rstBuf, sizeof(rstBuf));
         ui::drawTextRight(c, ui::fontCjk14(), cx + cw - 14, rowY + 4, rstBuf, ui::COL_MUTED, ui::COL_CARD);
       }
     } else {
@@ -103,6 +110,9 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
   }
 }
 
-UiAction pageQuotaTap(int16_t, int16_t) {
+UiAction pageQuotaTap(int16_t, int16_t y) {
+  if (y >= 60) {
+    return UiAction{ UiAction::SYNC_HOST, 0 };
+  }
   return UiAction{};
 }

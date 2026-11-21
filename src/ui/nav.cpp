@@ -61,7 +61,7 @@ void UiNav::draw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
     return;
   }
   switch (m_page) {
-    case UiPage::HOME:     pageHomeDraw(c, st, frame); break;
+    case UiPage::HOME:     pageHomeDraw(c, st, cfg, frame); break;
     case UiPage::QUOTA:    pageQuotaDraw(c, st); break;
     case UiPage::RANK:     pageRankDraw(c, st); break;
     case UiPage::DETAIL:   pageDetailDraw(c, st, cfg); break;

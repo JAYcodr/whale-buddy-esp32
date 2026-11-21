@@ -63,7 +63,7 @@ static bool saveRgb565Png(const char* path, const uint16_t* fb, int w, int h) {
 static void populateSample(NovaState& st) {
   std::memset(&st, 0, sizeof(st));
   std::strcpy(st.deviceId, "D93468");
-  std::strcpy(st.fwVer, "0.3.0");
+  std::strcpy(st.fwVer, NOVA_FW_VER);
   std::strcpy(st.ip, "192.168.31.118");
   st.rssi = -52;
   st.wifiConnected = true;
@@ -71,7 +71,7 @@ static void populateSample(NovaState& st) {
   st.run = 1;
   st.wait = 0;
   st.sess = 3;
-  std::strcpy(st.msg, "bash: pio run -e waveshare");
+  std::strcpy(st.msg, "Bash: ./tools/pio.sh run -e waveshare");
   st.ctxPct = 42;
   std::strcpy(st.activeModel, "GPT-6.2 Astra");
 
@@ -126,6 +126,7 @@ static void populateSample(NovaState& st) {
   st.cpuMhz = 240;
   st.nowMs = 10000;
   st.lastMqttRxMs = 8000;
+  st.quotaRxMs = 5000;  // +5s live increment in quota view
   st.burnInStep = 0;
   st.pushUs = 8600;
   st.freeHeap = 182 * 1024;
@@ -150,14 +151,15 @@ int main(int argc, char** argv) {
   NovaSettings cfg;
   UiNav nav;
 
-  struct Case { const char* name; UiPage page; bool approval; };
+  struct Case { const char* name; UiPage page; bool approval; uint8_t settingsTab; };
   Case cases[] = {
-    { "home", UiPage::HOME, false },
-    { "quota", UiPage::QUOTA, false },
-    { "rank", UiPage::RANK, false },
-    { "detail", UiPage::DETAIL, false },
-    { "settings", UiPage::SETTINGS, false },
-    { "approval", UiPage::HOME, true },
+    { "home", UiPage::HOME, false, 0 },
+    { "quota", UiPage::QUOTA, false, 0 },
+    { "rank", UiPage::RANK, false, 0 },
+    { "detail", UiPage::DETAIL, false, 0 },
+    { "settings", UiPage::SETTINGS, false, 0 },
+    { "settings_adv", UiPage::SETTINGS, false, 1 },
+    { "approval", UiPage::HOME, true, 0 },
   };
 
   for (const auto& cs : cases) {
@@ -167,6 +169,7 @@ int main(int argc, char** argv) {
     std::strcpy(st.apReason, "rm -rf /tmp/nova-cache && ./tools/pio.sh run -t uploadfs");
     st.apTtlMs = 8000;
     st.apArrivedMs = 1000;
+    pageSettingsSetTab(cs.settingsTab);
     nav.setPage(cs.page);
     nav.draw(canvas, st, cfg, 24, 6500);
     std::string path = outDir + "/page_" + cs.name + ".png";
