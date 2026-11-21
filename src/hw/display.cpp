@@ -1,14 +1,16 @@
 #include "hw/display.h"
 #include "hw/pins.h"
 #include <Arduino.h>
+#include <Wire.h>
 
 static Arduino_DataBus*  s_bus    = nullptr;
-#if BOARD_DISPLAY_CO5300
-static Arduino_CO5300*   s_gfx    = nullptr;
-#else
-static Arduino_SH8601*   s_gfx    = nullptr;
-#endif
+static Arduino_OLED*     s_gfx    = nullptr;
 static Arduino_Canvas*   s_canvas = nullptr;
+
+static bool i2cAck(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  return Wire.endTransmission(true) == 0;
+}
 
 static const uint8_t BRIGHT_LUT[5] = { 50, 100, 150, 200, 255 };
 
@@ -59,7 +61,13 @@ bool hwDisplayInit() {
   s_gfx = new Arduino_CO5300(s_bus, PIN_LCD_RESET, BOARD_DISPLAY_ROTATION,
                              LCD_W_PHYS, LCD_H_PHYS, BOARD_CO5300_COL_OFFSET, 0, 0, 0);
 #else
-  s_gfx = new Arduino_SH8601(s_bus, GFX_NOT_DEFINED, 0, LCD_W_PHYS, LCD_H_PHYS);
+  if (!i2cAck(0x38) && i2cAck(0x15)) {
+    // Later Waveshare 1.8" batches swap FT3168/SH8601 for CST820/CO5300 (+16px X offset).
+    Serial.println("hwDisplay: detected CST820@0x15 -> CO5300(+16px)");
+    s_gfx = new Arduino_CO5300(s_bus, GFX_NOT_DEFINED, 0, LCD_W_PHYS, LCD_H_PHYS, 16, 0, 0, 0);
+  } else {
+    s_gfx = new Arduino_SH8601(s_bus, GFX_NOT_DEFINED, 0, LCD_W_PHYS, LCD_H_PHYS);
+  }
 #endif
   s_canvas = new Arduino_Canvas(HW_W, HW_H, s_gfx);
   // canvas->begin() internally calls gfx->begin() which calls bus init.

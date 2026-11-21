@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
+#include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -154,6 +155,7 @@ void pollSerialCommands() {
 }
 
 void uiTaskFn(void*) {
+  esp_task_wdt_add(nullptr);
   Arduino_Canvas* canvas = hwCanvas();
   UiNav nav;
   nav.init(settingsGet().homePage);
@@ -168,57 +170,88 @@ void uiTaskFn(void*) {
   bool     key1LongFired = false;
   uint32_t lastInteractMs = millis();
   uint32_t clickAnimUntilMs = 0;
+  uint32_t oneShotUntilMs = 0;
+  NvaAnimKey oneShotKey = NvaAnimKey::SUCCESS;
 
   uint32_t lastApGen = 0;
   uint32_t lastStateGen = 0;
   uint32_t lastQuotaGen = 0;
   uint32_t lastRankGen = 0;
+  uint16_t lastRunCount = 0;
   bool     lastWifiUp = false;
   bool     lastApMode = false;
   bool     lastMqttUp = false;
+  uint32_t lastMqttRxSeen = 0;
+  bool     lastStaleFlag = false;
+  uint32_t lastStaleShownSec = 0;
   uint8_t  lastMinute = 255;
   uint8_t  lastSecond = 255;
   uint8_t  lastBattPct = 255;
+  uint8_t  lastBurnStep = 0;
+  uint32_t curCpuMhz = getCpuFrequencyMhz();
 
   uint32_t frame = 0;
   uint32_t fpsFrames = 0;
   int64_t  fpsWindowStartUs = esp_timer_get_time();
   float    curFps = 0.0f;
+  float    lastHomeFps = 60.0f;
   uint32_t lastPushUs = 0;
   int64_t  nextFrameAt = esp_timer_get_time();
 
+  auto applyCpuMhz = [&](uint32_t targetMhz) {
+    if (targetMhz != curCpuMhz) {
+      if (setCpuFrequencyMhz(targetMhz)) curCpuMhz = targetMhz;
+    }
+  };
+
   for (;;) {
+    esp_task_wdt_reset();
     uint32_t nowMs = millis();
     pollSerialCommands();
 
     const NovaSettings& cfg = settingsGet();
     BusSnapshot snap = hwBusSnapshot();
+    uint8_t burnStep = (uint8_t)((nowMs / 30000u) % 25u);
 
     // Update shared NovaState hardware fields.
-    novaStateWithLock([&](NovaState& st) {
-      st.fps        = curFps;
-      st.pushUs     = lastPushUs;
-      st.freeHeap   = esp_get_free_heap_size();
-      st.freePsram  = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-      st.battMv     = snap.battery.mV;
-      st.battPct    = snap.battery.pct;
-      st.usbPresent = snap.battery.usbPresent;
-      st.charging   = snap.battery.charging;
-      st.faceDown   = snap.faceDown;
-      st.hour       = snap.time.H;
-      st.minute     = snap.time.M;
-      st.second     = snap.time.S;
-      st.timeValid  = snap.timeValid;
+    novaStateWithLock([&](NovaState& s) {
+      s.fps        = (lastHomeFps > 0.5f) ? lastHomeFps : curFps;
+      s.pushUs     = lastPushUs;
+      s.freeHeap   = esp_get_free_heap_size();
+      s.freePsram  = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+      s.battMv     = snap.battery.mV;
+      s.battPct    = snap.battery.pct;
+      s.usbPresent = snap.battery.usbPresent;
+      s.charging   = snap.battery.charging;
+      s.faceDown   = snap.faceDown;
+      s.hour       = snap.time.H;
+      s.minute     = snap.time.M;
+      s.second     = snap.time.S;
+      s.timeValid  = snap.timeValid;
+      s.nowMs      = nowMs;
+      s.cpuMhz     = (uint16_t)curCpuMhz;
+      s.burnInStep = burnStep;
 
       // Auto-expire approval on device side after TTL.
-      if (st.approvalActive && st.apTtlMs > 0 && (nowMs - st.apArrivedMs >= st.apTtlMs)) {
-        st.approvalActive = false;
-        st.apGen++;
+      if (s.approvalActive && s.apTtlMs > 0 && (nowMs - s.apArrivedMs >= s.apTtlMs)) {
+        s.approvalActive = false;
+        s.apGen++;
       }
     });
 
     static NovaState st;
     novaStateRead(&st);
+
+    // CPU Dynamic Frequency Scaling (DFS via PLL 240/160/80 MHz, keeping APB >= 80 MHz).
+    bool activeDemand = st.approvalActive || st.run > 0 || st.wait > 0 ||
+                        ((nowMs - lastInteractMs) < 10000u);
+    uint32_t wantMhz = 240;
+    if (cfg.powerProfile == PowerProfile::LONG_BATT) {
+      wantMhz = (screenOff || dimmedForNap) ? 80 : (st.approvalActive ? 160 : 80);
+    } else if (cfg.powerProfile == PowerProfile::ADAPTIVE) {
+      wantMhz = (screenOff || dimmedForNap || (!snap.battery.usbPresent && !activeDemand)) ? 80 : 240;
+    }
+    applyCpuMhz(wantMhz);
 
     // Handle new approval arrival: wake idle screen (unless face-down napping).
     if (st.apGen != lastApGen) {
@@ -258,12 +291,13 @@ void uiTaskFn(void*) {
 
     auto handleAction = [&](const UiAction& act, int slideDir = 0) {
       if (act.kind == UiAction::NONE) return;
-      if (act.kind != UiAction::PET_TAP) needFull = true;
+      if (act.kind != UiAction::PET_TAP || act.value == 2) needFull = true;
       switch (act.kind) {
         case UiAction::GO_PAGE:
           nav.setPage((UiPage)act.value);
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (slideDir != 0 && canvas && !screenOff && !dimmedForNap) {
+            applyCpuMhz(240);
             runHorizontalSlide(*canvas, nav, st, cfg, frame, nowMs, slideDir);
             needFull = false;
             frame++;
@@ -301,23 +335,33 @@ void uiTaskFn(void*) {
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::PET_TAP:
-          clickAnimUntilMs = nowMs + 2600;
-          nvaSetState(NvaAnimKey::CLICK);
-          sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+          if (act.value == 0) {
+            clickAnimUntilMs = nowMs + 2600;
+            nvaSetState(NvaAnimKey::CLICK);
+            sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+          } else {
+            sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          }
           break;
         case UiAction::APPROVE:
           netPublishDecision(st.apId, true, false);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          oneShotKey = NvaAnimKey::SUCCESS;
+          oneShotUntilMs = nowMs + 2800;
           sfxPlay(SfxKind::ACCEPT, cfg.soundPct);
           break;
         case UiAction::DENY:
           netPublishDecision(st.apId, false, false);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          oneShotKey = NvaAnimKey::ERROR;
+          oneShotUntilMs = nowMs + 2800;
           sfxPlay(SfxKind::DENY, cfg.soundPct);
           break;
         case UiAction::TO_PC:
           netPublishDecision(st.apId, false, true);
           novaStateWithLock([](NovaState& s) { s.approvalActive = false; s.apGen++; });
+          oneShotKey = NvaAnimKey::THINKING;
+          oneShotUntilMs = nowMs + 2400;
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::RANK_REDRAW:
@@ -421,33 +465,70 @@ void uiTaskFn(void*) {
       }
     }
 
-    // Detect state changes requiring a full redraw.
+    // Detect task completion to celebrate briefly with SUCCESS animation.
+    if (lastRunCount > 0 && st.run == 0 && !st.approvalActive) {
+      oneShotKey = NvaAnimKey::SUCCESS;
+      oneShotUntilMs = nowMs + 2800;
+    }
+    lastRunCount = st.run;
+
+    bool isStale = (st.wifiConnected && st.mqttConnected && st.lastMqttRxMs > 0 &&
+                    nowMs > st.lastMqttRxMs && (nowMs - st.lastMqttRxMs) > 45000);
+    uint32_t staleBucket = isStale ? ((nowMs - st.lastMqttRxMs) / 5000) : 0;
+
+    // Detect state / heartbeat / burn-in pixel shift changes requiring a full redraw.
     if (st.stateGen != lastStateGen || st.quotaGen != lastQuotaGen || st.rankGen != lastRankGen ||
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
-        st.mqttConnected != lastMqttUp || st.minute != lastMinute || st.battPct != lastBattPct) {
-      lastStateGen = st.stateGen;
-      lastQuotaGen = st.quotaGen;
-      lastRankGen  = st.rankGen;
-      lastWifiUp   = st.wifiConnected;
-      lastApMode   = st.wifiApMode;
-      lastMqttUp   = st.mqttConnected;
-      lastMinute   = st.minute;
-      lastBattPct  = st.battPct;
-      needFull     = true;
+        st.mqttConnected != lastMqttUp || st.minute != lastMinute || st.battPct != lastBattPct ||
+        st.lastMqttRxMs != lastMqttRxSeen || isStale != lastStaleFlag ||
+        staleBucket != lastStaleShownSec || burnStep != lastBurnStep) {
+      lastStateGen      = st.stateGen;
+      lastQuotaGen      = st.quotaGen;
+      lastRankGen       = st.rankGen;
+      lastWifiUp        = st.wifiConnected;
+      lastApMode        = st.wifiApMode;
+      lastMqttUp        = st.mqttConnected;
+      lastMqttRxSeen    = st.lastMqttRxMs;
+      lastStaleFlag     = isStale;
+      lastStaleShownSec = staleBucket;
+      lastMinute        = st.minute;
+      lastBattPct       = st.battPct;
+      lastBurnStep      = burnStep;
+      needFull          = true;
     }
     if (st.approvalActive && st.second != lastSecond) {
       lastSecond = st.second;
       needFull = true;
     }
 
-    // Drive Nova animation state from DSH status / one-shot click.
+    // Drive all 9 Nova animation states cleanly (click > one-shot > demo > approval/run > walk/sleep/idle).
+    int demoIdx = pageHomeDemoOverride();
     if (clickAnimUntilMs != 0 && (int32_t)(nowMs - clickAnimUntilMs) < 0) {
       nvaSetState(NvaAnimKey::CLICK);
+    } else if (demoIdx >= 0 && demoIdx <= 8) {
+      clickAnimUntilMs = 0;
+      nvaSetState((NvaAnimKey)demoIdx);
+    } else if (oneShotUntilMs != 0 && (int32_t)(nowMs - oneShotUntilMs) < 0) {
+      clickAnimUntilMs = 0;
+      nvaSetState(oneShotKey);
     } else {
       clickAnimUntilMs = 0;
-      if (st.approvalActive || st.wait > 0) nvaSetState(NvaAnimKey::WAITING);
-      else if (st.run > 0)                  nvaSetState(NvaAnimKey::WORKING);
-      else                                  nvaSetState(NvaAnimKey::IDLE);
+      oneShotUntilMs = 0;
+      if (st.approvalActive || st.wait > 0) {
+        nvaSetState(NvaAnimKey::WAITING);
+      } else if (st.run > 0) {
+        nvaSetState(NvaAnimKey::WORKING);
+      } else if (pageHomeIsWalking()) {
+        nvaSetState(NvaAnimKey::THINKING);
+      } else if ((nowMs - lastInteractMs) >= (snap.battery.usbPresent ? 90000u : 45000u)) {
+        nvaSetState(NvaAnimKey::SLEEP);
+      } else if (st.sess > 0 && ((nowMs / 18000u) % 3u) == 1u) {
+        nvaSetState(NvaAnimKey::THINKING);
+      } else if (((nowMs / 25000u) % 5u) == 4u) {
+        nvaSetState(NvaAnimKey::QUOTA);
+      } else {
+        nvaSetState(NvaAnimKey::IDLE);
+      }
     }
     nvaTick(nowMs);
 
@@ -481,6 +562,9 @@ void uiTaskFn(void*) {
     int64_t elapsedUs = nowUs - fpsWindowStartUs;
     if (elapsedUs >= 1000000) {
       curFps = (float)fpsFrames * 1000000.0f / (float)elapsedUs;
+      if (animPage && !screenOff && !dimmedForNap && curFps > 5.0f) {
+        lastHomeFps = curFps;
+      }
       fpsFrames = 0;
       fpsWindowStartUs = nowUs;
     }

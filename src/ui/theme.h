@@ -258,36 +258,62 @@ inline void drawPagePills(NovaCanvas& c, int16_t centerX, int16_t centerY,
   }
 }
 
+inline int16_t burnOffsetX(uint8_t step) {
+  static constexpr int8_t DX[5] = { 0, 1, 2, -1, -2 };
+  return DX[step % 5];
+}
+
+inline int16_t burnOffsetY(uint8_t step) {
+  static constexpr int8_t DY[5] = { 0, 1, -1, 2, -2 };
+  return DY[(step / 5) % 5];
+}
+
 inline void drawTopBar(NovaCanvas& c, const NovaState& st, int activeDot, int totalDots = 4) {
   c.fillRect(0, 0, UI_W, 60, COL_BG);
+  const int16_t ox = burnOffsetX(st.burnInStep);
+  const int16_t oy = burnOffsetY(st.burnInStep);
 
   char clockBuf[8];
   snprintf(clockBuf, sizeof(clockBuf), "%02u:%02u", st.hour, st.minute);
-  drawText(c, fontNum24(), UI_SAFE_L + 2, 41, clockBuf, COL_TEXT, COL_BG);
+  drawText(c, fontNum24(), UI_SAFE_L + 4 + ox, 41 + oy, clockBuf, COL_TEXT, COL_BG);
 
   uint16_t dotCol = COL_RED;
-  const char* netLabel = "离线";
+  uint16_t txtCol = COL_DIM;
+  char netBuf[20] = "离线";
   if (st.wifiApMode && !st.wifiConnected) {
     dotCol = COL_AMBER;
-    netLabel = "配网";
+    snprintf(netBuf, sizeof(netBuf), "配网");
   } else if (st.wifiConnected && st.mqttConnected) {
-    dotCol = COL_MINT;
-    netLabel = "在线";
+    bool stale = (st.lastMqttRxMs > 0 && st.nowMs > st.lastMqttRxMs && (st.nowMs - st.lastMqttRxMs) > 45000);
+    bool waitingHost = (st.lastMqttRxMs == 0);
+    if (stale) {
+      dotCol = COL_AMBER;
+      txtCol = COL_AMBER;
+      uint32_t staleSec = (st.nowMs - st.lastMqttRxMs) / 1000;
+      if (staleSec > 999) staleSec = 999;
+      snprintf(netBuf, sizeof(netBuf), "滞后%us", (unsigned)staleSec);
+    } else if (waitingHost) {
+      dotCol = COL_AMBER;
+      snprintf(netBuf, sizeof(netBuf), "等主机");
+    } else {
+      dotCol = COL_MINT;
+      snprintf(netBuf, sizeof(netBuf), "在线");
+    }
   } else if (st.wifiConnected) {
     dotCol = COL_AMBER;
-    netLabel = "无MQTT";
+    snprintf(netBuf, sizeof(netBuf), "无MQTT");
   }
-  TextMetrics lm = measureText(c, fontCjk14(), netLabel);
+  TextMetrics lm = measureText(c, fontCjk14(), netBuf);
   int16_t pillW = (int16_t)lm.w + 26;
-  int16_t pillX = (int16_t)((UI_W - pillW) / 2 + 2);
-  int16_t pillY = 16;
+  int16_t pillX = (int16_t)((UI_W - pillW) / 2 + 2 + ox);
+  int16_t pillY = (int16_t)(16 + oy);
   aaFillRoundRect(c, pillX, pillY, pillW, 26, 13, COL_CARD, COL_BORDER);
   aaFillCircle(c, pillX + 11, pillY + 13, 3, dotCol);
   drawTextCenteredInRect(c, fontCjk14(), { (int16_t)(pillX + 16), pillY, (int16_t)(pillW - 20), 26 },
-                         netLabel, COL_DIM, COL_CARD);
+                         netBuf, txtCol, COL_CARD);
 
-  drawBatteryIcon(c, UI_SAFE_R - 2, 29, st.battPct, st.usbPresent);
-  drawPagePills(c, UI_W / 2, 52, activeDot, totalDots);
+  drawBatteryIcon(c, UI_SAFE_R - 4 + ox, 29 + oy, st.battPct, st.usbPresent);
+  drawPagePills(c, UI_W / 2 + ox, 52 + oy, activeDot, totalDots);
 }
 
 inline void fmtResetTime(uint32_t sec, char* out, size_t cap) {

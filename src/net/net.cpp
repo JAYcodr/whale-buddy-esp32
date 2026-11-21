@@ -119,6 +119,10 @@ void publishHello(bool online) {
   snprintf(topic, sizeof(topic), "%s/hello", s_topicPrefix);
   size_t n = protoBuildHello(payload, sizeof(payload), s_tmpSt, online);
   s_mqtt.publish(topic, payload, (int)n, true, 1);
+  if (online) {
+    snprintf(topic, sizeof(topic), "%s/up", s_topicPrefix);
+    s_mqtt.publish(topic, "{\"evt\":\"sync\"}", 14, false, 1);
+  }
 }
 
 void netTaskFn(void*) {

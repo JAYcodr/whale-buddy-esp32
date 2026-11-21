@@ -19,6 +19,7 @@ export function createNovaBridge(options = {}) {
   let stateTimer = null;
   let quotaTimer = null;
   let rankTimer = null;
+  let hbTimer = null;
   let closed = false;
 
   function onlineIds() {
@@ -146,6 +147,12 @@ export function createNovaBridge(options = {}) {
       }
     } else if (data?.evt === 'stat') {
       devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now(), stat: data });
+    } else if (data?.evt === 'sync') {
+      devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now() });
+      pushTime(id);
+      publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
+      if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
+      if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
     }
   }
 
@@ -178,6 +185,9 @@ export function createNovaBridge(options = {}) {
 
     quotaTimer = setInterval(() => refreshQuota().catch(() => {}), 5 * 60 * 1000);
     rankTimer = setInterval(() => refreshRank(true).catch(() => {}), 6 * 60 * 60 * 1000);
+    hbTimer = setInterval(() => {
+      for (const id of onlineIds()) pushTime(id);
+    }, 30 * 1000);
   }
 
   function onSessionEvent(session, event) {
@@ -290,6 +300,7 @@ export function createNovaBridge(options = {}) {
     if (stateTimer) clearTimeout(stateTimer);
     if (quotaTimer) clearInterval(quotaTimer);
     if (rankTimer) clearInterval(rankTimer);
+    if (hbTimer) clearInterval(hbTimer);
     for (const apId of [...pendingApprovals.keys()]) {
       settleApproval(apId, { kind: 'abort' }, { notifyDeviceEnd: true });
     }

@@ -8,6 +8,7 @@
   #include <Wire.h>
   #include "TouchDrvCSTXXX.hpp"
 #else
+  #include <Wire.h>
   #include <Arduino_DriveBus_Library.h>
 #endif
 
@@ -20,6 +21,7 @@ static TouchDrvCST92xx s_cst;
 #else
 static std::shared_ptr<Arduino_IIC_DriveBus> s_iicBus;
 static std::unique_ptr<Arduino_IIC>          s_ft3168;
+static bool                                  s_cst820Fallback = false;
 #endif
 static volatile bool                          s_tpIrqFlag = false;
 
@@ -61,8 +63,16 @@ bool hwInputInit() {
     if (s_ft3168->begin()) return true;
     delay(100);
   }
-  Serial.println("hwInput: FT3168 init failed");
-  return false;
+  Wire.beginTransmission(0x15);
+  if (Wire.endTransmission(true) == 0) {
+    s_cst820Fallback = true;
+    pinMode(PIN_TP_INT, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(PIN_TP_INT), onTouchIrq, FALLING);
+    Serial.println("hwInput: using CST820@0x15 fallback");
+    return true;
+  }
+  Serial.println("hwInput: touch init failed (non-fatal)");
+  return true;
 #endif
 }
 
@@ -181,13 +191,30 @@ static void scanTouch() {
     s_tp.justPressed  = false;
   }
 #else
-  uint8_t fingers = (uint8_t)s_ft3168->IIC_Read_Device_Value(
-      Arduino_IIC_Touch::Value_Information::TOUCH_FINGER_NUMBER);
+  uint8_t fingers = 0;
+  int rx = 0, ry = 0;
+  if (s_cst820Fallback) {
+    Wire.beginTransmission(0x15);
+    Wire.write(0x02);
+    if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x15, (uint8_t)5) == 5) {
+      fingers = Wire.read() & 0x0F;
+      uint8_t xh = Wire.read(), xl = Wire.read(), yh = Wire.read(), yl = Wire.read();
+      rx = ((xh & 0x0F) << 8) | xl;
+      ry = ((yh & 0x0F) << 8) | yl;
+    }
+  } else {
+    fingers = (uint8_t)s_ft3168->IIC_Read_Device_Value(
+        Arduino_IIC_Touch::Value_Information::TOUCH_FINGER_NUMBER);
+    if (fingers > 0 && fingers != 0xFF) {
+      rx = (int)s_ft3168->IIC_Read_Device_Value(
+          Arduino_IIC_Touch::Value_Information::TOUCH_COORDINATE_X);
+      ry = (int)s_ft3168->IIC_Read_Device_Value(
+          Arduino_IIC_Touch::Value_Information::TOUCH_COORDINATE_Y);
+    } else {
+      fingers = 0;
+    }
+  }
   if (fingers > 0) {
-    int rx = (int)s_ft3168->IIC_Read_Device_Value(
-        Arduino_IIC_Touch::Value_Information::TOUCH_COORDINATE_X);
-    int ry = (int)s_ft3168->IIC_Read_Device_Value(
-        Arduino_IIC_Touch::Value_Information::TOUCH_COORDINATE_Y);
     s_tp.justPressed  = !s_tp.down;
     s_tp.justReleased = false;
     int dx = rx - BOARD_DISPLAY_OFFSET_X;

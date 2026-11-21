@@ -14,6 +14,7 @@ void hwInit() {
 
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   Wire.setClock(400000);
+  Wire.setTimeOut(50);
 
   if (!hwExpanderInit())  die("expander");
 #if BOARD_LCD_RST_VIA_PMU

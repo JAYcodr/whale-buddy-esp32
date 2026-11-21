@@ -1,6 +1,8 @@
 #include "hw/bus.h"
 #include "hw/hw.h"
 #include <Arduino.h>
+#include <Wire.h>
+#include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -19,9 +21,11 @@ static void pushEvt(InputEvtType type, int16_t x, int16_t y, uint32_t now) {
 }
 
 static void busTaskFn(void*) {
+  esp_task_wdt_add(nullptr);
   uint32_t tickCount = 0;
   int8_t faceDownFrames = 0;
   int16_t lastTx = -1, lastTy = -1;
+  uint8_t i2cErrStreak = 0;
 
   // Initial read so snapshot is valid immediately after startup.
   HwBattery bat = hwBattery();
@@ -87,13 +91,28 @@ static void busTaskFn(void*) {
     else if (faceDown && faceDownFrames <= -8) faceDown = false;
 
     // 3. RTC every ~200 ms (10 ticks), Battery every ~1000 ms (50 ticks).
+    // Preserve last valid RTC/battery snapshot on transient I2C errors.
     if ((tickCount % 10) == 0) {
-      tmOk = hwRtcRead(&tm);
+      HwTime nextTm = {};
+      if (hwRtcRead(&nextTm)) {
+        tm = nextTm;
+        tmOk = true;
+        i2cErrStreak = 0;
+      } else if (++i2cErrStreak >= 10) {
+        i2cErrStreak = 0;
+        Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+        Wire.setClock(400000);
+        Wire.setTimeOut(50);
+      }
     }
     if ((tickCount % 50) == 0) {
-      bat = hwBattery();
+      HwBattery nextBat = hwBattery();
+      if (nextBat.mV >= 2500 && nextBat.mV <= 5000) {
+        bat = nextBat;
+      }
     }
     tickCount++;
+    esp_task_wdt_reset();
 
     taskENTER_CRITICAL(&s_snapMux);
     s_snap.battery   = bat;

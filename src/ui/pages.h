@@ -1,4 +1,5 @@
 #pragma once
+#include "anim/nva.h"
 #include "model/settings.h"
 #include "model/state.h"
 #include "ui/canvas.h"
@@ -36,6 +37,8 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, uint32_t frame);
 void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, uint32_t frame,
                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st);
+int pageHomeDemoOverride();  // -1 = auto, >=0 = NvaAnimKey index
+bool pageHomeIsWalking();
 
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st);
 UiAction pageQuotaTap(int16_t x, int16_t y);

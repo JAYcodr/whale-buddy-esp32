@@ -52,8 +52,13 @@ void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
   drawKvRow(c, 20, 301, 328, "电源状态", pwrBuf, ui::COL_TEXT, true);
 
   char perfBuf[48];
-  snprintf(perfBuf, sizeof(perfBuf), "%.0ffps · %.1fM",
-           st.fps, st.freePsram / (1024.0f * 1024.0f));
+  if (st.cpuMhz > 0) {
+    snprintf(perfBuf, sizeof(perfBuf), "%.0ffps · %uMHz · %.1fM",
+             st.fps, (unsigned)st.cpuMhz, st.freePsram / (1024.0f * 1024.0f));
+  } else {
+    snprintf(perfBuf, sizeof(perfBuf), "%.0ffps · %.1fM",
+             st.fps, st.freePsram / (1024.0f * 1024.0f));
+  }
   drawKvRow(c, 20, 333, 328, "系统性能", perfBuf, ui::COL_DIM, false);
 
   ui::drawButton(c, BTN_SETTINGS, "系统与偏好设置", false, ui::COL_ACCENT);

@@ -123,6 +123,10 @@ static void populateSample(NovaState& st) {
   }
 
   st.fps = 60.0f;
+  st.cpuMhz = 240;
+  st.nowMs = 10000;
+  st.lastMqttRxMs = 8000;
+  st.burnInStep = 0;
   st.pushUs = 8600;
   st.freeHeap = 182 * 1024;
   st.freePsram = 7400 * 1024;

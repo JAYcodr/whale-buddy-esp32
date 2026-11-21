@@ -97,6 +97,9 @@ struct NovaState {
   uint8_t  minute;
   uint8_t  second;
   bool     timeValid;
+  uint32_t nowMs;
+  uint16_t cpuMhz;
+  uint8_t  burnInStep;
 };
 
 void novaStateInit(const char* devId, const char* fwVer);
