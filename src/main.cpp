@@ -322,8 +322,8 @@ void uiTaskFn(void*) {
           settingsSave();
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
-        case UiAction::TOGGLE_SOUND:
-          settingsMut().soundPct = (cfg.soundPct > 0) ? 0 : 70;
+        case UiAction::SET_SOUND:
+          settingsMut().soundPct = (uint8_t)((act.value < 0) ? 0 : (act.value > 100 ? 100 : act.value));
           settingsSave();
           if (settingsGet().soundPct > 0) sfxPlay(SfxKind::NAV_CHIRP, settingsGet().soundPct);
           break;

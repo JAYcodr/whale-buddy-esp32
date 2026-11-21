@@ -19,7 +19,7 @@ struct UiAction {
     GO_PAGE,
     SET_HOME,
     SET_POWER,
-    TOGGLE_SOUND,
+    SET_SOUND,
     SET_BRIGHT,
     REPROVISION,
     CANCEL_PORTAL,

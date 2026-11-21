@@ -16,7 +16,7 @@ enum class PowerProfile : uint8_t {
 struct NovaSettings {
   HomePageKind homePage     = HomePageKind::PET;
   PowerProfile powerProfile = PowerProfile::ADAPTIVE;
-  uint8_t      soundPct     = 70;
+  uint8_t      soundPct     = 75;
   uint8_t      brightLevel  = 4;
   bool         useNva       = true;
   char         brokerHost[40] = "192.168.31.15";

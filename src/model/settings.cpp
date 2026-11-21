@@ -17,7 +17,7 @@ void settingsLoad() {
     s_cfg.homePage = (hp <= 2) ? (HomePageKind)hp : HomePageKind::PET;
     uint8_t pp = prefs.getUChar("pwr", 0);
     s_cfg.powerProfile = (pp <= 2) ? (PowerProfile)pp : PowerProfile::ADAPTIVE;
-    s_cfg.soundPct = prefs.getUChar("snd", 70);
+    s_cfg.soundPct = prefs.getUChar("snd", 75);
     if (s_cfg.soundPct > 100) s_cfg.soundPct = 100;
     s_cfg.brightLevel = prefs.getUChar("brt", 4);
     if (s_cfg.brightLevel > 4) s_cfg.brightLevel = 4;
