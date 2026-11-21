@@ -55,9 +55,15 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st);
 UiAction pageQuotaTap(int16_t x, int16_t y);
 
 void pageRankDraw(NovaCanvas& c, const NovaState& st);
+void pageRankDrawList(NovaCanvas& c, const NovaState& st);
 UiAction pageRankTap(int16_t x, int16_t y);
 bool pageRankScrollPx(int16_t deltaY, uint8_t nRows);
 void pageRankResetScroll();
+void pageRankTouchDown(int16_t y, uint32_t ms);
+bool pageRankTouchMove(int16_t y, uint32_t ms, uint8_t nRows);
+void pageRankTouchUp(uint32_t ms, uint8_t nRows);
+bool pageRankTick(uint32_t nowMs);
+bool pageRankIsFlinging();
 
 void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg);
 UiAction pageDetailTap(int16_t x, int16_t y);
