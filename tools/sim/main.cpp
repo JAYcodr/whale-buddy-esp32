@@ -139,6 +139,51 @@ static void populateSample(NovaState& st) {
   st.second = 10;
 }
 
+static void mutateQuotaEmpty(NovaState& st, NovaSettings&) {
+  st.nCards = 0;
+}
+
+static void mutateQuotaWarn(NovaState& st, NovaSettings&) {
+  st.cards[0].val = 3.20;
+  st.cards[1].bars[0].pct = 92;
+  st.cards[1].bars[1].pct = 78;
+}
+
+static void mutateQuotaUnconf(NovaState& st, NovaSettings&) {
+  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "none");
+  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "缺少 Cookie");
+}
+
+static void mutateRankScrolled(NovaState& st, NovaSettings&) {
+  const char* longModel = "Claude Fable 5.2 Ultra Long Context Preview";
+  std::snprintf(st.rows[0].m, sizeof(st.rows[0].m), "%s", longModel);
+  // Scroll down before draw so the simulator exercises clamped offset & scrollbar rendering.
+  pageRankScrollPx(-600, 24);
+}
+
+static void cleanupRankScroll() {
+  pageRankResetScroll();
+}
+
+static void mutateSettingsMuted(NovaState&, NovaSettings& cfg) {
+  cfg.soundPct = 0;
+  cfg.brightLevel = 0;
+  cfg.ttsEnabled = false;
+  cfg.quietHours = false;
+  cfg.choreoEnabled = false;
+}
+
+static void mutateApprovalUrgent(NovaState& st, NovaSettings&) {
+  st.apTtlMs = 20000;
+  st.nowMs = 25000;
+  st.apArrivedMs = st.nowMs - 18000;
+  std::snprintf(
+      st.apReason, sizeof(st.apReason),
+      "cd /Volumes/hamelin-ssd/workspace/nova-buddy && git status && "
+      "./tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload && "
+      "./tools/sim/run.sh /tmp/out");
+}
+
 int main(int argc, char** argv) {
   std::string outDir = (argc > 1) ? argv[1] : "tools/sim/out";
   Arduino_Canvas canvas(UI_W, UI_H, nullptr);
@@ -146,32 +191,49 @@ int main(int argc, char** argv) {
   canvas.setUTF8Print(true);
   nvaInit("assets/pets/nova");
 
-  NovaState st;
-  populateSample(st);
-  NovaSettings cfg;
   UiNav nav;
 
-  struct Case { const char* name; UiPage page; bool approval; uint8_t settingsTab; };
+  struct Case {
+    const char* name;
+    UiPage page;
+    bool approval;
+    uint8_t settingsTab;
+    uint32_t drawNowMs;
+    void (*mutate)(NovaState&, NovaSettings&);
+    void (*afterDraw)();
+  };
   Case cases[] = {
-    { "home", UiPage::HOME, false, 0 },
-    { "quota", UiPage::QUOTA, false, 0 },
-    { "rank", UiPage::RANK, false, 0 },
-    { "detail", UiPage::DETAIL, false, 0 },
-    { "settings", UiPage::SETTINGS, false, 0 },
-    { "settings_adv", UiPage::SETTINGS, false, 1 },
-    { "approval", UiPage::HOME, true, 0 },
+    { "home", UiPage::HOME, false, 0, 6500, nullptr, nullptr },
+    { "quota", UiPage::QUOTA, false, 0, 6500, nullptr, nullptr },
+    { "rank", UiPage::RANK, false, 0, 6500, nullptr, nullptr },
+    { "detail", UiPage::DETAIL, false, 0, 6500, nullptr, nullptr },
+    { "settings", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr },
+    { "settings_adv", UiPage::SETTINGS, false, 1, 6500, nullptr, nullptr },
+    { "approval", UiPage::HOME, true, 0, 6500, nullptr, nullptr },
+    { "quota_empty", UiPage::QUOTA, false, 0, 6500, mutateQuotaEmpty, nullptr },
+    { "quota_warn", UiPage::QUOTA, false, 0, 6500, mutateQuotaWarn, nullptr },
+    { "quota_unconf", UiPage::QUOTA, false, 0, 6500, mutateQuotaUnconf, nullptr },
+    { "rank_scrolled", UiPage::RANK, false, 0, 6500, mutateRankScrolled, cleanupRankScroll },
+    { "settings_muted", UiPage::SETTINGS, false, 0, 6500, mutateSettingsMuted, nullptr },
+    { "approval_urgent", UiPage::HOME, true, 0, 25000, mutateApprovalUrgent, nullptr },
   };
 
   for (const auto& cs : cases) {
+    // Isolate each case on fresh sample state/settings so mutations never leak across cases.
+    NovaState st;
+    populateSample(st);
+    NovaSettings cfg;
     st.approvalActive = cs.approval;
     std::strcpy(st.apId, "ap_7f3");
     std::strcpy(st.apTool, "Bash");
     std::strcpy(st.apReason, "rm -rf /tmp/nova-cache && ./tools/pio.sh run -t uploadfs");
     st.apTtlMs = 8000;
     st.apArrivedMs = 1000;
+    if (cs.mutate) cs.mutate(st, cfg);
     pageSettingsSetTab(cs.settingsTab);
     nav.setPage(cs.page);
-    nav.draw(canvas, st, cfg, 24, 6500);
+    nav.draw(canvas, st, cfg, 24, cs.drawNowMs);
+    if (cs.afterDraw) cs.afterDraw();
     std::string path = outDir + "/page_" + cs.name + ".png";
     if (!saveRgb565Png(path.c_str(), canvas.getFramebuffer(), UI_W, UI_H)) return 1;
     std::printf("wrote %s\n", path.c_str());
