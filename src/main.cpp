@@ -291,12 +291,12 @@ void uiTaskFn(void*) {
       fpsFrames++;
     };
 
-    auto handleAction = [&](const UiAction& act, int slideDir = 0) {
+    auto handleAction = [&](const UiAction& act, int slideDir = 0, int swipeOrigin = -1) {
       if (act.kind == UiAction::NONE) return;
       if (act.kind != UiAction::PET_TAP || act.value == 2) needFull = true;
       switch (act.kind) {
         case UiAction::GO_PAGE: {
-          UiPage prevPage = nav.currentPage();
+          UiPage prevPage = (swipeOrigin >= 0) ? (UiPage)swipeOrigin : nav.currentPage();
           UiPage newPage  = (UiPage)act.value;
           nav.setPage(newPage);
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
@@ -508,11 +508,10 @@ void uiTaskFn(void*) {
         UiAction act = st.approvalActive ? UiAction{} : nav.onSwipe(dx, dy);
         if (act.kind != UiAction::NONE) {
           int16_t adx = dx < 0 ? -dx : dx;
-          // Downward swipe-to-close on SETTINGS should redraw directly rather than slide sideways.
           int slideDir = (prevPage == UiPage::SETTINGS && dy >= 60 && dy > adx)
                            ? 0
                            : (dx < 0 ? 1 : -1);
-          handleAction(act, slideDir);
+          handleAction(act, slideDir, (int)prevPage);
         } else {
           act = nav.onTap(ev.x, ev.y, st, cfg);
           handleAction(act);
