@@ -126,6 +126,8 @@ void uiTaskFn(void*) {
   bool dimmedForNap = false;
   bool needFull = true;
   bool uiAnimating = false;
+  bool needRankList = false;
+  bool wasRankFlinging = false;
 
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
@@ -451,6 +453,9 @@ void uiTaskFn(void*) {
         tpStartX = ev.x;
         tpStartY = ev.y;
         tpLastY  = ev.y;
+        if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
+          pageRankTouchDown(ev.y, ev.tsMs);
+        }
         if (!dimmedForNap && canvas && nav.pressedRect(ev.x, ev.y, st, cfg, &pressedRect)) {
           ui::drawPressedOverlay(*canvas, pressedRect, 12);
           hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
@@ -471,9 +476,8 @@ void uiTaskFn(void*) {
             tpDraggedV = true;
           }
           if (tpDraggedV) {
-            int16_t stepY = ev.y - tpLastY;
-            if (stepY != 0 && pageRankScrollPx(stepY, st.nRows)) {
-              needFull = true;
+            if (pageRankTouchMove(ev.y, ev.tsMs, st.nRows)) {
+              needRankList = true;
             }
           }
         }
@@ -487,7 +491,16 @@ void uiTaskFn(void*) {
         }
         if (tpDraggedV) {
           tpDraggedV = false;
+          if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
+            pageRankTouchUp(ev.tsMs, st.nRows);
+            if (!pageRankIsFlinging()) {
+              needFull = true;
+            }
+          }
           continue;
+        }
+        if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
+          pageRankTouchUp(ev.tsMs, st.nRows);
         }
         int16_t dx = ev.x - tpStartX;
         int16_t dy = ev.y - tpStartY;
@@ -667,9 +680,24 @@ void uiTaskFn(void*) {
     }
     nvaTick(nowMs);
 
+    if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
+      if (pageRankTick(nowMs)) {
+        needRankList = true;
+      }
+      bool curFlinging = pageRankIsFlinging();
+      if (wasRankFlinging && !curFlinging) {
+        needFull = true;
+      }
+      wasRankFlinging = curFlinging;
+    } else {
+      if (pageRankIsFlinging()) pageRankTick(nowMs);
+      wasRankFlinging = false;
+    }
+
     // Frame rate target depends on active page & power profile.
     bool animPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::HOME);
-    uint8_t targetFps = animPage ? settingsEffectiveFps(snap.battery.usbPresent) : 10;
+    bool interactive = tpActive || pageRankIsFlinging() || uiAnimating;
+    uint8_t targetFps = animPage ? settingsEffectiveFps(snap.battery.usbPresent) : (interactive ? 60 : 10);
     if (screenOff || dimmedForNap) targetFps = 5;
     int64_t frameUs = 1000000LL / targetFps;
 
@@ -680,6 +708,15 @@ void uiTaskFn(void*) {
         hwDisplayPush();
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needFull = false;
+        needRankList = false;
+        frame++;
+        fpsFrames++;
+      } else if (needRankList && !st.approvalActive && nav.currentPage() == UiPage::RANK) {
+        int64_t t0 = esp_timer_get_time();
+        pageRankDrawList(*canvas, st);
+        hwDisplayPushRect(0, 96, 368, 295);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        needRankList = false;
         frame++;
         fpsFrames++;
       } else if (animPage) {
