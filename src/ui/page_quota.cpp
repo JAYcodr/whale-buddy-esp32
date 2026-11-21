@@ -199,6 +199,14 @@ UiAction pageQuotaTap(int16_t, int16_t y, const NovaState& st) {
   return UiAction{};
 }
 
+bool pageQuotaTick(uint32_t nowMs) {
+  if (s_syncPending && (nowMs < s_syncStartMs || (nowMs - s_syncStartMs) >= 3000u)) {
+    s_syncPending = false;
+    return true;
+  }
+  return false;
+}
+
 bool pageQuotaHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings&,
                       ui::Rect* out) {
   if (!out) return false;

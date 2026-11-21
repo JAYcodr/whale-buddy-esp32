@@ -86,8 +86,8 @@ bool drawRankRowsAndScrollbar(NovaCanvas& c, const NovaState& st) {
 
     if (row.r <= 3) {
       uint16_t mc = medalColor(row.r);
-      // Offset 2px inside left edge so the 3px medal bar stays clear of the rounded corner.
-      ui::aaFillRoundRect(c, rx + 2, ry + 10, 3, rh - 20, 1, mc, mc);
+      // Keep the 3px medal stripe inside the straight left edge (clear of r=13 corner curves).
+      ui::aaFillRoundRect(c, rx + 2, ry + 12, 3, rh - 24, 1, mc, mc);
     }
 
     // Rank badge
@@ -105,9 +105,14 @@ bool drawRankRowsAndScrollbar(NovaCanvas& c, const NovaState& st) {
                                  ui::COL_DIM, ui::COL_CARD_HI);
     }
 
+    // Score string measured upfront so model name gets maximum non-overlapping width.
+    char scoreBuf[12];
+    snprintf(scoreBuf, sizeof(scoreBuf), "%.1f", row.s);
+    ui::TextMetrics scoreM = ui::measureText(c, ui::fontAscii18(), scoreBuf);
+
     // Top sub-row: model name + strength pill + optional NEW pill (pills reserved before score).
     const int16_t nameX = rx + 44;
-    const int16_t scoreLimitX = rx + rw - 68;
+    const int16_t scoreLimitX = rx + rw - 12 - (int16_t)scoreM.w - 8;
     const int16_t pillH = 18;
     ui::TextMetrics mg = ui::measureText(c, ui::fontCjk14(), "Mg");
     int16_t midY = (int16_t)((ry + 23) + mg.y1 + (int16_t)mg.h / 2);
@@ -117,16 +122,16 @@ bool drawRankRowsAndScrollbar(NovaCanvas& c, const NovaState& st) {
     int16_t ePillW = 0;
     if (hasE) {
       ui::TextMetrics em = ui::measureText(c, ui::fontAscii14(), row.e);
-      ePillW = (int16_t)em.w + 10;
-      if (ePillW < 28) ePillW = 28;
+      ePillW = (int16_t)em.w + 8;
+      if (ePillW < 26) ePillW = 26;
     }
     int16_t newPillW = 0;
     if (row.isNew) {
       ui::TextMetrics newM = ui::measureText(c, ui::fontAscii14(), "NEW");
-      newPillW = (int16_t)newM.w + 10;
+      newPillW = (int16_t)newM.w + 8;
     }
 
-    int16_t reserveW = (hasE ? (6 + ePillW) : 0) + (row.isNew ? (6 + newPillW) : 0);
+    int16_t reserveW = (hasE ? (5 + ePillW) : 0) + (row.isNew ? (5 + newPillW) : 0);
     int16_t nameMaxW = scoreLimitX - nameX - reserveW;
     if (nameMaxW < 24) nameMaxW = 24;
 
@@ -136,12 +141,12 @@ bool drawRankRowsAndScrollbar(NovaCanvas& c, const NovaState& st) {
                  active ? ui::COL_MINT : ui::COL_TEXT, rowBg);
 
     ui::TextMetrics nm = ui::measureText(c, ui::fontCjk14(), modelBuf);
-    int16_t px = (int16_t)(nameX + (int16_t)nm.w + 6);
+    int16_t px = (int16_t)(nameX + (int16_t)nm.w + 5);
     if (hasE) {
       ui::aaFillRoundRect(c, px, pillY, ePillW, pillH, 5, ui::COL_CARD_HI, ui::COL_BORDER);
       ui::drawTextCenteredInRect(c, ui::fontAscii14(), { px, pillY, ePillW, pillH },
                                  row.e, ui::COL_DIM, ui::COL_CARD_HI);
-      px = (int16_t)(px + ePillW + 6);
+      px = (int16_t)(px + ePillW + 5);
     }
     if (row.isNew) {
       const uint16_t newBg = rgb565(18, 52, 46);
@@ -187,8 +192,6 @@ bool drawRankRowsAndScrollbar(NovaCanvas& c, const NovaState& st) {
     }
 
     // Score (DIN 22px right-aligned)
-    char scoreBuf[12];
-    snprintf(scoreBuf, sizeof(scoreBuf), "%.1f", row.s);
     ui::drawTextRight(c, ui::fontAscii18(), rx + rw - 12, ry + 35, scoreBuf,
                       row.r == 1 ? ui::COL_GOLD : (active ? ui::COL_MINT : ui::COL_TEXT), rowBg);
   }

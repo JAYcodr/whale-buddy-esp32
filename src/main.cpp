@@ -668,6 +668,9 @@ void uiTaskFn(void*) {
     if (pageSettingsTick(nowMs) && nav.currentPage() == UiPage::SETTINGS) {
       needFull = true;
     }
+    if (pageQuotaTick(nowMs) && nav.currentPage() == UiPage::QUOTA) {
+      needFull = true;
+    }
 
     // Drive all 9 Nova animation states cleanly: play one-shots & choreo steps to full cycle end
     // (inspired by dsh-pet AnimationFlow & aipets Director / ClipSelector).
