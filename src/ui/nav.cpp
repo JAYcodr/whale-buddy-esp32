@@ -46,7 +46,7 @@ UiAction UiNav::onTap(int16_t x, int16_t y, const NovaState& st, const NovaSetti
   }
   switch (m_page) {
     case UiPage::HOME:     return pageHomeTap(x, y, st);
-    case UiPage::QUOTA:    return pageQuotaTap(x, y);
+    case UiPage::QUOTA:    return pageQuotaTap(x, y, st);
     case UiPage::RANK:     return pageRankTap(x, y);
     case UiPage::DETAIL:   return pageDetailTap(x, y);
     case UiPage::SETTINGS: return pageSettingsTap(x, y, cfg);
