@@ -1,9 +1,31 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from './fetchers.js';
 import { wavToNvAdpcm } from './adpcm.js';
 
 const CONFIG_FILE = join(STATE_DIR, 'config.json');
+
+// MiMo 声音克隆：audio.voice 收 data URL 而不是音色名（改音色名会 400
+// `audio.voice must be a data URL for voice clone model`）。参考音放仓库里，
+// 用本地 Qwen3-TTS 现合成的那批预置语音之一。
+const CLONE_MODEL = 'mimo-v2.5-tts-voiceclone';
+const DEFAULT_VOICE_REF = fileURLToPath(new URL('../assets/voice-ref.wav', import.meta.url));
+let cachedRefPath = '';
+let cachedRefDataUrl = '';
+
+function resolveVoiceRef(tts) {
+  const path = tts?.voiceRef || DEFAULT_VOICE_REF;
+  if (!path || !existsSync(path)) return '';
+  if (path === cachedRefPath && cachedRefDataUrl) return cachedRefDataUrl;
+  try {
+    cachedRefDataUrl = `data:audio/wav;base64,${readFileSync(path).toString('base64')}`;
+    cachedRefPath = path;
+    return cachedRefDataUrl;
+  } catch {
+    return '';
+  }
+}
 const VALID_ANIMS = new Set([
   'idle', 'thinking', 'working', 'waiting', 'success', 'error', 'click', 'sleep', 'quota',
 ]);
@@ -30,6 +52,7 @@ export function loadAiConfig(overrides = {}) {
       apiKey: overrides.ttsApiKey || process.env.MIMO_API_KEY || fileCfg.tts?.apiKey || '',
       model: fileCfg.tts?.model || 'mimo-v2.5-tts',
       voice: overrides.ttsVoice || fileCfg.tts?.voice || '冰糖',
+      voiceRef: overrides.ttsVoiceRef || fileCfg.tts?.voiceRef || DEFAULT_VOICE_REF,
       style: overrides.ttsStyle || fileCfg.tts?.style ||
         '用元气可爱、轻快带一点点小傲娇的鲸鱼娘小女仆语气朗读，语速自然清晰。',
       quietHours: overrides.quietHours || fileCfg.tts?.quietHours || [23, 8],
@@ -194,8 +217,13 @@ export async function synthesizeSpeechAdpcm(text, opts = {}, aiCfg = loadAiConfi
   if (!tts?.apiKey || !text) return null;
   if (!opts.ignoreQuiet && isQuietHours(tts.quietHours)) return null;
 
+  // 有参考音就走克隆模型（音色跟预置语音同一个人）；没有就退回预设音色。
+  const cloneVoice = resolveVoiceRef(tts);
+  const model = cloneVoice ? CLONE_MODEL : tts.model || 'mimo-v2.5-tts';
+  const voice = cloneVoice || opts.voice || tts.voice || '冰糖';
+
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const timer = setTimeout(() => ctrl.abort(), 20000);
   try {
     const res = await fetch(tts.url, {
       method: 'POST',
@@ -204,14 +232,14 @@ export async function synthesizeSpeechAdpcm(text, opts = {}, aiCfg = loadAiConfi
         'api-key': tts.apiKey,
       },
       body: JSON.stringify({
-        model: tts.model || 'mimo-v2.5-tts',
+        model,
         messages: [
           { role: 'user', content: opts.style || tts.style },
           { role: 'assistant', content: String(text).slice(0, 120) },
         ],
         audio: {
           format: 'wav',
-          voice: opts.voice || tts.voice || '冰糖',
+          voice,
         },
         stream: false,
       }),
