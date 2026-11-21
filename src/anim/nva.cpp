@@ -22,6 +22,19 @@ constexpr const char* ANIM_NAMES[(int)NvaAnimKey::COUNT] = {
   "idle", "thinking", "working", "waiting", "success", "error", "click", "sleep", "quota"
 };
 
+// Normalize slight bounding-box size differences so all 9 animations match idle (~142px body).
+constexpr float kAnimBaseScale[(int)NvaAnimKey::COUNT] = {
+  1.00f,  // idle     (142px)
+  1.01f,  // thinking (140px)
+  1.09f,  // working  (127px -> ~138px)
+  0.99f,  // waiting  (144px -> ~142px)
+  1.16f,  // success  (113px -> ~131px + jump/hands)
+  1.11f,  // error    (124px -> ~138px)
+  0.94f,  // click    (152px -> ~143px)
+  1.09f,  // sleep    (90px curled -> ~98px)
+  1.00f,  // quota    (rebuilt 142px crisp)
+};
+
 // Resident keys stay cached in PSRAM; others load on demand into a shared buffer.
 bool isResident(NvaAnimKey k) {
   return k == NvaAnimKey::IDLE || k == NvaAnimKey::SUCCESS || k == NvaAnimKey::ERROR;
@@ -438,13 +451,17 @@ bool nvaDraw(NovaCanvas& c, int16_t centerX, int16_t bottomY, bool flipX, float 
   const uint8_t* src = s_frameBuf[s_frontIdx];
   const int16_t w = (int16_t)s_frontW;
   const int16_t h = (int16_t)s_frontH;
+  const float baseScale = ((uint8_t)s_activeKey < (uint8_t)NvaAnimKey::COUNT)
+                            ? kAnimBaseScale[(uint8_t)s_activeKey]
+                            : 1.0f;
   uint16_t* fb = ((Arduino_Canvas&)c).getFramebuffer();
   const int16_t fbW = c.width();
   const int16_t fbH = c.height();
 
   if (fb) {
-    bool unitScale = (scaleY > 0.995f && scaleY < 1.005f);
-    if (!flipX && unitScale) {
+    bool unitBase = (baseScale > 0.995f && baseScale < 1.005f);
+    bool unitSquash = (scaleY > 0.995f && scaleY < 1.005f);
+    if (!flipX && unitBase && unitSquash) {
       const int16_t x0 = centerX - w / 2;
       const int16_t y0 = bottomY - h;
       for (int16_t row = 0; row < h; row++) {
@@ -463,12 +480,14 @@ bool nvaDraw(NovaCanvas& c, int16_t centerX, int16_t bottomY, bool flipX, float 
     } else {
       if (scaleY < 0.78f) scaleY = 0.78f;
       if (scaleY > 1.14f) scaleY = 1.14f;
-      float scaleX = unitScale ? 1.0f : (1.0f / sqrtf(scaleY));
-      if (scaleX < 0.88f) scaleX = 0.88f;
-      if (scaleX > 1.16f) scaleX = 1.16f;
+      float squashX = unitSquash ? 1.0f : (1.0f / sqrtf(scaleY));
+      if (squashX < 0.88f) squashX = 0.88f;
+      if (squashX > 1.16f) squashX = 1.16f;
+      float totalX = baseScale * squashX;
+      float totalY = baseScale * scaleY;
 
-      const int16_t dstW = (int16_t)(w * scaleX + 0.5f);
-      const int16_t dstH = (int16_t)(h * scaleY + 0.5f);
+      const int16_t dstW = (int16_t)(w * totalX + 0.5f);
+      const int16_t dstH = (int16_t)(h * totalY + 0.5f);
       if (dstW > 0 && dstH > 0) {
         const int16_t x0 = centerX - dstW / 2;
         const int16_t y0 = bottomY - dstH;

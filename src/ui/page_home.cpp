@@ -226,9 +226,9 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, uint32_t frame,
   int16_t hop = walking ? (int16_t)(fabsf(sinf(frame * 0.28f)) * 5.0f) : 0;
   const int16_t bottomY = PET_BASE_Y + oy - hop;
 
-  int16_t curX0 = cx - 84;
-  int16_t curX1 = cx + 84;
-  int16_t curY0 = bottomY - 190;
+  int16_t curX0 = cx - 100;
+  int16_t curX1 = cx + 100;
+  int16_t curY0 = bottomY - 196;
   int16_t curY1 = PET_BASE_Y + 6;
 
   bool showBubble = (s_bubbleBuf[0] && s_bubbleUntilMs != 0 && (int32_t)(s_bubbleUntilMs - st.nowMs) > 0);

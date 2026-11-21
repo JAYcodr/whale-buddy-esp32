@@ -100,16 +100,16 @@
     },
     {
       "name": "quota",
-      "w": 128,
-      "h": 82,
-      "frames": 121,
+      "w": 192,
+      "h": 178,
+      "frames": 120,
       "fps": 12,
-      "colors": 32,
-      "bytes": 172838,
-      "kb": 168.8,
-      "kb_per_frame": 1.39
+      "colors": 31,
+      "bytes": 763935,
+      "kb": 746.0,
+      "kb_per_frame": 6.22
     }
   ],
-  "total_bytes": 3882885,
-  "total_kb": 3791.9
+  "total_bytes": 4473982,
+  "total_kb": 4369.1
 }
