@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createNovaBridge } from '../lib/bridge.js';
+import { createNovaBridge, shortenCommand, foldTitle, foldPath, sanitizeOneLine } from '../lib/bridge.js';
 import { extractJsonObject, isQuietHours, normalizeChoreo } from '../lib/ai.js';
 import { wavToNvAdpcm } from '../lib/adpcm.js';
 
@@ -234,6 +234,100 @@ describe('TTS 播报长度与去重', () => {
     // errMsg 自身限 120，state 载荷不该被 TTS 的 40 字上限影响
     const st = bridge.buildStatePayload();
     assert.equal(st.errMsg.length, 120);
+    bridge.stop();
+  });
+});
+
+
+describe('主屏文案清洗（v0.5.0）', () => {
+  it('bash 命令去掉 cd/环境变量/内联脚本', () => {
+    assert.equal(
+      shortenCommand(`cd /tmp && node -e 'const mqtt = require("/x/y/z")'`),
+      'node -e …',
+    );
+    assert.equal(shortenCommand('FOO=1 BAR=2 pio run -t upload'), 'pio run -t upload');
+    assert.equal(shortenCommand('/usr/bin/bash -c "make -j8"'), 'make -j8');
+    // 长命令截到 34 字（含省略号）
+    const long = shortenCommand('./tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8');
+    assert.equal(long.length, 34);
+    assert.ok(long.endsWith('…'));
+    // 多行命令压成一行
+    assert.equal(shortenCommand('echo a\necho b'), 'echo a echo b');
+    assert.equal(sanitizeOneLine('  a\tb  '), 'a b');
+  });
+
+  it('路径折叠到末两段，标题去掉路径形态', () => {
+    assert.equal(foldPath('/Volumes/hamelin-ssd/x/src/ui/page_home.cpp'), 'ui/page_home.cpp');
+    assert.equal(foldTitle('@/Volumes/hamelin-ssd/gemini工作区/nova-buddy'), 'nova-buddy');
+    assert.equal(foldTitle('  issue 核查与复盘  '), 'issue 核查与复盘');
+    const long = foldTitle('一二三四五六七八九十ABCDEFGHIJKLM');
+    assert.ok(long.length <= 20);
+    assert.ok(long.includes('…'));
+  });
+
+  it('bridge 的 state 载荷带清洗后的 msg/title', () => {
+    const bridge = createNovaBridge({ brokerUrl: 'mqtt://127.0.0.1:1883' });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'session/title', data: { title: '@/Volumes/hamelin-ssd/gemini工作区/nova-buddy' } });
+    bridge.onSessionEvent(
+      { id: 's1' },
+      { type: 'tool/call', data: { name: 'bash', arguments: JSON.stringify({ command: `cd /tmp && node -e 'const mqtt = require("/x")'` }) } },
+    );
+    let st = bridge.buildStatePayload();
+    assert.equal(st.title, 'nova-buddy');
+    assert.equal(st.msg, 'bash: node -e …');
+    assert.ok(!st.msg.includes('\n'));
+
+    bridge.onSessionEvent(
+      { id: 's1' },
+      { type: 'tool/call', data: { name: 'read', arguments: JSON.stringify({ file_path: '/Volumes/x/src/ui/page_home.cpp' }) } },
+    );
+    st = bridge.buildStatePayload();
+    assert.equal(st.msg, 'read: ui/page_home.cpp');
+    bridge.stop();
+  });
+});
+
+describe('剧本新鲜度（v0.5.0）', () => {
+  const stub = async () => ({ t: 'choreo', mood: '测试', steps: [{ x: 184, speed: 'walk', anim: 'idle', dur: 12000, say: '晚安' }] });
+
+  it('choreo 不 retain，并带 at 时间戳', async () => {
+    const mockClient = createMockMqttClient();
+    const bridge = createNovaBridge({ mqttConnect: () => mockClient, choreoGenerator: stub });
+    bridge.start();
+    mockClient.emit(
+      'message',
+      'nova/D93468/hello',
+      Buffer.from(JSON.stringify({ online: true, prefs: { choreo: true } })),
+    );
+    const c = await bridge.refreshChoreo('test');
+    assert.equal(c.t, 'choreo');
+    const published = mockClient.published.filter((p) => p.topic === 'nova/D93468/choreo');
+    assert.ok(published.length >= 1, '应该推给在线设备');
+    const last = published[published.length - 1];
+    assert.equal(last.opts.retain, false, 'retained 剧本会在冷启动时重放，必须关掉');
+    assert.equal(typeof last.payload.at, 'number');
+    assert.ok(Date.now() - last.payload.at < 5000);
+    bridge.stop();
+  });
+
+  it('陈旧剧本在 hello 时不再补推', async () => {
+    const mockClient = createMockMqttClient();
+    const bridge = createNovaBridge({ mqttConnect: () => mockClient, choreoGenerator: stub, choreoFreshMs: 0 });
+    bridge.start();
+    mockClient.emit(
+      'message',
+      'nova/D93468/hello',
+      Buffer.from(JSON.stringify({ online: true, prefs: { choreo: true } })),
+    );
+    await bridge.refreshChoreo('test');
+    const before = mockClient.published.filter((p) => p.topic === 'nova/D93468/choreo').length;
+    mockClient.emit(
+      'message',
+      'nova/D93468/hello',
+      Buffer.from(JSON.stringify({ online: true, prefs: { choreo: true } })),
+    );
+    const after = mockClient.published.filter((p) => p.topic === 'nova/D93468/choreo').length;
+    assert.equal(after, before, '超过新鲜期后 hello 不该再推旧剧本');
     bridge.stop();
   });
 });

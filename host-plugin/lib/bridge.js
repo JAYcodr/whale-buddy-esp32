@@ -5,6 +5,67 @@ import { createTokenCollector } from './tokens.js';
 
 const TTS_CHUNK_BYTES = 1800;
 
+const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+/** 一行化：去 ANSI 转义、控制字符，压空白。设备上只有一行位置，换行会变成空白。 */
+export function sanitizeOneLine(raw, limit = 200) {
+  return String(raw ?? '')
+    .replace(ANSI_RE, '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
+}
+
+/** 路径折叠到末两段：/Volumes/…/src/ui/page_home.cpp → ui/page_home.cpp */
+export function foldPath(raw) {
+  const s = sanitizeOneLine(raw, 200).replace(/[\\/]+$/, '');
+  const parts = s.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return s;
+  return parts.slice(-2).join('/');
+}
+
+/**
+ * bash 命令压成人类能扫一眼的短句：
+ * cd /tmp && node -e '...'  →  node -e …
+ * 只做确定性清洗（不猜语义），所以同一命令永远得到同一结果。
+ */
+export function shortenCommand(raw, limit = 34) {
+  let s = sanitizeOneLine(raw, 400);
+  if (!s) return '';
+  s = s.replace(/^(?:\/(?:usr\/)?bin\/)?(?:bash|sh|zsh)\s+-[a-z]*c\s+/i, '');
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(/^cd\s+(?:'[^']*'|"[^"]*"|[^\s&;]+)\s*(?:&&|;)\s*/i, '');
+    if (next === s) break;
+    s = next;
+  }
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|\S+)\s+/, '');
+    if (next === s) break;
+    s = next;
+  }
+  s = s.replace(/^(?:bash|sh|zsh)[:：]\s*/i, '');
+  // bash -c "整段"：先把外层引号剥掉，再判断是不是内联脚本
+  s = s.replace(/^"([^"]*)"$/, '$1').replace(/^'([^']*)'$/, '$1');
+  // 内联脚本（node -e '...' / python -c "..."）：在引号前收住，别把整段脚本搬上屏
+  const q = s.search(/['"]/);
+  if (q > 0 && s.length - q > 24) s = `${s.slice(0, q).trim()} …`;
+  s = s.replace(/\s+/g, ' ').trim();
+  return s.length <= limit ? s : `${s.slice(0, limit - 1)}…`;
+}
+
+/** 会话标题：剥 @ 前缀、路径取末段、超长中间省略（保留头尾更可读）。 */
+export function foldTitle(raw) {
+  let s = sanitizeOneLine(raw, 80).replace(/^@+/, '');
+  if (!s) return '';
+  if (/^(?:\/|~\/)/.test(s)) {
+    const parts = s.split(/[\\/]/).filter(Boolean);
+    s = parts[parts.length - 1] || s;
+  }
+  if (s.length > 20) s = `${s.slice(0, 9)}…${s.slice(-8)}`;
+  return s;
+}
+
 /** 从 tool/call 的 arguments 里摘一段人类可读预览（arguments 是 JSON 字符串）。 */
 function toolArgPreview(raw) {
   if (raw == null) return '';
@@ -12,16 +73,19 @@ function toolArgPreview(raw) {
     try {
       return toolArgPreview(JSON.parse(raw));
     } catch {
-      return raw.slice(0, 60);
+      return shortenCommand(raw);
     }
   }
-  if (typeof raw !== 'object') return String(raw).slice(0, 60);
+  if (typeof raw !== 'object') return sanitizeOneLine(raw, 34);
   for (const key of ['command', 'path', 'file_path', 'query', 'pattern', 'url', 'description', 'prompt']) {
     const v = raw[key];
-    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v !== 'string' || !v.trim()) continue;
+    if (key === 'command') return shortenCommand(v);
+    if (key === 'path' || key === 'file_path') return foldPath(v);
+    return sanitizeOneLine(v, 34);
   }
   const firstString = Object.values(raw).find((v) => typeof v === 'string' && v.trim());
-  return typeof firstString === 'string' ? firstString : '';
+  return typeof firstString === 'string' ? sanitizeOneLine(firstString, 34) : '';
 }
 
 /** 上下文占用百分比：tokenMeter.contextPressure() → { pressureTokens, contextWindow }。 */
@@ -56,6 +120,8 @@ export function createNovaBridge(options = {}) {
   const aiCfg = loadAiConfig(options);
   const ttsSynth = options.synthesizeSpeech || synthesizeSpeechAdpcm;
   const quotaFetcher = options.fetchAllQuota || fetchAllQuota;
+  const choreoGen = options.choreoGenerator || generateChoreography;
+  const choreoFreshMs = Number(options.choreoFreshMs ?? 15 * 60 * 1000);
   const rankFetcher = options.fetchModelDialRank || fetchModelDialRank;
   const mqttConnectFn = options.mqttConnect || ((url, opts) => mqtt.connect(url, opts));
   // token 页的数据源是会话日志而不是 ctx 服务：`ctx.sessions` 只列 live session，
@@ -255,14 +321,18 @@ export function createNovaBridge(options = {}) {
   async function refreshChoreo(reason = 'timer', minCooldownMs = 0) {
     const now = Date.now();
     if (minCooldownMs > 0 && now - lastChoreoAt < minCooldownMs) return null;
-    if (!aiCfg.llm?.primary?.apiKey && !aiCfg.llm?.fallback?.apiKey) return null;
+    if (!aiCfg.llm?.primary?.apiKey && !aiCfg.llm?.fallback?.apiKey && !options.choreoGenerator) {
+      return null;
+    }
     lastChoreoAt = now;
-    const c = await generateChoreography(buildContextSummary(reason), aiCfg, log, { recentAnims, recentMood });
+    const c = await choreoGen(buildContextSummary(reason), aiCfg, log, { recentAnims, recentMood });
     if (c) {
-      choreoPayload = c;
+      // retain:false —— retained 剧本会在设备冷启动/重连时被 broker 重放，
+      // 半夜播「主人晚上好呀」。设备重连由 hello 补推新鲜的（见 handleHello）。
+      choreoPayload = { ...c, at: Date.now() };
       recentMood = c.mood || '';
       recentAnims = c.steps.map((s) => s.anim);
-      publishAll('choreo', choreoPayload, { qos: 1, retain: true });
+      publishAll('choreo', choreoPayload, { qos: 1, retain: false });
     }
     return c;
   }
@@ -314,6 +384,10 @@ export function createNovaBridge(options = {}) {
     entry.resolve(outcome);
   }
 
+  function choreoStillFresh() {
+    return Boolean(choreoPayload && Date.now() - (choreoPayload.at || 0) < choreoFreshMs);
+  }
+
   function handleHello(id, data) {
     const online = data?.online !== false;
     const prev = devices.get(id) || {};
@@ -326,8 +400,8 @@ export function createNovaBridge(options = {}) {
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
       if (tokensPayload) publishTo(id, 'tokens', tokensPayload, { qos: 1, retain: true });
-      if (choreoPayload && prefs?.choreo !== false) {
-        publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
+      if (choreoStillFresh() && prefs?.choreo !== false) {
+        publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: false });
       }
     }
   }
@@ -363,8 +437,8 @@ export function createNovaBridge(options = {}) {
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
       if (tokensPayload) publishTo(id, 'tokens', tokensPayload, { qos: 1, retain: true });
-      if (choreoPayload && devices.get(id)?.prefs?.choreo !== false) {
-        publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
+      if (choreoStillFresh() && devices.get(id)?.prefs?.choreo !== false) {
+        publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: false });
       }
       const now = Date.now();
       if (now - lastSyncQuotaAt > 15000) {
@@ -435,7 +509,7 @@ export function createNovaBridge(options = {}) {
         break;
       case 'session/title':
         // SessionTitleEventData { title, messageSeqs, source }；last-wins。
-        cur.title = String(data.title || '').replace(/\s+/g, ' ').trim().slice(0, 20);
+        cur.title = foldTitle(data.title);
         break;
       case 'turn/start':
         cur.running = true;
@@ -449,7 +523,7 @@ export function createNovaBridge(options = {}) {
         cur.running = true;
         cur.error = false;
         const tool = String(data.name || data.toolName || 'tool');
-        const arg = toolArgPreview(data.arguments).slice(0, 42);
+        const arg = toolArgPreview(data.arguments).slice(0, 34);
         cur.lastTool = tool;
         cur.msg = arg ? `${tool}: ${arg}` : `${tool}`;
         break;

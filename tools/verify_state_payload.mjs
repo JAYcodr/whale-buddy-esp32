@@ -33,6 +33,8 @@ const checks = [
   ['msg 带原文', st.msg === '本轮异常结束 · HTTP 429: rate limited'],
   ['title 保留', st.title === 'issue 核查与防烧屏界面烧录'],
   ['tool 保留', st.tool === 'bash'],
+  ['msg 是单行', !st.msg.includes('\n')],
+  ['title 不含路径前缀', !st.title.startsWith('@') && !st.title.startsWith('/')],
 ];
 let bad = 0;
 for (const [n, ok] of checks) { console.log((ok ? '✓' : '✗'), n); if (!ok) bad++; }
