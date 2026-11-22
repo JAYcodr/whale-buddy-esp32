@@ -184,6 +184,12 @@ void netTaskFn(void*) {
     if (s_reprovisionReq) {
       s_reprovisionReq = false;
       s_mqtt.disconnect();
+      // 必须先断开 STA 再开 portal：下面有一段
+      //   if (wifiUp && s_portalActive) { stopConfigPortal(); s_portalActive = false; }
+      // STA 还连着时 wifiUp 恒为 true，portal 会在启动后的下一轮就被关掉，
+      // 表现就是「点重新配网没反应」。断开后 WiFi.status() 不再是 CONNECTED，
+      // portal 才能活下来。
+      s_wm->disconnect();
       s_wm->startConfigPortal(s_apName);
     }
     if (s_wifiConnectReq) {
