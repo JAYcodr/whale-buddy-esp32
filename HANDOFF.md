@@ -1,144 +1,86 @@
-# Nova Buddy — 待修问题交接
+# Nova Buddy — 交接
 
-仓库：`/Volumes/hamelin-ssd/gemini工作区/nova-buddy`（GitHub `JAYcodr/whale-buddy-esp32`）
-插件：`host-plugin/`（`dsh-plugin-nova-buddy` v0.3.0），已通过 symlink 装入 `~/.dsh/profiles/desktop`，`plugin_manager` 显示 `fiberPhase=active`
+仓库：`/Volumes/hamelin-ssd/gemini工作区/nova-buddy`（GitHub `JAYcodr/whale-buddy-esp32`，分支 `feature/whale-tokens`）
+插件：`host-plugin/`（`dsh-plugin-nova-buddy` v0.3.0），通过 symlink 装入 `~/.dsh/profiles/desktop`
 环境：DeepSeek Harness `0.2.2-rc.5`，profile `desktop`；Node v25.9.0
-设备：Waveshare ESP32-S3 Touch AMOLED 1.8（SH8601 + FT3168），deviceId `D93468`，IP 192.168.31.219，固件 0.3.1
+设备：Waveshare ESP32-S3 Touch AMOLED 1.8（SH8601 + FT3168），deviceId `D93468`，IP 192.168.31.219
 Broker：`mqtt://192.168.31.15:1883`
-当前 git HEAD：`0e91267`
+当前 git HEAD：`6286b54`
 
 ---
 
-## 链路现状（已确认正常）
+## Issue 状态：全部关闭
 
-MQTT 上下行全部通畅，已实测：
-
-- 上行 `nova/D93468/hello`（retain）、`nova/D93468/up`（30s 一次 `{"evt":"stat",...}`）
-- 下行 `time`（30s 心跳）、`quota`（~4min）、`rank`（6h）、`choreo`（15min）全部按周期到达设备
-- 设备状态栏显示「在线」，额度页正常渲染（DeepSeek 77.08 CNY / OpenCode Go 74%·67% / OpenDesign 4%·56%）
-
-**坏的只有"事件驱动"这条链路。**
-
----
-
-## 问题 1：插件收不到任何会话事件
-
-### 症状
-
-- 设备永远显示 `运行 0 · 会话 0`（`state` 报文的 `run`/`sess` 恒为 0）
-- 审批弹窗从不出现
-- 上下文占比永不显示
-
-### 已修的根因（提交 `0e91267`）
-
-`session/event`、`session/disposed`、`approval/request` 都按 agent scope 路由。派发时 cordis 过滤：
-
-```js
-// @deepseek-ai/cordis/src/events.ts  _resolve()
-.filter(hook => hook.global || !filter || filter.call(thisArg, hook.ctx))
-```
-
-`scopeTarget` 的过滤器（`packages/core/scope/src/index.ts:167-183`）只放行「无 scope 标签的监听」或「标签命中 agent scope 链的监听」。插件监听注册在 profile 根作用域 → 被过滤掉。
-
-**修法**：三个监听全部加 `{ global: true }`，审批额外 `prepend: true`。参照 `xmanrui/dsh-im`（12 处注册全带 `global: true`）。
-
-修完后事件**确实进来了**（探针日志里能看到大量 `step/start`、`turn/start`、`tool/call`），但桥接函数仍未执行。
-
-### 未修的第二层根因
-
-监听器回调体第一行是：
-
-```js
-ctx.on('session/event', (session, event) =>
-  bridge.onSessionEvent(session, event, ctx.tokenMeter), { global: true })
-```
-
-`ctx.tokenMeter` 这个属性访问**在回调执行时**才求值。cordis 对服务属性有 inject 门槛（`@deepseek-ai/cordis/src/reflect.ts:152`）：
-
-```
-Error: cannot get property "tokenMeter" without inject
-```
-
-该异常抛出后被 `invokeContainedSessionObservers`（`packages/core/session/src/index.ts:404-424`）接住，只打一条 `ctx.logger.warn`，**不中断派发**。结果：事件到了、探测代码打了日志、`bridge.onSessionEvent` 从没被调用。
-
-### 修法（2026-11-21 23:31 真机验证通过）
-
-`host-plugin/index.js`：
-
-```js
-export const inject = ['tokenMeter'];
-```
-
-并把服务访问移出派发路径，求值一次：
-
-```js
-let tokenMeter;
-try { tokenMeter = ctx.tokenMeter; } catch { tokenMeter = undefined; }
-// ...
-ctx.on('session/event', (session, event) => bridge.onSessionEvent(session, event, tokenMeter), { global: true })
-```
-
-依据：`tokenMeter` 由 `dsh-base/cordis.patch.yml:352-353` 的 `token-meter` 条目提供，始终存在。`readCtxPct`（`lib/bridge.js:28-36`）已有 `typeof ... !== 'function'` 兜底。
-
-### 验证方法
-
-1. 完全重启 DSH（macOS 托盘图标也要退出，ESM 模块缓存不会因改文件失效）
-2. 跑一个任务，同时订阅 `nova/D93468/state`：
-
-```bash
-node -e "
-const mqtt=require('$PWD/host-plugin/node_modules/mqtt');
-const c=mqtt.connect('mqtt://192.168.31.15:1883');
-c.on('connect',()=>c.subscribe('nova/D93468/state'));
-c.on('message',(t,p)=>console.log(p.toString()));
-"
-```
-
-预期看到 `{"t":"state","run":1,...}` 和 `msg` 里出现工具名。若仍为 `run:0`，说明还有第三层。
+| # | 标题 | 结论 |
+| --- | --- | --- |
+| 1 | 角色素材 CC BY-NC-SA 署名 | 已补（`8d35f2e`） |
+| 2 | 主屏底部信息栏要能装下更多内容 | 真机验证通过 |
+| 3 | 配网出二维码 | 手机实扫成功 |
+| 4 | 额度空态写「未连接」 | 真机验证通过 |
+| 5 | AP 页防烧屏 | 真机 35 秒位移验证通过 |
 
 ---
 
-## 问题 2：审批时序不对
+## 链路现状（全部正常，已真机实测）
 
-### 症状（用户原话）
+- 上行：`nova/<id>/hello`（retain）、`nova/<id>/up`（30s）
+- 下行：`time`（30s）、`quota`（~4min）、`rank`（6h）、`choreo`（15min）、`tokens`（60s）、`state`（事件驱动）
+- 事件驱动链已通：`run` / `sess` / 工具名 / 上下文占比 / 会话标题全部回填
 
-> 权限弹窗是可以收到的 但是确认时间太短 并且是 pet 先出 时间到期才 客户端出现
+---
 
-### 根因
+## 曾踩过的坑（都已修，别再踩回去）
 
-`host-plugin/index.js:22-23` 的两个默认值组合：
+### 插件侧（host-plugin）
 
-```js
-deviceApproval: 'prefer',   // 设备独占决定权
-fallbackMs: 8000,           // 8 秒
-```
+1. **监听必须带 `{ global: true }`**
+   `session/event`、`session/disposed`、`approval/request` 按 agent scope 路由，
+   插件监听注册在 profile 根作用域会被 cordis 过滤掉。
+2. **`ctx.tokenMeter` 访问要在派发路径外求值**
+   cordis 对服务属性有 inject 门槛，回调里直接访问会抛
+   `cannot get property "tokenMeter" without inject`，异常被吞成一条 warn，
+   表现是「事件到了但桥接函数没执行」。需要 `export const inject = ['tokenMeter']` +
+   在 apply 里求值一次存变量。
+3. **改完必须完全重启 DSH**（macOS 托盘图标也要退出）
+   ESM 模块缓存不因改文件失效。
 
-`prefer` 模式下 `onApprovalRequest`（`lib/bridge.js:449-496`）死等设备 8 秒才 `next()` 交给客户端：
+### 协议侧
 
-```js
-const res = await waitDevice;
-if (res.kind === 'decided') return res.outcome;
-if (res.kind === 'abort') return 'rejected';
-return next();          // ← 8 秒后才轮到客户端弹窗
-```
+4. **`err` 字段必须是真 bool，只能是字面量 `true`**
+   ArduinoJson 7.4.3 实测 `doc["err"] | false`：`{"err":1}`、`{"err":"true"}`、
+   `{"err":{...}}` 一律求值 **0**。异常原文必须走平级 `errMsg` 字段。
+5. **`state` 的 `msg` 里别出现「异常」二字**
+   `proto.cpp` 有 `strstr(st.msg, "异常")` 兜底判定，正常消息带这两字会误报。
 
-设备侧倒计时直接读这个值：`src/net/proto.cpp:165` 的 `st.apTtlMs = doc["ttl"] | 8000`，`src/ui/page_approval.cpp:16-18` 拿它当进度条总长。
+### TTS 侧
 
-### 修法（设备侧已验证：`approval` 报文 `ttl=20000` 实到）
+6. **单条上限 98304 字节 ≈ 12.3 秒 ≈ 43–55 汉字**
+   超过 `applyTtsChunk` 直接 `free + return false`，**整条静默丢弃**，无任何提示。
+   播报文本必须在送进合成前压到 40 字内（`clipForTts`）。
+7. **`force: true` 会让 4 秒节流失效**，必须配去重（`ttsDedupHit`，30s 窗口），
+   否则连续异常语音串成一片。
 
-改成 `mirror`（两边同时出，谁先答算谁的）+ 拉长倒计时到 20 秒：
+### 配网侧
 
-```js
-deviceApproval: config.deviceApproval || 'mirror',
-fallbackMs: config.fallbackMs ?? 20000,
-```
+8. **「重新配网」要先 `s_wm->disconnect()` 再开 portal**
+   主循环里有 `if (wifiUp && s_portalActive) { stopConfigPortal(); }`，
+   STA 一直连着时 `wifiUp` 恒 true，portal 起来下一轮就被自己关掉 ——
+   表现是「点了没反应」。
+   **错误修法**：`WiFi.disconnect(true,false)` + `WiFi.mode(WIFI_AP_STA)` → 真机 panic 重启。
+9. **二维码静区要自己留 4 模块**（ISO 18004）
+   组件自带的 `print_console` 只用 border=2，照抄扫不出。
+   另：`max_qrcode_version` 只影响 calloc 大小，不影响实际版本；本项目载荷 27 字节 → v2。
 
-`mirror` 分支在倒计时归零时不会丢请求，会继续 `return local.then((r) => r.outcome)` 等客户端答案（`lib/bridge.js:488-489`）。
+### UI 侧
 
-### 待确认
-
-- 20 秒是否合适（要不要更长）
-- 是否需要设备端在客户端已答后立即自关弹窗（目前靠 `approval_end` 报文，`settleApproval(..., {notifyDeviceEnd:true})` 会发）
+10. **浮层类 UI 必须禁掉局部重绘**
+    驱动动画走 `pageHomeDrawStage`，只重画舞台那块、不经过 `pageHomeDraw`，
+    浮层画完立刻被覆盖。模拟器看不出来（它只调整页绘制）。
+11. **AP 页绘制与命中必须共用同一矩形函数**
+    两边各算一次 burnOffset 迟早差一格，按钮点歪。
+12. **测试数据别用太理想的**
+    码头会话名宽度写死 108px 的 bug，被「修渲染管线」这个短标题完美绕过。
+    模拟器用例已改用 `issue 核查与复盘`。
 
 ---
 
@@ -146,57 +88,54 @@ fallbackMs: config.fallbackMs ?? 20000,
 
 ```bash
 cd "/Volumes/hamelin-ssd/gemini工作区/nova-buddy"
-timeout 40 node --test host-plugin/test/bridge.test.mjs    # 7/7 通过
-```
 
-注意：`npm test` 会报 Missing script，必须直接 `node --test`。
+# 插件单测（14 个）—— 注意 npm test 会报 Missing script
+node --test host-plugin/test/bridge.test.mjs host-plugin/test/tokens.test.mjs
+
+# state 载荷全链路（不需要真机、不需要 broker）
+node tools/verify_state_payload.mjs
+
+# 模拟器出图（23 张）
+bash tools/sim/run.sh
+
+# 固件编译
+bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8
+
+# 烧录
+bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload
+```
 
 ---
 
-## 验证记录（2026-11-21 23:31–23:35，真机）
+## 真机调试手法
 
-**问题 1 已修复。** 订阅 `nova/D93468/state`，本会话的工具调用直接产生：
+```bash
+# 截图（USB CDC，Python venv 里装了 pyserial + PIL）
+.venv-shot/bin/python tools/usb_shot.py --port /dev/cu.usbmodem21101 --out /tmp/x.png
 
-```json
-{"t":"state","run":1,"wait":0,"sess":1,"msg":"整理 bash 结果...","ctx":{"pct":4},"model":"deepseek-flash"}
+# 串口命令
+{"cmd":"stat"}                    # fps / pushUs / heap / psram / mhz
+{"cmd":"shot"}                    # 截图
+{"cmd":"reprov"}                  # 进配网模式（会断网，MQTT 掉线）
+{"cmd":"page","page":"quota"}     # 切页：home/quota/rank/detail/settings/tokens
+{"cmd":"tap","x":184,"y":406}     # 注入点击，走 nav.onTap + handleAction 与真实触屏同路径
+{"cmd":"demo","anim":3}           # 强制动画状态
 ```
 
-随后 `ctx.pct` 从 4 涨到 5，`msg` 跟着工具从 "整理 bash 结果..." 切到 "整理 job_output 结果..." ——
-`run` / `sess` / 工具名 / 上下文占比全部回填，事件驱动链路整条通了。
+⚠️ **`animPage` 生效时设备走局部重绘**，此时 MQTT 推的 state 会被宠物动画覆盖部分区域。
+手动验 UI 时注意：屏幕上的实时状态是插件推的，会覆盖你手动推的测试 payload。
 
-**问题 2 设备侧已验证。** 触发两次真实审批（越界 `touch` 探针文件，随后删除），
-`nova/D93468/approval` 收到：
-
-```json
-{"t":"approval","tool":"bash","ttl":20000,...}
-```
-
-`ttl` 已是 20000，`src/net/proto.cpp:165` 把它写进 `st.apTtlMs`，进度条总长随之变长。
-
-审批时序两点都已目视确认（2026-11-21 23:50）：
-
-- **两端同时出现** —— `mirror` 分支在发报文的同一轮就调了 `next()`，客户端 GUI 卡片
-  与设备弹窗同步弹出，「pet 先出、到期才轮到客户端」的旧症状消失
-- **在 GUI 上点批准后设备立刻关窗** —— `approval_end` 链路正常。此前两次测试没抓到
-  `approval_end`，是因为两次都在设备上点的：`handleUp` 的 `decision` 分支按设计
-  `notifyDeviceEnd: false`，设备自己知道结果，无需回灌
-
-`node --test host-plugin/test/bridge.test.mjs` 7/7 通过。
+**验 AP 页**：MQTT 推不了 `wifiApMode`（固件内部状态），要用串口 `reprov`。
 
 ---
 
-## 如果还要往下查
+## 防烧屏
 
-优先级从高到低：
+每 30 秒 `burnInStep` 翻一格，偏移范围 ±2px。所有页面都必须跟 `burnOffsetX/Y`，
+包括 AP 页和浮层。验证方法：隔 35 秒抓两帧做像素 diff，卡片/按钮都应该有位移。
 
-1. ~~验证 `inject` 修复~~ —— 已完成，`run=1` 实测通过
-2. 若仍不行，用探针法定位：在监听器体首行和 `bridge.onSessionEvent` 内部各插一行 `appendFileSync('/tmp/x.log', ...)`，看断在哪一层
-3. 注意 `plugin_manager` 禁用/启用**会**重新 `apply()`（已实测，`apply ran` 每次递增），但 ESM 缓存对 `lib/bridge.js` 的改动不一定生效 —— 改 bridge 后务必整体重启
-4. cordis 的 `isSpecialProperty`（`reflect.ts:86-91`）会放过 `_` 开头与符号属性，不受 inject 门槛约束
+---
 
-## 参考实现
+## Git
 
-`xmanrui/dsh-im`（本地 `~/.dsh/profiles/desktop/node_modules/@xmanrui/dsh-im`）是同场景的正确做法：
-- `plugin-src/host/index.mjs:35-39` — `export const inject = ['connection','credentials','typertGateway']`
-- `plugin-src/host/modern-harness-api.mjs:296` — `ctx.on('approval/request', ..., { global: true, prepend: true })`
-- `plugin-src/host/session-sync-coordinator.mjs:392` — `ctx.on('session/event', ..., { global: true })`
+分支 `feature/whale-tokens`，比 `main` 领先 9 个提交。要合进 main 还没做。
