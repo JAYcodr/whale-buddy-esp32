@@ -13,6 +13,7 @@ const AaFont* fontCjk16();
 const AaFont* fontAscii14();
 const AaFont* fontAscii18();
 const AaFont* fontNum24();
+const AaFont* fontNum46();
 
 // Pure OLED black & deep oceanic glass palette.
 constexpr uint16_t COL_BG       = rgb565(0, 0, 0);
@@ -292,7 +293,7 @@ inline int16_t burnOffsetY(uint8_t step) {
   return DY[(step / 5) % 5];
 }
 
-inline void drawTopBar(NovaCanvas& c, const NovaState& st, int activeDot, int totalDots = 4) {
+inline void drawTopBar(NovaCanvas& c, const NovaState& st, int activeDot, int totalDots = 5) {
   c.fillRect(0, 0, UI_W, 60, COL_BG);
   const int16_t ox = burnOffsetX(st.burnInStep);
   const int16_t oy = burnOffsetY(st.burnInStep);

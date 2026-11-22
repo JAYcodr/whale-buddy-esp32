@@ -56,6 +56,12 @@ void sendUsbScreenshot() {
   Serial.flush();
 }
 
+// 串口 tap 注入：串口任务写、UI 任务读。坐标是独立标量，
+// 即使读到中间的写也不会画错，最多点歪一格，所以 volatile 足够。
+volatile bool    s_pendingTap  = false;
+volatile int16_t s_pendingTapX = 0;
+volatile int16_t s_pendingTapY = 0;
+
 void pollSerialCommands(UiNav& nav, bool& needFull,
                         uint32_t& fpsFrames, int64_t& fpsWindowStartUs, int64_t& nextFrameAt) {
   static char line[192];
@@ -95,6 +101,13 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             else if (strcmp(p, "detail") == 0)   { nav.setPage(UiPage::DETAIL); needFull = true; }
             else if (strcmp(p, "settings") == 0) { pageSettingsSetTab(0); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "settings_adv") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
+            else if (strcmp(p, "tokens") == 0)   { pageTokensOnEnter(millis()); nav.setPage(UiPage::TOKENS); needFull = true; }
+          } else if (strcmp(cmd, "tap") == 0) {
+            // 真机验收用：把手动戳屏变成可重放的命令。
+            // UI 任务里才拿得到 nav / handleAction，这里只放下坐标。
+            s_pendingTapX = (int16_t)(doc["x"] | 0);
+            s_pendingTapY = (int16_t)(doc["y"] | 0);
+            s_pendingTap = true;
           } else if (strcmp(cmd, "demo") == 0) {
             int anim = doc["anim"] | -1;
             pageHomeSetDemoOverride(anim);
@@ -129,6 +142,8 @@ void uiTaskFn(void*) {
   bool needRankList = false;
   bool wasRankFlinging = false;
   bool wasApprovalActive = false;
+  bool wasTokensAnim = false;
+  bool needTokensSettle = false;
 
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
@@ -152,6 +167,7 @@ void uiTaskFn(void*) {
   uint32_t lastQuotaGen = 0;
   uint32_t lastRankGen = 0;
   uint32_t lastChoreoGen = 0;
+  uint32_t lastTokenGen = 0;
   uint16_t lastRunCount = 0;
   uint8_t  tapVoiceIdx = 0;
   bool     lastWifiUp = false;
@@ -194,7 +210,9 @@ void uiTaskFn(void*) {
 
     // Update shared NovaState hardware fields.
     novaStateWithLock([&](NovaState& s) {
-      s.fps        = (lastHomeFps > 0.5f) ? lastHomeFps : curFps;
+      // curFps 才是当前页的真实帧率；lastHomeFps 是主屏残留，
+      // 在别的页读 stat 会被它骗（曾把 40ms/帧 报成 60fps）。
+      s.fps        = curFps;
       s.pushUs     = lastPushUs;
       s.freeHeap   = esp_get_free_heap_size();
       s.freePsram  = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -315,6 +333,9 @@ void uiTaskFn(void*) {
           UiPage prevPage = (swipeOrigin >= 0) ? (UiPage)swipeOrigin : nav.currentPage();
           UiPage newPage  = (UiPage)act.value;
           nav.setPage(newPage);
+          if (newPage == UiPage::TOKENS && prevPage != UiPage::TOKENS) {
+            pageTokensOnEnter(nowMs);
+          }
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (prevPage != UiPage::SETTINGS && newPage == UiPage::SETTINGS) {
             playTransition(TransKind::SHEET_UP, 220);
@@ -463,9 +484,30 @@ void uiTaskFn(void*) {
             playTransition(TransKind::FADE, 150);
           }
           break;
+        case UiAction::TOKENS_REDRAW:
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::DOCK_TOGGLE:
+          novaStateWithLock([](NovaState& s) { s.dockExpanded = !s.dockExpanded; });
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          needFull = true;
+          break;
         default: break;
       }
     };
+
+    // 串口注入的点击：复用 handleAction，与真实触屏同一条路径。
+    if (s_pendingTap) {
+      const int16_t tx = s_pendingTapX;
+      const int16_t ty = s_pendingTapY;
+      s_pendingTap = false;
+      UiAction act = nav.onTap(tx, ty, st, cfg);
+      if (act.kind != UiAction::NONE) {
+        handleAction(act);
+      } else {
+        needFull = true;  // 至少重绘一次，方便截图对比
+      }
+    }
 
     InputEvent ev;
     while (hwBusPollInput(&ev)) {
@@ -555,7 +597,7 @@ void uiTaskFn(void*) {
           UiPage next = nav.currentPage();
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (next != prev) {
-            TransKind kind = ((int)next > (int)prev)
+            TransKind kind = (uiPageRingIndex(next) > uiPageRingIndex(prev))
                                ? TransKind::SLIDE_LEFT
                                : TransKind::SLIDE_RIGHT;
             playTransition(kind, 180);
@@ -628,7 +670,7 @@ void uiTaskFn(void*) {
 
     // Detect state / heartbeat / burn-in pixel shift changes requiring a full redraw.
     if (st.stateGen != lastStateGen || st.quotaGen != lastQuotaGen || st.rankGen != lastRankGen ||
-        st.choreoGen != lastChoreoGen ||
+        st.choreoGen != lastChoreoGen || st.tokenGen != lastTokenGen ||
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
         st.mqttConnected != lastMqttUp || st.minute != lastMinute || st.battPct != lastBattPct ||
         st.lastMqttRxMs != lastMqttRxSeen || isStale != lastStaleFlag ||
@@ -638,6 +680,7 @@ void uiTaskFn(void*) {
       lastQuotaGen      = st.quotaGen;
       lastRankGen       = st.rankGen;
       lastChoreoGen     = st.choreoGen;
+      lastTokenGen      = st.tokenGen;
       lastWifiUp        = st.wifiConnected;
       lastApMode        = st.wifiApMode;
       lastMqttUp        = st.mqttConnected;
@@ -664,6 +707,9 @@ void uiTaskFn(void*) {
         lastUrgentBreathMs = nowMs;
         needFull = true;
       }
+    }
+    if (st.dockExpanded && st.turnError && st.errMsg[0] && !screenOff) {
+      needFull = true;  // 浮层期间锁全量重绘，压住宠物动画
     }
     if (pageSettingsTick(nowMs) && nav.currentPage() == UiPage::SETTINGS) {
       needFull = true;
@@ -744,11 +790,26 @@ void uiTaskFn(void*) {
     }
 
     // Frame rate target depends on active page & power profile.
-    bool animPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::HOME);
+    // 异常详情浮层开着时不能走舞台局部重绘：pageHomeDrawStage 只重画宠物那一块，
+    // 浮层画完立刻会被动画覆盖（真机实测：宠物和气泡压在浮层上）。
+    bool animPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::HOME &&
+                     !(st.dockExpanded && st.turnError && st.errMsg[0]));
+    bool tokensPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::TOKENS);
+    bool tokensAnim = tokensPage && pageTokensIsAnimating(st, cfg, nowMs);
+    if (wasTokensAnim && !tokensAnim && tokensPage) {
+      needTokensSettle = true;
+    }
+    wasTokensAnim = tokensAnim;
+
     bool interactive = tpActive || pageRankIsFlinging() || uiAnimating;
+    // TOKENS 页一帧要搬 63 KB（368×88）@ 实测 2.7 MB/s ≈ 23 ms，喂不到 60；
+    // 鱼又是 ±2.6px / 4s 的慢速微动，30 fps 和 60 fps 肉眼没差别，锁 30 换稳定。
+    const uint8_t baseFps = settingsEffectiveFps(snap.battery.usbPresent);
+    const uint8_t tokensFps = baseFps > 30 ? 30 : baseFps;
     uint8_t targetFps = animPage
-                          ? settingsEffectiveFps(snap.battery.usbPresent)
-                          : (interactive ? 60 : (st.approvalActive ? 30 : 10));
+                          ? baseFps
+                          : (tokensAnim ? tokensFps
+                                        : (interactive ? 60 : (st.approvalActive ? 30 : 10)));
     if (screenOff || dimmedForNap) targetFps = 5;
     int64_t frameUs = 1000000LL / targetFps;
 
@@ -760,6 +821,7 @@ void uiTaskFn(void*) {
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needFull = false;
         needRankList = false;
+        needTokensSettle = false;
         frame++;
         fpsFrames++;
       } else if (needRankList && !st.approvalActive && nav.currentPage() == UiPage::RANK) {
@@ -776,6 +838,14 @@ void uiTaskFn(void*) {
         pageHomeDrawStage(*canvas, st, cfg, frame, &dx, &dy, &dw, &dh);
         hwDisplayPushRect(dx, dy, dw, dh);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        frame++;
+        fpsFrames++;
+      } else if (tokensAnim || (tokensPage && needTokensSettle)) {
+        int64_t t0 = esp_timer_get_time();
+        pageTokensDrawStage(*canvas, st, cfg, nowMs);
+        hwDisplayPushRect(0, 194, UI_W, 88);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        needTokensSettle = false;
         frame++;
         fpsFrames++;
       } else if (st.approvalActive) {

@@ -335,6 +335,7 @@ v0.1 写「BLE 是唯一免改硬件中断约束的选择」，**这个推理不
 | `nova/<id>/state` | 宿主 → 设备 | 1 | ✅ | 会话/工具/上下文 |
 | `nova/<id>/quota` | 宿主 → 设备 | 1 | ✅ | 三张额度卡 |
 | `nova/<id>/rank` | 宿主 → 设备 | 1 | ✅ | 排行前 8 |
+| `nova/<id>/tokens` | 宿主 → 设备 | 1 | ✅ | 累计 token / 近 14 天日用量 |
 | `nova/<id>/approval` | 宿主 → 设备 | **1** | ❌ | 审批请求（不能 retain，否则重连后重复弹） |
 | `nova/<id>/approval_end` | 宿主 → 设备 | 1 | ❌ | 审批已撤（浏览器端先答了） |
 | `nova/<id>/time` | 宿主 → 设备 | 0 | ✅ | epoch + tz |

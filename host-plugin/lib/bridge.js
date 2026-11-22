@@ -1,6 +1,7 @@
 import mqtt from 'mqtt';
 import { fetchAllQuota, fetchModelDialRank } from './fetchers.js';
 import { generateChoreography, loadAiConfig, synthesizeSpeechAdpcm } from './ai.js';
+import { createTokenCollector } from './tokens.js';
 
 const TTS_CHUNK_BYTES = 1800;
 
@@ -35,6 +36,18 @@ function readCtxPct(session, tokenMeter) {
   }
 }
 
+/**
+ * 播报文本截断：设备侧单条 TTS 上限 MAX_TTS_BYTES=98304（4bit@16kHz ≈ 8000B/s），
+ * 约 12.3 秒语音 ≈ 43–55 个汉字。超了 applyTtsChunk 会 free + return false，
+ * 整条语音静默丢掉 —— 所以必须在送进合成之前就压到 ~40 字。
+ */
+const TTS_MAX_CHARS = 40;
+function clipForTts(text, limit = TTS_MAX_CHARS) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  return s.length <= limit ? s : `${s.slice(0, limit - 1)}…`;
+}
+
 export function createNovaBridge(options = {}) {
   const brokerUrl = options.brokerUrl || process.env.NOVA_MQTT_URL || 'mqtt://192.168.31.15:1883';
   const fallbackMs = Number(options.fallbackMs ?? 8000);
@@ -45,6 +58,13 @@ export function createNovaBridge(options = {}) {
   const quotaFetcher = options.fetchAllQuota || fetchAllQuota;
   const rankFetcher = options.fetchModelDialRank || fetchModelDialRank;
   const mqttConnectFn = options.mqttConnect || ((url, opts) => mqtt.connect(url, opts));
+  // token 页的数据源是会话日志而不是 ctx 服务：`ctx.sessions` 只列 live session，
+  // 拿不到历史，而累计页要的正是历史。见 lib/tokens.js 顶部注释。
+  const tokenCollector = createTokenCollector({
+    log,
+    enabled: options.tokensEnabled !== false,
+    dshHome: options.dshHome,
+  });
 
   const devices = new Map(); // id -> { online, lastSeen, meta, prefs, stat }
   const sessions = new Map(); // sessionId -> { running, waiting, error, lastTool, msg, ctxPct, model, updatedAt }
@@ -54,12 +74,28 @@ export function createNovaBridge(options = {}) {
   let quotaPayload = null;
   let rankPayload = null;
   let choreoPayload = null;
+  let tokensPayload = null;
   let recentAnims = [];
   let recentMood = '';
   let lastStateJson = '';
   let lastStateSentAt = 0;
   let lastChoreoAt = 0;
   let lastTtsAt = 0;
+  // force 一开节流就形同虚设，必须补去重：同一条错误连播会把语音串成一片。
+  const ttsDedup = new Map();  // key -> lastPlayedMs
+  const TTS_DEDUP_MS = 30000;
+
+  function ttsDedupHit(key) {
+    const now = Date.now();
+    const last = ttsDedup.get(key);
+    if (last && now - last < TTS_DEDUP_MS) return true;
+    ttsDedup.set(key, now);
+    // 顺手清掉过期条目，防止无限增长。
+    for (const [k, t] of ttsDedup) {
+      if (now - t >= TTS_DEDUP_MS) ttsDedup.delete(k);
+    }
+    return false;
+  }
   let lastSyncQuotaAt = 0;
   let ttsSeqId = 1;
   let stateTimer = null;
@@ -67,6 +103,7 @@ export function createNovaBridge(options = {}) {
   let rankTimer = null;
   let hbTimer = null;
   let choreoTimer = null;
+  let tokensTimer = null;
   let closed = false;
 
   function onlineIds() {
@@ -142,9 +179,15 @@ export function createNovaBridge(options = {}) {
       sess: sessions.size,
       msg: latestMsg,
     };
+    // err 保持 bool 不动：固件是 `doc["err"] | false`，ArduinoJson 对数字/字符串/对象
+    // 一律求值 0，只有字面量 true 能活。所以异常原文走平级字段，别塞进 err。
     if (run === 0 && chosen?.error) payload.err = true;
     if (ctxPct != null) payload.ctx = { pct: Math.max(0, Math.min(100, Math.round(ctxPct))) };
     if (model) payload.model = model;
+    // 码头要用的信息：当前这条会话叫什么、上一个工具是什么、异常原文。
+    if (chosen?.title) payload.title = chosen.title;
+    if (chosen?.lastTool) payload.tool = chosen.lastTool;
+    if (chosen?.error && chosen.errMsg) payload.errMsg = chosen.errMsg;
     return payload;
   }
 
@@ -184,6 +227,16 @@ export function createNovaBridge(options = {}) {
       rankPayload = r;
       publishAll('rank', rankPayload, { qos: 1, retain: true });
     }
+  }
+
+  async function refreshTokens(force = false) {
+    const next = await tokenCollector.refresh(force);
+    if (!next) return null;
+    // 内容没变就别刷 retain：设备端 tokenGen 每次都自增会白重绘一页。
+    const changed = JSON.stringify(next) !== JSON.stringify(tokensPayload);
+    tokensPayload = next;
+    if (changed) publishAll('tokens', tokensPayload, { qos: 1, retain: true });
+    return tokensPayload;
   }
 
   function buildContextSummary(reason = 'timer') {
@@ -272,6 +325,7 @@ export function createNovaBridge(options = {}) {
       publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
+      if (tokensPayload) publishTo(id, 'tokens', tokensPayload, { qos: 1, retain: true });
       if (choreoPayload && prefs?.choreo !== false) {
         publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
       }
@@ -308,6 +362,7 @@ export function createNovaBridge(options = {}) {
       publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
+      if (tokensPayload) publishTo(id, 'tokens', tokensPayload, { qos: 1, retain: true });
       if (choreoPayload && devices.get(id)?.prefs?.choreo !== false) {
         publishTo(id, 'choreo', choreoPayload, { qos: 1, retain: true });
       }
@@ -331,6 +386,7 @@ export function createNovaBridge(options = {}) {
       refreshQuota().catch(() => {});
       refreshRank(false).catch(() => {});
       refreshChoreo('boot', 30000).catch(() => {});
+      refreshTokens(false).catch(() => {});
     });
 
     client.on('message', (topic, buf) => {
@@ -353,6 +409,7 @@ export function createNovaBridge(options = {}) {
       for (const id of onlineIds()) pushTime(id);
     }, 30 * 1000);
     choreoTimer = setInterval(() => refreshChoreo('timer').catch(() => {}), aiCfg.llm.intervalMs);
+    tokensTimer = setInterval(() => refreshTokens(false).catch(() => {}), 60 * 1000);
   }
 
   function onSessionEvent(session, event, tokenMeter) {
@@ -362,6 +419,8 @@ export function createNovaBridge(options = {}) {
       waiting: false,
       error: false,
       lastTool: '',
+      title: '',
+      errMsg: '',
       msg: '',
       updatedAt: Date.now(),
     };
@@ -374,11 +433,16 @@ export function createNovaBridge(options = {}) {
       case 'model/selection':
         if (data.model) cur.model = String(data.model);
         break;
+      case 'session/title':
+        // SessionTitleEventData { title, messageSeqs, source }；last-wins。
+        cur.title = String(data.title || '').replace(/\s+/g, ' ').trim().slice(0, 20);
+        break;
       case 'turn/start':
         cur.running = true;
         cur.waiting = false;
         cur.error = false;
         cur.lastTool = '';
+        cur.errMsg = '';
         cur.msg = '思考中...';
         break;
       case 'tool/call': {
@@ -410,16 +474,37 @@ export function createNovaBridge(options = {}) {
         cur.running = false;
         cur.waiting = false;
         cur.error = data.reason?.kind === 'error';
-        cur.msg = cur.error ? '本轮异常结束' : '待命中';
+        if (cur.error) {
+          // reason.error 是 LlmFailure { message, code, status?, requestId? }。
+          // 以前整个丢掉，屏幕上永远只看到「本轮异常结束」四个字。
+          const failure = data.reason?.error || {};
+          const detail = String(failure.message || failure.reason || failure.code || '').trim();
+          cur.errMsg = detail.slice(0, 120);
+          cur.msg = cur.errMsg ? `本轮异常结束 · ${cur.errMsg}` : '本轮异常结束';
+        } else {
+          cur.errMsg = '';
+          cur.msg = '待命中';
+        }
         {
           const pct = readCtxPct(session, tokenMeter);
           if (pct != null) cur.ctxPct = pct;
         }
         if (wasRunning) {
-          const line = cur.error
-            ? '唔，刚刚好像出了一点小差错，快来看看呀！'
-            : '主人，刚刚的任务完成啦！';
-          publishTts(line).catch(() => {});
+          if (cur.error) {
+            // 播具体原因，不是套话。dedupKey 用错误原文，连着同样的错只播一次。
+            const detail = cur.errMsg ? clipForTts(cur.errMsg, 34) : '';
+            const line = detail ? `出错了，${detail}` : '唔，刚刚好像出了一点小差错，快来看看呀！';
+            const key = `err:${cur.errMsg || 'unknown'}`;
+            if (!ttsDedupHit(key)) {
+              publishTts(line, { force: true }).catch(() => {});
+            }
+          } else {
+            // 结束那句以前没传 force，被 4 秒节流吃掉；传了之后要靠 task 维度去重。
+            const key = `turnend:${sid}:${cur.updatedAt}`;
+            if (!ttsDedupHit(key)) {
+              publishTts(clipForTts('主人，刚刚的任务完成啦！'), { force: true }).catch(() => {});
+            }
+          }
           refreshChoreo('turn-end', 120000).catch(() => {});
         }
         break;
@@ -462,7 +547,9 @@ export function createNovaBridge(options = {}) {
     for (const id of ids) {
       publishTo(id, 'approval', payload, { qos: 1, retain: false });
     }
-    publishTts(`主人，${tool} 工具请求确认，快来看看吧！`, { force: true }).catch(() => {});
+    // 播具体 reason，而不是固定套话。reason 原文有 140 字，必须压到 TTS 能扛的长度，
+    // 否则设备侧整条静默丢弃。结构：<工具名> 需要确认：<reason 前 30 字>
+    publishTts(clipForTts(`${tool} 需要确认：${reason}`, TTS_MAX_CHARS), { force: true }).catch(() => {});
 
     const waitDevice = new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -503,6 +590,7 @@ export function createNovaBridge(options = {}) {
     if (rankTimer) clearInterval(rankTimer);
     if (hbTimer) clearInterval(hbTimer);
     if (choreoTimer) clearInterval(choreoTimer);
+    if (tokensTimer) clearInterval(tokensTimer);
     for (const apId of [...pendingApprovals.keys()]) {
       settleApproval(apId, { kind: 'abort' }, { notifyDeviceEnd: true });
     }
@@ -519,6 +607,7 @@ export function createNovaBridge(options = {}) {
     refreshQuota,
     refreshRank,
     refreshChoreo,
+    refreshTokens,
     publishTts,
     publishTo,
     onlineIds,

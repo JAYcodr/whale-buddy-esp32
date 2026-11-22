@@ -19,7 +19,7 @@ void drawKvRow(NovaCanvas& c, int16_t x, int16_t y, int16_t w,
 
 void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg) {
   c.fillScreen(ui::COL_BG);
-  ui::drawTopBar(c, st, 3);
+  ui::drawTopBar(c, st, 4);
 
   // Card 1: Hardware & Network
   ui::drawCard(c, 20, 66, 328, 136, ui::COL_CARD, ui::COL_BORDER, 18);

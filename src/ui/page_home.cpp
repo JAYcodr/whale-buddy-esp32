@@ -1,3 +1,4 @@
+#include "qrcode.h"
 #include "ui/pages.h"
 #include "anim/nva.h"
 #include "ui/theme.h"
@@ -7,13 +8,109 @@
 
 namespace {
 
-constexpr ui::Rect BTN_CANCEL_PORTAL{ 94, 304, 180, 46 };
+constexpr ui::Rect BTN_CANCEL_PORTAL{ 94, 384, 180, 44 };  // AP 页重排后按钮下移，不压二维码
 constexpr int16_t STAGE_TOP    = 62;
 constexpr int16_t STAGE_BOTTOM = 304;
 constexpr int16_t PET_MIN_X    = 80;
 constexpr int16_t PET_MAX_X    = 288;
 constexpr int16_t PET_BASE_Y   = 298;
 constexpr ui::Rect PILL_RECT{ 86, 308, 196, 28 };
+
+// ── AP 配网二维码 ────────────────────────────────────────────────────────
+// 载荷是 Wi-Fi 标准格式，扫完只负责连上设备热点；家里 WiFi 与 Broker 仍走
+// Captive Portal（192.168.4.1）。
+//
+// 用核心自带的 esp_qrcode（espressif__qrcode 0.1.0~2，随 framework 分发、
+// 默认已链接，不需要 lib_deps）。三个必须注意的点：
+//   1. 回调是同步的，返回前就把内部缓冲 free 了 —— 不能保存 handle，
+//      也只能在这里把点阵抄出来。0.1.0~2 的 config 没有 user_data 字段，
+//      Canvas 指针只能走静态变量。
+//   2. 实际编码版本由载荷长度决定（27 字节 → v2 / 25 模块）；
+//      max_qrcode_version 只影响 calloc 的缓冲大小，设太大只是白占堆。
+//   3. 静区（quiet zone）要自己留 4 模块。组件的 print_console 只用 2，
+//      照抄会扫不出。
+namespace {
+constexpr int kQrQuiet = 4;        // ISO 18004 要求至少 4 模块
+constexpr int kQrMaxModules = 64;
+
+struct QrBitmap {
+  int  size = 0;                   // 模块数（不含静区）
+  bool ready = false;
+  bool mod[kQrMaxModules][kQrMaxModules] = {};
+};
+
+QrBitmap s_qr;
+char     s_qrPayload[64] = "";     // 记住上次编码的载荷，变了才重建
+
+void qrCapture(esp_qrcode_handle_t h) {
+  const int n = esp_qrcode_get_size(h);
+  if (n <= 0 || n > kQrMaxModules) { s_qr.ready = false; return; }
+  s_qr.size = n;
+  for (int y = 0; y < n; y++) {
+    for (int x = 0; x < n; x++) {
+      s_qr.mod[y][x] = esp_qrcode_get_module(h, x, y);
+    }
+  }
+  s_qr.ready = true;
+}
+
+// 懒生成：只在 AP 态第一次绘制时算一次，之后只 blit。
+// 不在 onApStart 里做 —— 那个回调跑在网络任务，跨任务写共享位图有撕裂风险。
+void qrEnsure(const char* payload) {
+  if (s_qr.ready && strcmp(s_qrPayload, payload) == 0) return;
+  snprintf(s_qrPayload, sizeof(s_qrPayload), "%s", payload);
+  s_qr.ready = false;
+
+  esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
+  cfg.display_func = qrCapture;
+  cfg.max_qrcode_version = 4;      // 27 字节只需 v2，留到 v4 够用且省堆
+  cfg.qrcode_ecc_level = ESP_QRCODE_ECC_LOW;
+  if (esp_qrcode_generate(&cfg, payload) != ESP_OK) {
+    s_qr.ready = false;
+  }
+}
+
+// 画到白底卡片上。不做反色 —— 反色码在部分扫码器上读不出。
+void qrDraw(NovaCanvas& c, int16_t cx, int16_t cy, int16_t side) {
+  const uint16_t white = rgb565(255, 255, 255);
+  const uint16_t black = rgb565(0, 0, 0);
+  c.fillRect(cx, cy, side, side, white);
+  if (!s_qr.ready) return;
+
+  const int total = s_qr.size + kQrQuiet * 2;
+  const int scale = side / total;
+  if (scale < 1) return;
+
+  // 整数缩放，非整数会让模块边缘糊掉。
+  const int16_t px = (int16_t)(cx + (side - total * scale) / 2);
+  const int16_t py = (int16_t)(cy + (side - total * scale) / 2);
+  for (int y = 0; y < s_qr.size; y++) {
+    for (int x = 0; x < s_qr.size; x++) {
+      if (!s_qr.mod[y][x]) continue;
+      c.fillRect((int16_t)(px + (x + kQrQuiet) * scale),
+                 (int16_t)(py + (y + kQrQuiet) * scale),
+                 (int16_t)scale, (int16_t)scale, black);
+    }
+  }
+}
+}  // namespace
+
+// 主屏码头矩形：高度跟有没有会话名/工具名走，绘制与命中共用。
+ui::Rect dockRect(const NovaState& st) {
+  const bool hasDetail = (st.sessTitle[0] || st.lastTool[0]);
+  const int16_t h = hasDetail ? 88 : 80;
+  return ui::Rect{ (int16_t)(20 + ui::burnOffsetX(st.burnInStep)),
+                   (int16_t)(428 - h + ui::burnOffsetY(st.burnInStep)),
+                   328, h };
+}
+
+// AP 页按钮要跟防烧屏偏移一起动；绘制与命中判定共用这一个矩形，
+// 两边各算一次迟早会差一格。
+ui::Rect apCancelPortalRect(const NovaState& st) {
+  return ui::Rect{ (int16_t)(BTN_CANCEL_PORTAL.x + ui::burnOffsetX(st.burnInStep)),
+                   (int16_t)(BTN_CANCEL_PORTAL.y + ui::burnOffsetY(st.burnInStep)),
+                   BTN_CANCEL_PORTAL.w, BTN_CANCEL_PORTAL.h };
+}
 
 float    s_petX             = 184.0f;
 float    s_targetX          = 184.0f;
@@ -416,25 +513,75 @@ void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& c
   drawStageContent(c, st, cfg, frame, outX, outY, outW, outH);
 }
 
+// 异常详情浮层。舞台区 62..304 正好能放 5 行 14px 正文，
+// 用 drawWrappedUtf8 自动折行，不自己算 UTF-8 边界。
+void drawDockDetail(NovaCanvas& c, const NovaState& st) {
+  const int16_t ox = ui::burnOffsetX(st.burnInStep);
+  const int16_t oy = ui::burnOffsetY(st.burnInStep);
+  const int16_t x = (int16_t)(20 + ox);
+  const int16_t y = (int16_t)(62 + oy);
+  const int16_t w = 328;
+  const int16_t h = 232;
+
+  ui::drawCard(c, x, y, w, h, rgb565(8, 12, 20), ui::COL_RED, 18);
+  ui::drawText(c, ui::fontCjk16(), (int16_t)(x + 18), (int16_t)(y + 32),
+               "本轮异常", ui::COL_RED, rgb565(8, 12, 20));
+
+  if (st.sessTitle[0]) {
+    char titleBuf[56];
+    ui::fitUtf8Line(c, ui::fontCjk14(), st.sessTitle, w - 110, titleBuf, sizeof(titleBuf));
+    ui::drawTextRight(c, ui::fontCjk14(), (int16_t)(x + w - 18), (int16_t)(y + 31),
+                      titleBuf, ui::COL_DIM, rgb565(8, 12, 20));
+  }
+
+  c.drawFastHLine((int16_t)(x + 18), (int16_t)(y + 46), (int16_t)(w - 36), ui::COL_BORDER);
+
+  ui::drawWrappedUtf8(c, ui::fontCjk14(), (int16_t)(x + 18), (int16_t)(y + 76),
+                      (int16_t)(w - 36), 24, 5, st.errMsg, ui::COL_TEXT, rgb565(8, 12, 20));
+
+  ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(x + w / 2), (int16_t)(y + h - 16),
+                       "轻触任意处收起", ui::COL_MUTED, rgb565(8, 12, 20));
+}
+
 void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
   c.fillScreen(ui::COL_BG);
-  ui::drawTopBar(c, st, 0);
+  ui::drawTopBar(c, st, 1);
 
   if (st.wifiApMode && !st.wifiConnected) {
-    ui::drawCard(c, 24, 80, 320, 290, ui::COL_CARD, ui::COL_AMBER, 20);
-    ui::drawText(c, ui::fontCjk16(), 44, 118, "首次配网 / AP 模式", ui::COL_AMBER, ui::COL_CARD);
+    // AP 卡片以前写死 24,80，不跟防烧屏偏移 —— 这块一屏静止几百秒，
+    // 补上二维码后就是 AMOLED 最容易烧出残影的图形。这里整块跟其他页一致地偏移；
+    // 命中判定（pageHomeTap / pageHomeHitRect）必须用同一个偏移，否则按钮会点歪。
+    const int16_t aox = ui::burnOffsetX(st.burnInStep);
+    const int16_t aoy = ui::burnOffsetY(st.burnInStep);
 
-    char step1[64];
-    snprintf(step1, sizeof(step1), "1. 手机连接热点: %s", st.apSsid[0] ? st.apSsid : "Nova-XXXX");
-    ui::drawText(c, ui::fontCjk14(), 44, 158, step1, ui::COL_TEXT, ui::COL_CARD);
-    ui::drawText(c, ui::fontCjk14(), 44, 188, "2. 浏览器访问: http://192.168.4.1", ui::COL_TEXT, ui::COL_CARD);
-    ui::drawText(c, ui::fontCjk14(), 44, 218, "3. 填写 WiFi 密码与 MQTT Broker", ui::COL_TEXT, ui::COL_CARD);
+    // AP 页重排：一张 297px 的码塞不进原来 320×290 的三步说明卡片里，
+    // 所以改成「扫码头 + 一行提示 + 按钮」。
+    ui::drawCard(c, (int16_t)(24 + aox), (int16_t)(62 + aoy), 320, 378,
+                 ui::COL_CARD, ui::COL_AMBER, 20);
+    ui::drawText(c, ui::fontCjk16(), (int16_t)(44 + aox), (int16_t)(92 + aoy),
+                 "扫码连热点", ui::COL_AMBER, ui::COL_CARD);
 
-    char brokerHint[64];
-    snprintf(brokerHint, sizeof(brokerHint), "当前 Broker: %s:%u", cfg.brokerHost, (unsigned)cfg.brokerPort);
-    ui::drawText(c, ui::fontCjk14(), 44, 256, brokerHint, ui::COL_DIM, ui::COL_CARD);
+    // 载荷必须是 nopass 的 Wi-Fi 标准格式；扫码只负责连上本机热点。
+    const char* ssid = st.apSsid[0] ? st.apSsid : "Nova-0000";
+    char payload[64];
+    snprintf(payload, sizeof(payload), "WIFI:T:nopass;S:%s;;", ssid);
+    qrEnsure(payload);
 
-    ui::drawButton(c, BTN_CANCEL_PORTAL, "暂不配网", false, ui::COL_AMBER);
+    const int16_t qrSide = 216;
+    const int16_t qrX = (int16_t)(24 + aox + (320 - qrSide) / 2);
+    const int16_t qrY = (int16_t)(96 + aoy);
+    qrDraw(c, qrX, qrY, qrSide);
+
+    char ssidLine[64];
+    snprintf(ssidLine, sizeof(ssidLine), "热点 %s · 无密码", ssid);
+    ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(24 + aox + 160),
+                         (int16_t)(qrY + qrSide + 26), ssidLine, ui::COL_TEXT, ui::COL_CARD);
+
+    ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(24 + aox + 160),
+                         (int16_t)(qrY + qrSide + 48),
+                         "连上后访问 192.168.4.1 填 WiFi", ui::COL_DIM, ui::COL_CARD);
+
+    ui::drawButton(c, apCancelPortalRect(st), "暂不配网", false, ui::COL_AMBER);
     return;
   }
 
@@ -442,12 +589,20 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
   drawStageContent(c, st, cfg, frame, nullptr, nullptr, nullptr, nullptr);
   drawStatusPill(c, st, cfg);
 
-  const int16_t ox = ui::burnOffsetX(st.burnInStep);
-  const int16_t oy = ui::burnOffsetY(st.burnInStep);
-  const int16_t dockX = (int16_t)(20 + ox);
-  const int16_t dockY = (int16_t)(348 + oy);
-  const int16_t dockW = 328;
-  const int16_t dockH = 80;
+  // 异常详情浮层：点码头展开，铺在舞台区上。码头本身只有两行，
+  // 完整原因（最多 errMsg 136 字节）靠这块看全，不挤占日常布局。
+  if (st.dockExpanded && st.turnError && st.errMsg[0]) {
+    drawDockDetail(c, st);
+  }
+
+  // 几何走 dockRect()：码头不能再往上涨（胶囊底边 336，顶边须 ≥340），
+  // 所以有扩展信息时只长 8px，靠第二行前缀放会话名，不新开一行。
+  const ui::Rect dock = dockRect(st);
+  const bool hasDetail = (st.sessTitle[0] || st.lastTool[0]);
+  const int16_t dockX = dock.x;
+  const int16_t dockY = dock.y;
+  const int16_t dockW = dock.w;
+  const int16_t dockH = dock.h;
   uint16_t dockBd = st.turnError ? ui::COL_RED : (st.wait > 0 ? ui::COL_AMBER : ui::COL_BORDER);
   ui::drawCard(c, dockX, dockY, dockW, dockH, ui::COL_CARD, dockBd, 18);
 
@@ -455,7 +610,9 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
   if (hostLinked) {
     char statsLine[64];
     snprintf(statsLine, sizeof(statsLine), "运行 %u · 等待 %u · 会话 %u", st.run, st.wait, st.sess);
-    ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 30, statsLine, ui::COL_TEXT, ui::COL_CARD);
+    const int16_t row1Y = (int16_t)(dockY + 30);
+    const int16_t row2Y = (int16_t)(dockY + (hasDetail ? 60 : 66));
+    ui::drawText(c, ui::fontCjk14(), dockX + 16, row1Y, statsLine, ui::COL_TEXT, ui::COL_CARD);
 
     if (st.ctxPct >= 0) {
       char ctxBuf[16];
@@ -469,25 +626,64 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
       ui::drawTextCenteredInRect(c, ui::fontAscii14(), { px, py, pw, 24 }, ctxBuf, ctxCol, rgb565(18, 30, 48));
     }
 
-    char metaLine[112];
+    // 第二行：异常时优先给原因原文，其余情况给当前消息。
+    // 异常带「▾」角标：点码头展开全文（dockExpanded），否则这一行只能装一句话。
+    char metaLine[160];
     uint16_t metaCol = ui::COL_DIM;
+    int16_t metaMaxW = (int16_t)(dockX + dockW - 14 - (dockX + 16));
+
+    // 会话名做第二行的前缀（灰色小字），而不是跟 CTX 抢第一行右端。
+    // 宽度按可用空间分：给标题最多 55%，剩下的留给内容；
+    // 以前写死 108px，实战里「issue 核查与复盘」被砍成「issue 核查与...」。
+    int16_t metaX = (int16_t)(dockX + 16);
+    if (st.sessTitle[0]) {
+      int16_t avail = (int16_t)(dockX + dockW - 14 - metaX);
+      if (st.turnError) avail = (int16_t)(avail - 62);  // 给「详情」角标让位
+      int16_t titleMaxW = (int16_t)(avail * 55 / 100);
+      if (titleMaxW < 90) titleMaxW = 90;
+
+      char titleBuf[56];
+      ui::fitUtf8Line(c, ui::fontCjk14(), st.sessTitle, titleMaxW, titleBuf, sizeof(titleBuf));
+      ui::drawText(c, ui::fontCjk14(), metaX, row2Y, titleBuf, ui::COL_MUTED, ui::COL_CARD);
+      ui::TextMetrics tm = ui::measureText(c, ui::fontCjk14(), titleBuf);
+      metaX = (int16_t)(metaX + tm.w + 10);
+      metaMaxW = (int16_t)(metaMaxW - (tm.w + 10));
+    }
+
+    // 异常时右侧有「详情」角标，正文得先把那 62px 让出来，
+    // 否则正文会顶到角标底下糊成一团。
     if (st.turnError) {
-      const char* errTxt = st.msg[0] ? st.msg : "本轮异常结束，请检查主机";
-      ui::fitUtf8Line(c, ui::fontCjk14(), errTxt, dockW - 32, metaLine, sizeof(metaLine));
+      metaMaxW = (int16_t)(metaMaxW - 62);
+    }
+
+    if (st.turnError) {
+      const char* errTxt = st.errMsg[0] ? st.errMsg : (st.msg[0] ? st.msg : "本轮异常结束，请检查主机");
+      ui::fitUtf8Line(c, ui::fontCjk14(), errTxt, metaMaxW, metaLine, sizeof(metaLine));
       metaCol = ui::COL_RED;
     } else if ((st.run > 0 || st.wait > 0) && st.msg[0]) {
-      ui::fitUtf8Line(c, ui::fontCjk14(), st.msg, dockW - 32, metaLine, sizeof(metaLine));
+      ui::fitUtf8Line(c, ui::fontCjk14(), st.msg, metaMaxW, metaLine, sizeof(metaLine));
       metaCol = (st.wait > 0) ? ui::COL_AMBER : ui::COL_ACCENT;
     } else if (st.activeModel[0]) {
       char raw[80];
       snprintf(raw, sizeof(raw), "当前模型 · %s", st.activeModel);
-      ui::fitUtf8Line(c, ui::fontCjk14(), raw, dockW - 32, metaLine, sizeof(metaLine));
+      ui::fitUtf8Line(c, ui::fontCjk14(), raw, metaMaxW, metaLine, sizeof(metaLine));
     } else if (st.msg[0] && strcmp(st.msg, "待命中") != 0) {
-      ui::fitUtf8Line(c, ui::fontCjk14(), st.msg, dockW - 32, metaLine, sizeof(metaLine));
+      ui::fitUtf8Line(c, ui::fontCjk14(), st.msg, metaMaxW, metaLine, sizeof(metaLine));
+    } else if (st.sessTitle[0]) {
+      // 有会话名但没有活动消息时，第二行留给工具名，别重复标题。
+      if (st.lastTool[0]) snprintf(metaLine, sizeof(metaLine), "工具 %s", st.lastTool);
+      else metaLine[0] = '\0';
     } else {
       snprintf(metaLine, sizeof(metaLine), "轻触舞台逗诺瓦跑动 · 左右划切页");
     }
-    ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 62, metaLine, metaCol, ui::COL_CARD);
+    if (metaLine[0]) {
+      ui::drawText(c, ui::fontCjk14(), metaX, row2Y, metaLine, metaCol, ui::COL_CARD);
+    }
+    if (st.turnError) {
+      ui::drawTextRight(c, ui::fontCjk14(), dockX + dockW - 14, row2Y,
+                        st.dockExpanded ? "收起" : "详情", ui::COL_RED, ui::COL_CARD);
+    }
+
   } else {
     ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 30, "离线陪伴模式 · 本地交互就绪", ui::COL_TEXT, ui::COL_CARD);
     ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 62, "点空白处让诺瓦跑过去 · 点胶囊换动作", ui::COL_DIM, ui::COL_CARD);
@@ -495,8 +691,17 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
 }
 
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
-  if (st.wifiApMode && !st.wifiConnected && BTN_CANCEL_PORTAL.contains(x, y)) {
+  if (st.wifiApMode && !st.wifiConnected && apCancelPortalRect(st).contains(x, y)) {
     return UiAction{ UiAction::CANCEL_PORTAL, 0 };
+  }
+
+  // 详情浮层开着时，点哪都先收起，避免误触到舞台/胶囊。
+  if (st.dockExpanded && st.turnError && st.errMsg[0]) {
+    return UiAction{ UiAction::DOCK_TOGGLE, 0 };
+  }
+  // 异常时点码头展开详情；非异常时码头不拦点击，保持原有舞台交互。
+  if (st.turnError && dockRect(st).contains(x, y)) {
+    return UiAction{ UiAction::DOCK_TOGGLE, 0 };
   }
 
   if (PILL_RECT.contains(x, y)) {
@@ -540,8 +745,8 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
 
 bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings&, ui::Rect* out) {
   if (!out) return false;
-  if (st.wifiApMode && !st.wifiConnected && BTN_CANCEL_PORTAL.contains(x, y)) {
-    *out = BTN_CANCEL_PORTAL;
+  if (st.wifiApMode && !st.wifiConnected && apCancelPortalRect(st).contains(x, y)) {
+    *out = apCancelPortalRect(st);
     return true;
   }
   if (PILL_RECT.contains(x, y)) {

@@ -174,6 +174,9 @@ public:
 
   bool begin(int32_t speed = GFX_NOT_DEFINED) override;
   void writeAddrWindow(int16_t x, int16_t y, uint16_t w, uint16_t h) override;
+  // 基类是逐像素 writePixel（每像素一次地址窗口 + 单像素事务），
+  // QSPI 上 368×88 要 38 ms。这里走一次设窗口 + 连续批量写。
+  void draw16bitRGBBitmap(int16_t x, int16_t y, uint16_t *bitmap, int16_t w, int16_t h) override;
   void setRotation(uint8_t r) override;
   void writeFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color) override;
   void writeFillRectPreclipped(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override;

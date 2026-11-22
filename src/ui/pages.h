@@ -12,6 +12,7 @@ enum class UiPage : uint8_t {
   RANK     = 2,
   DETAIL   = 3,
   SETTINGS = 4,
+  TOKENS   = 5,
 };
 
 struct UiAction {
@@ -36,6 +37,8 @@ struct UiAction {
     TO_PC,
     RANK_REDRAW,
     SETTINGS_REDRAW,
+    TOKENS_REDRAW,
+    DOCK_TOGGLE,   // 主屏码头：展开/收起异常详情
   };
   Kind kind = NONE;
   int  value = 0;
@@ -78,9 +81,18 @@ void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 void pageApprovalDrawBar(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 UiAction pageApprovalTap(int16_t x, int16_t y);
 
+void pageTokensDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
+void pageTokensDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t nowMs);
+UiAction pageTokensTap(int16_t x, int16_t y, const NovaState& st, uint32_t nowMs);
+void pageTokensOnEnter(uint32_t nowMs);
+bool pageTokensIsAnimating(const NovaState& st, const NovaSettings& cfg, uint32_t nowMs);
+
+int uiPageRingIndex(UiPage p);
+
 bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
 bool pageQuotaHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
 bool pageRankHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
 bool pageDetailHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
 bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
 bool pageApprovalHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageTokensHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);

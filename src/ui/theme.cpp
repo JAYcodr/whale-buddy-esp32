@@ -6,6 +6,7 @@ extern const AaFont g_fontPf20;
 extern const AaFont g_fontDin17;
 extern const AaFont g_fontDin22;
 extern const AaFont g_fontDin30;
+extern const AaFont g_fontDin46;
 
 namespace ui {
 
@@ -14,6 +15,7 @@ const AaFont* fontCjk16()   { return &g_fontPf20; }
 const AaFont* fontAscii14() { return &g_fontDin17; }
 const AaFont* fontAscii18() { return &g_fontDin22; }
 const AaFont* fontNum24()   { return &g_fontDin30; }
+const AaFont* fontNum46()   { return &g_fontDin46; }
 
 namespace {
 

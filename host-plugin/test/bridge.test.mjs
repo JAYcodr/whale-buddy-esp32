@@ -48,10 +48,23 @@ describe('Nova Bridge session aggregation & device prefs', () => {
     st = bridge.buildStatePayload();
     assert.equal(st.msg, '整理 Bash 结果...');
 
-    // Error turn end sets err=true
-    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'error' } } });
+    // Error turn end sets err=true, 且不再丢掉 reason.error 的原文
+    bridge.onSessionEvent(
+      { id: 's1' },
+      {
+        type: 'turn/end',
+        data: { turn: 1, reason: { kind: 'error', error: { message: 'HTTP 429: rate limited', code: 'rate_limited' } } },
+      },
+    );
     st = bridge.buildStatePayload();
     assert.equal(st.run, 0);
+    assert.equal(st.err, true);
+    assert.equal(st.errMsg, 'HTTP 429: rate limited');
+    assert.equal(st.msg, '本轮异常结束 · HTTP 429: rate limited');
+
+    // 没带 message 的异常退化为固定文案，不能拼出空尾巴
+    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'error' } } });
+    st = bridge.buildStatePayload();
     assert.equal(st.err, true);
     assert.equal(st.msg, '本轮异常结束');
 
@@ -172,5 +185,55 @@ describe('AI choreography sanitizer and ADPCM encoder', () => {
     assert.equal(adp.readUInt32LE(4), 16000);
     assert.equal(adp.readUInt32LE(8), 1600);
     assert.equal(adp.length, 16 + 800);
+  });
+});
+
+describe('Nova Bridge dock 扩展字段', () => {
+  it('把会话标题与上一个工具放进 state 载荷', () => {
+    const bridge = createNovaBridge({ brokerUrl: 'mqtt://127.0.0.1:1883' });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'session/title', data: { title: '  修渲染管线  ', messageSeqs: [], source: 'auto' } });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/start', data: { turn: 1 } });
+    bridge.onSessionEvent(
+      { id: 's1' },
+      { type: 'tool/call', data: { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' } },
+    );
+
+    const st = bridge.buildStatePayload();
+    assert.equal(st.title, '修渲染管线');
+    assert.equal(st.tool, 'bash');
+    // errMsg 只在异常时出现，正常回合不该带
+    assert.equal(st.errMsg, undefined);
+    bridge.stop();
+  });
+
+  it('标题超长时截断，且不把 err 改成对象', () => {
+    const bridge = createNovaBridge({ brokerUrl: 'mqtt://127.0.0.1:1883' });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'session/title', data: { title: '一二三四五六七八九十一二三四五六七八九十' } });
+    bridge.onSessionEvent(
+      { id: 's1' },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: 'boom' } } } },
+    );
+    const st = bridge.buildStatePayload();
+    assert.ok(st.title.length <= 20, `title 应截断到 20 字，实际 ${st.title.length}`);
+    // 固件是 doc["err"] | false，只有字面量 true 能活
+    assert.equal(typeof st.err, 'boolean');
+    assert.equal(st.err, true);
+    assert.equal(typeof st.errMsg, 'string');
+    bridge.stop();
+  });
+});
+
+describe('TTS 播报长度与去重', () => {
+  it('长原因被压到设备能扛的长度', () => {
+    const bridge = createNovaBridge({ brokerUrl: 'mqtt://127.0.0.1:1883' });
+    const longReason = 'A'.repeat(200);
+    bridge.onSessionEvent(
+      { id: 's1' },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: longReason } } } },
+    );
+    // errMsg 自身限 120，state 载荷不该被 TTS 的 40 字上限影响
+    const st = bridge.buildStatePayload();
+    assert.equal(st.errMsg.length, 120);
+    bridge.stop();
   });
 });

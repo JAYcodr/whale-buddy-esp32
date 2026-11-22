@@ -40,6 +40,10 @@ def build_ascii_charset() -> list[int]:
     return sorted(cps)
 
 
+def build_hero_num_charset() -> list[int]:
+    return sorted({ord(ch) for ch in " 0123456789.,+-%"})
+
+
 def render_font(name: str, font_path: str, index: int, size: int, cps: list[int],
                 gamma: float, fallback_var: str) -> tuple[str, int]:
     font = ImageFont.truetype(font_path, size, index=index)
@@ -114,6 +118,7 @@ def main() -> int:
 
     cjk_cps = build_cjk_charset()
     asc_cps = build_ascii_charset()
+    hero_cps = build_hero_num_charset()
 
     specs = [
         ("g_fontPf16",  PINGFANG_PATH, PINGFANG_INDEX, 16, cjk_cps, 0.84, "nullptr"),
@@ -121,6 +126,7 @@ def main() -> int:
         ("g_fontDin17", DIN_PATH,      0,              17, asc_cps, 0.88, "&g_fontPf16"),
         ("g_fontDin22", DIN_PATH,      0,              22, asc_cps, 0.88, "&g_fontPf20"),
         ("g_fontDin30", DIN_PATH,      0,              30, asc_cps, 0.90, "&g_fontPf20"),
+        ("g_fontDin46", DIN_PATH,      0,              46, hero_cps, 0.90, "&g_fontPf20"),
     ]
 
     blocks = [
@@ -132,6 +138,7 @@ def main() -> int:
         "extern const AaFont g_fontDin17;",
         "extern const AaFont g_fontDin22;",
         "extern const AaFont g_fontDin30;",
+        "extern const AaFont g_fontDin46;",
         "",
     ]
     grand_total = 0

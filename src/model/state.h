@@ -21,6 +21,12 @@ struct QuotaCard {
 
 constexpr int MAX_RANK_ROWS = 24;
 constexpr int MAX_CHOREO_STEPS = 6;
+constexpr int MAX_TOKEN_DAYS = 14;
+
+struct TokenDay {
+  char     date[8];
+  uint64_t tokens;
+};
 
 struct ChoreoStep {
   int16_t  x;
@@ -65,6 +71,11 @@ struct NovaState {
   bool     turnError;
   int8_t   ctxPct;
   char     activeModel[32];
+  // 主屏码头的扩展信息（state 载荷平级字段，不塞进 err）
+  char     sessTitle[40];   // 当前会话标题
+  char     lastTool[24];    // 上一个工具名
+  char     errMsg[136];     // 本轮异常原文，供展开查看
+  bool     dockExpanded;    // 异常详情是否展开（纯本地 UI 状态）
   uint32_t stateRxMs;
   uint32_t stateGen;
 
@@ -116,6 +127,16 @@ struct NovaState {
   ChoreoStep choreoSteps[MAX_CHOREO_STEPS];
   uint8_t    nChoreoSteps;
   uint32_t   choreoGen;
+
+  // Daily token consumption (whale-school page)
+  TokenDay   tokenDays[MAX_TOKEN_DAYS];
+  uint8_t    nTokenDays;
+  uint64_t   tokenTotal;
+  uint64_t   tokenAvgOverride;
+  uint16_t   tokenSpanDays;
+  float      tokenCachePct;
+  uint32_t   tokenRxMs;
+  uint32_t   tokenGen;
 };
 
 void novaStateInit(const char* devId, const char* fwVer);

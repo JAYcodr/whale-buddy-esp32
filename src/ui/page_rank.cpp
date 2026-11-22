@@ -218,7 +218,7 @@ bool drawRankRowsAndScrollbar(NovaCanvas& c, const NovaState& st) {
 void drawRankHeaderAndFooter(NovaCanvas& c, const NovaState& st, bool drawTopBar) {
   if (drawTopBar) {
     c.fillRect(0, 0, UI_W, LIST_TOP - 2, ui::COL_BG);
-    ui::drawTopBar(c, st, 2);
+    ui::drawTopBar(c, st, 3);
   } else {
     c.fillRect(0, 60, UI_W, LIST_TOP - 2 - 60, ui::COL_BG);
   }
@@ -517,7 +517,7 @@ void pageRankDraw(NovaCanvas& c, const NovaState& st) {
   }
 
   if (st.nRows == 0) {
-    ui::drawTopBar(c, st, 2);
+    ui::drawTopBar(c, st, 3);
     ui::drawText(c, ui::fontCjk16(), 22, 85, "ModelDial 编程榜", ui::COL_TEXT, ui::COL_BG);
     ui::drawCard(c, 22, 120, 324, 144, ui::COL_CARD, ui::COL_BORDER, 18);
     ui::drawTextCentered(c, ui::fontCjk16(), UI_W / 2, 182, "暂无榜单数据",

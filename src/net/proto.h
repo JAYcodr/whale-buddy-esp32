@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 // Apply an incoming MQTT message for topic suffix ("state", "quota", "rank",
-// "approval", "approval_end", "time", "choreo", "tts"). Thread-safe on NovaState.
+// "tokens", "approval", "approval_end", "time", "choreo", "tts"). Thread-safe on NovaState.
 bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint32_t nowMs);
 
 // Outbound payload builders

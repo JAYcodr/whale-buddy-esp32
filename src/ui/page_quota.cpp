@@ -42,6 +42,38 @@ uint16_t usageBarColor(uint8_t pct, uint16_t baseCol) {
   return baseCol;
 }
 
+// 宿主的 why 是机器可读原因码（host-plugin/lib/fetchers.js），不能原样上屏。
+// 映射后每条控制在 6 汉字内：state.h 里 why 只有 char[24]，且卡片宽度有限。
+struct WhyInfo {
+  const char* label;   // 胶囊里的短标签
+  const char* detail;  // 右侧一句说明
+  uint16_t    fg;
+  uint16_t    bg;
+};
+
+WhyInfo whyText(const char* why) {
+  const uint16_t dimBg = rgb565(18, 28, 40);
+  const uint16_t ambBg = rgb565(42, 28, 12);
+  const uint16_t redBg = rgb565(46, 14, 22);
+  if (!why || !why[0]) {
+    return { "未配置", "等待凭据", ui::COL_AMBER, ambBg };
+  }
+  if (strcmp(why, "no-session") == 0) {
+    // 没登录 / 没连上 —— 不是「配置错了」，不该用琥珀警告色。
+    return { "未连接", "登录后自动同步", ui::COL_MUTED, dimBg };
+  }
+  if (strcmp(why, "no-key") == 0) {
+    return { "未配置", "填入密钥后同步", ui::COL_AMBER, ambBg };
+  }
+  if (strcmp(why, "reauth") == 0) {
+    return { "需授权", "重新登录后同步", ui::COL_AMBER, ambBg };
+  }
+  if (strcmp(why, "fetch-err") == 0) {
+    return { "同步失败", "点本卡重试", ui::COL_RED, redBg };
+  }
+  return { "未配置", "暂不可用", ui::COL_MUTED, dimBg };
+}
+
 void formatAge(uint32_t ageSec, char* out, size_t cap) {
   if (ageSec < 60) snprintf(out, cap, "%us前", (unsigned)ageSec);
   else if (ageSec < 3600) snprintf(out, cap, "%um前", (unsigned)(ageSec / 60));
@@ -60,7 +92,7 @@ int16_t cardY(int i, int nShow) {
 
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
   c.fillScreen(ui::COL_BG);
-  ui::drawTopBar(c, st, 1);
+  ui::drawTopBar(c, st, 2);
 
   if (s_syncPending &&
       (st.quotaGen != s_syncGen || st.nowMs < s_syncStartMs ||
@@ -174,15 +206,30 @@ void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
                           rstBuf, ui::COL_MUTED, ui::COL_CARD);
       }
     } else {
-      int16_t bx = (int16_t)(cx + 22);
-      int16_t by = (int16_t)(cy + 54);
-      ui::aaFillRoundRect(c, bx, by, 74, 26, 8, rgb565(42, 28, 12), rgb565(42, 28, 12));
-      ui::drawTextCenteredInRect(c, ui::fontCjk14(), { bx, by, 74, 26 },
-                                 "未配置", ui::COL_AMBER, rgb565(42, 28, 12));
+      // 空态：不把宿主原因码原样上屏，走 whyText() 映射。
+      const WhyInfo info = whyText(card.why);
+      const int16_t bx = (int16_t)(cx + 22);
+      const int16_t by = (int16_t)(cy + 54);
+      const int16_t bh = 26;
+
+      // 胶囊宽度跟标签走，避免「未连接」这类 3 字标签撑不满 74px 的空洞，
+      // 也避免将来更长的标签被硬裁。
+      ui::TextMetrics lm = ui::measureText(c, ui::fontCjk14(), info.label);
+      int16_t pw = (int16_t)(lm.w + 20);
+      if (pw < 74) pw = 74;
+      const int16_t maxPw = (int16_t)(cw - 120);
+      if (pw > maxPw) pw = maxPw;
+
+      ui::aaFillRoundRect(c, bx, by, pw, bh, 8, info.bg, info.bg);
+      ui::drawTextCenteredInRect(c, ui::fontCjk14(), { bx, by, pw, bh },
+                                 info.label, info.fg, info.bg);
+
       char whyBuf[64];
-      ui::fitUtf8Line(c, ui::fontCjk14(), card.why[0] ? card.why : "等待凭据",
-                      cw - 120, whyBuf, sizeof(whyBuf));
-      ui::drawText(c, ui::fontCjk14(), cx + 106, cy + 72, whyBuf, ui::COL_DIM, ui::COL_CARD);
+      const int16_t detailX = (int16_t)(bx + pw + 10);
+      const int16_t detailW = (int16_t)(cx + cw - 14 - detailX);
+      ui::fitUtf8Line(c, ui::fontCjk14(), info.detail, detailW, whyBuf, sizeof(whyBuf));
+      ui::drawText(c, ui::fontCjk14(), detailX, (int16_t)(cy + 72), whyBuf,
+                   ui::COL_DIM, ui::COL_CARD);
     }
   }
 }

@@ -25,6 +25,7 @@ export function apply(ctx, config = {}) {
     ttsStyle: config.ttsStyle,
     quietHours: config.quietHours,
     choreoIntervalMs: config.choreoIntervalMs,
+    tokensEnabled: config.tokens !== false,
     log,
   });
 

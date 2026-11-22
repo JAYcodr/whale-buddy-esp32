@@ -137,6 +137,25 @@ static void populateSample(NovaState& st) {
   st.hour = 16;
   st.minute = 55;
   st.second = 10;
+
+  static constexpr const char* kTokenDates[14] = {
+    "11/09", "11/10", "11/11", "11/12", "11/13", "11/14", "11/15",
+    "11/16", "11/17", "11/18", "11/19", "11/20", "11/21", "11/22"
+  };
+  static constexpr uint64_t kTokenVals[14] = {
+    169000000ULL, 107000000ULL, 137000000ULL, 139000000ULL, 25700000ULL,
+    106000000ULL, 286000000ULL, 178000000ULL, 132000000ULL, 59000000ULL,
+    73000000ULL,  238000000ULL, 287000000ULL, 30310000ULL
+  };
+  st.nTokenDays = 14;
+  for (int i = 0; i < 14; i++) {
+    std::strcpy(st.tokenDays[i].date, kTokenDates[i]);
+    st.tokenDays[i].tokens = kTokenVals[i];
+  }
+  st.tokenTotal = 4040000000ULL;
+  st.tokenAvgOverride = 141000000ULL;
+  st.tokenSpanDays = 20;
+  st.tokenCachePct = 96.6f;
 }
 
 static void mutateQuotaEmpty(NovaState& st, NovaSettings&) {
@@ -149,9 +168,22 @@ static void mutateQuotaWarn(NovaState& st, NovaSettings&) {
   st.cards[1].bars[1].pct = 78;
 }
 
+// 空态用例必须喂宿主真实下发的原因码（fetchers.js 只发 no-session / no-key /
+// reauth / fetch-err，kind 只会是 "na"）。以前这里是 "none" + 中文 "缺少 Cookie"，
+// 走的是 whyText() 的未知兜底分支，真实路径一条都没覆盖到。
 static void mutateQuotaUnconf(NovaState& st, NovaSettings&) {
-  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "none");
-  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "缺少 Cookie");
+  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "na");
+  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "no-session");
+}
+
+static void mutateQuotaReauth(NovaState& st, NovaSettings&) {
+  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "na");
+  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "reauth");
+}
+
+static void mutateQuotaFetchErr(NovaState& st, NovaSettings&) {
+  std::snprintf(st.cards[2].kind, sizeof(st.cards[2].kind), "na");
+  std::snprintf(st.cards[2].why, sizeof(st.cards[2].why), "fetch-err");
 }
 
 static void mutateRankScrolled(NovaState& st, NovaSettings&) {
@@ -173,6 +205,42 @@ static void mutateSettingsMuted(NovaState&, NovaSettings& cfg) {
   cfg.choreoEnabled = false;
 }
 
+// 主屏码头扩展：会话名 + 工具名 + 异常详情浮层。
+static void mutateDockDetail(NovaState& st, NovaSettings&) {
+  std::snprintf(st.sessTitle, sizeof(st.sessTitle), "issue 核查与复盘");
+  std::snprintf(st.lastTool, sizeof(st.lastTool), "bash");
+}
+
+static void mutateDockError(NovaState& st, NovaSettings& cfg) {
+  mutateDockDetail(st, cfg);
+  st.run = 0;
+  st.turnError = true;
+  std::snprintf(st.errMsg, sizeof(st.errMsg),
+                "HTTP 429: rate limited (requestId=req_9f3a2c, status=429). "
+                "Provider returned a long message that needs wrapping to show fully.");
+  std::snprintf(st.msg, sizeof(st.msg), "本轮异常结束 · HTTP 429");
+}
+
+static void mutateDockErrorExpanded(NovaState& st, NovaSettings& cfg) {
+  mutateDockError(st, cfg);
+  st.dockExpanded = true;
+}
+
+// AP 配网页（wifiApMode && !wifiConnected）：决定 #3 加二维码前后的基准图。
+// burnStep 用来复现 issue #3 §5 说的烧屏 bug —— AP 卡片写死 24,80，不跟偏移。
+static void mutateApPortal(NovaState& st, NovaSettings&) {
+  st.wifiConnected = false;
+  st.wifiApMode = true;
+  st.mqttConnected = false;
+  std::snprintf(st.apSsid, sizeof(st.apSsid), "Nova-3468");
+  st.burnInStep = 0;
+}
+
+static void mutateApPortalBurn(NovaState& st, NovaSettings& cfg) {
+  mutateApPortal(st, cfg);
+  st.burnInStep = 7;  // burnOffsetX=+2, burnOffsetY=+1
+}
+
 static void mutateApprovalUrgent(NovaState& st, NovaSettings&) {
   st.apTtlMs = 20000;
   st.nowMs = 25000;
@@ -182,6 +250,19 @@ static void mutateApprovalUrgent(NovaState& st, NovaSettings&) {
       "cd /Volumes/hamelin-ssd/workspace/nova-buddy && git status && "
       "./tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload && "
       "./tools/sim/run.sh /tmp/out");
+}
+
+static void mutateTokensSelected(NovaState& st, NovaSettings&) {
+  // Tap the peak whale (index 12, "11/21") to exercise whale selection & exact token readout.
+  pageTokensTap(315, 228, st, 6500);
+}
+
+static void cleanupTokensSelect() {
+  pageTokensOnEnter(0);
+}
+
+static void mutateTokensEmpty(NovaState& st, NovaSettings&) {
+  st.nTokenDays = 0;
 }
 
 int main(int argc, char** argv) {
@@ -210,12 +291,22 @@ int main(int argc, char** argv) {
     { "settings", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr },
     { "settings_adv", UiPage::SETTINGS, false, 1, 6500, nullptr, nullptr },
     { "approval", UiPage::HOME, true, 0, 6500, nullptr, nullptr },
+    { "home_dock", UiPage::HOME, false, 0, 6500, mutateDockDetail, nullptr },
+    { "home_dock_err", UiPage::HOME, false, 0, 6500, mutateDockError, nullptr },
+    { "home_dock_detail", UiPage::HOME, false, 0, 6500, mutateDockErrorExpanded, nullptr },
+    { "home_ap", UiPage::HOME, false, 0, 6500, mutateApPortal, nullptr },
+    { "home_ap_burn", UiPage::HOME, false, 0, 6500, mutateApPortalBurn, nullptr },
     { "quota_empty", UiPage::QUOTA, false, 0, 6500, mutateQuotaEmpty, nullptr },
     { "quota_warn", UiPage::QUOTA, false, 0, 6500, mutateQuotaWarn, nullptr },
     { "quota_unconf", UiPage::QUOTA, false, 0, 6500, mutateQuotaUnconf, nullptr },
+    { "quota_reauth", UiPage::QUOTA, false, 0, 6500, mutateQuotaReauth, nullptr },
+    { "quota_fetcherr", UiPage::QUOTA, false, 0, 6500, mutateQuotaFetchErr, nullptr },
     { "rank_scrolled", UiPage::RANK, false, 0, 6500, mutateRankScrolled, cleanupRankScroll },
     { "settings_muted", UiPage::SETTINGS, false, 0, 6500, mutateSettingsMuted, nullptr },
     { "approval_urgent", UiPage::HOME, true, 0, 25000, mutateApprovalUrgent, nullptr },
+    { "tokens", UiPage::TOKENS, false, 0, 6500, nullptr, nullptr },
+    { "tokens_selected", UiPage::TOKENS, false, 0, 6500, mutateTokensSelected, cleanupTokensSelect },
+    { "tokens_empty", UiPage::TOKENS, false, 0, 6500, mutateTokensEmpty, nullptr },
   };
 
   for (const auto& cs : cases) {
