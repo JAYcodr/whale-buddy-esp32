@@ -1,3 +1,4 @@
+#include "qrcode.h"
 #include "ui/pages.h"
 #include "anim/nva.h"
 #include "ui/theme.h"
@@ -7,13 +8,92 @@
 
 namespace {
 
-constexpr ui::Rect BTN_CANCEL_PORTAL{ 94, 304, 180, 46 };
+constexpr ui::Rect BTN_CANCEL_PORTAL{ 94, 384, 180, 44 };  // AP 页重排后按钮下移，不压二维码
 constexpr int16_t STAGE_TOP    = 62;
 constexpr int16_t STAGE_BOTTOM = 304;
 constexpr int16_t PET_MIN_X    = 80;
 constexpr int16_t PET_MAX_X    = 288;
 constexpr int16_t PET_BASE_Y   = 298;
 constexpr ui::Rect PILL_RECT{ 86, 308, 196, 28 };
+
+// ── AP 配网二维码 ────────────────────────────────────────────────────────
+// 载荷是 Wi-Fi 标准格式，扫完只负责连上设备热点；家里 WiFi 与 Broker 仍走
+// Captive Portal（192.168.4.1）。
+//
+// 用核心自带的 esp_qrcode（espressif__qrcode 0.1.0~2，随 framework 分发、
+// 默认已链接，不需要 lib_deps）。三个必须注意的点：
+//   1. 回调是同步的，返回前就把内部缓冲 free 了 —— 不能保存 handle，
+//      也只能在这里把点阵抄出来。0.1.0~2 的 config 没有 user_data 字段，
+//      Canvas 指针只能走静态变量。
+//   2. 实际编码版本由载荷长度决定（27 字节 → v2 / 25 模块）；
+//      max_qrcode_version 只影响 calloc 的缓冲大小，设太大只是白占堆。
+//   3. 静区（quiet zone）要自己留 4 模块。组件的 print_console 只用 2，
+//      照抄会扫不出。
+namespace {
+constexpr int kQrQuiet = 4;        // ISO 18004 要求至少 4 模块
+constexpr int kQrMaxModules = 64;
+
+struct QrBitmap {
+  int  size = 0;                   // 模块数（不含静区）
+  bool ready = false;
+  bool mod[kQrMaxModules][kQrMaxModules] = {};
+};
+
+QrBitmap s_qr;
+char     s_qrPayload[64] = "";     // 记住上次编码的载荷，变了才重建
+
+void qrCapture(esp_qrcode_handle_t h) {
+  const int n = esp_qrcode_get_size(h);
+  if (n <= 0 || n > kQrMaxModules) { s_qr.ready = false; return; }
+  s_qr.size = n;
+  for (int y = 0; y < n; y++) {
+    for (int x = 0; x < n; x++) {
+      s_qr.mod[y][x] = esp_qrcode_get_module(h, x, y);
+    }
+  }
+  s_qr.ready = true;
+}
+
+// 懒生成：只在 AP 态第一次绘制时算一次，之后只 blit。
+// 不在 onApStart 里做 —— 那个回调跑在网络任务，跨任务写共享位图有撕裂风险。
+void qrEnsure(const char* payload) {
+  if (s_qr.ready && strcmp(s_qrPayload, payload) == 0) return;
+  snprintf(s_qrPayload, sizeof(s_qrPayload), "%s", payload);
+  s_qr.ready = false;
+
+  esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
+  cfg.display_func = qrCapture;
+  cfg.max_qrcode_version = 4;      // 27 字节只需 v2，留到 v4 够用且省堆
+  cfg.qrcode_ecc_level = ESP_QRCODE_ECC_LOW;
+  if (esp_qrcode_generate(&cfg, payload) != ESP_OK) {
+    s_qr.ready = false;
+  }
+}
+
+// 画到白底卡片上。不做反色 —— 反色码在部分扫码器上读不出。
+void qrDraw(NovaCanvas& c, int16_t cx, int16_t cy, int16_t side) {
+  const uint16_t white = rgb565(255, 255, 255);
+  const uint16_t black = rgb565(0, 0, 0);
+  c.fillRect(cx, cy, side, side, white);
+  if (!s_qr.ready) return;
+
+  const int total = s_qr.size + kQrQuiet * 2;
+  const int scale = side / total;
+  if (scale < 1) return;
+
+  // 整数缩放，非整数会让模块边缘糊掉。
+  const int16_t px = (int16_t)(cx + (side - total * scale) / 2);
+  const int16_t py = (int16_t)(cy + (side - total * scale) / 2);
+  for (int y = 0; y < s_qr.size; y++) {
+    for (int x = 0; x < s_qr.size; x++) {
+      if (!s_qr.mod[y][x]) continue;
+      c.fillRect((int16_t)(px + (x + kQrQuiet) * scale),
+                 (int16_t)(py + (y + kQrQuiet) * scale),
+                 (int16_t)scale, (int16_t)scale, black);
+    }
+  }
+}
+}  // namespace
 
 // 主屏码头矩形：高度跟有没有会话名/工具名走，绘制与命中共用。
 ui::Rect dockRect(const NovaState& st) {
@@ -474,24 +554,32 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
     const int16_t aox = ui::burnOffsetX(st.burnInStep);
     const int16_t aoy = ui::burnOffsetY(st.burnInStep);
 
-    ui::drawCard(c, (int16_t)(24 + aox), (int16_t)(80 + aoy), 320, 290,
+    // AP 页重排：一张 297px 的码塞不进原来 320×290 的三步说明卡片里，
+    // 所以改成「扫码头 + 一行提示 + 按钮」。
+    ui::drawCard(c, (int16_t)(24 + aox), (int16_t)(62 + aoy), 320, 378,
                  ui::COL_CARD, ui::COL_AMBER, 20);
-    ui::drawText(c, ui::fontCjk16(), (int16_t)(44 + aox), (int16_t)(118 + aoy),
-                 "首次配网 / AP 模式", ui::COL_AMBER, ui::COL_CARD);
+    ui::drawText(c, ui::fontCjk16(), (int16_t)(44 + aox), (int16_t)(92 + aoy),
+                 "扫码连热点", ui::COL_AMBER, ui::COL_CARD);
 
-    char step1[64];
-    snprintf(step1, sizeof(step1), "1. 手机连接热点: %s", st.apSsid[0] ? st.apSsid : "Nova-XXXX");
-    ui::drawText(c, ui::fontCjk14(), (int16_t)(44 + aox), (int16_t)(158 + aoy), step1,
-                 ui::COL_TEXT, ui::COL_CARD);
-    ui::drawText(c, ui::fontCjk14(), (int16_t)(44 + aox), (int16_t)(188 + aoy),
-                 "2. 浏览器访问: http://192.168.4.1", ui::COL_TEXT, ui::COL_CARD);
-    ui::drawText(c, ui::fontCjk14(), (int16_t)(44 + aox), (int16_t)(218 + aoy),
-                 "3. 填写 WiFi 密码与 MQTT Broker", ui::COL_TEXT, ui::COL_CARD);
+    // 载荷必须是 nopass 的 Wi-Fi 标准格式；扫码只负责连上本机热点。
+    const char* ssid = st.apSsid[0] ? st.apSsid : "Nova-0000";
+    char payload[64];
+    snprintf(payload, sizeof(payload), "WIFI:T:nopass;S:%s;;", ssid);
+    qrEnsure(payload);
 
-    char brokerHint[64];
-    snprintf(brokerHint, sizeof(brokerHint), "当前 Broker: %s:%u", cfg.brokerHost, (unsigned)cfg.brokerPort);
-    ui::drawText(c, ui::fontCjk14(), (int16_t)(44 + aox), (int16_t)(256 + aoy), brokerHint,
-                 ui::COL_DIM, ui::COL_CARD);
+    const int16_t qrSide = 216;
+    const int16_t qrX = (int16_t)(24 + aox + (320 - qrSide) / 2);
+    const int16_t qrY = (int16_t)(96 + aoy);
+    qrDraw(c, qrX, qrY, qrSide);
+
+    char ssidLine[64];
+    snprintf(ssidLine, sizeof(ssidLine), "热点 %s · 无密码", ssid);
+    ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(24 + aox + 160),
+                         (int16_t)(qrY + qrSide + 26), ssidLine, ui::COL_TEXT, ui::COL_CARD);
+
+    ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(24 + aox + 160),
+                         (int16_t)(qrY + qrSide + 48),
+                         "连上后访问 192.168.4.1 填 WiFi", ui::COL_DIM, ui::COL_CARD);
 
     ui::drawButton(c, apCancelPortalRect(st), "暂不配网", false, ui::COL_AMBER);
     return;
