@@ -17,7 +17,8 @@
   - **宠物主屏**：运行/等待/会话统计、上下文占比、`st.msg` 实时工具/异常状态提示，支持轻触 Nova 互动粒子与醒来反馈、空白处点按跑动与自动编排剧本。
   - **订阅额度**：DeepSeek 账户余额（CNY）、OpenCode Go 与 OpenDesign 周期额度条，本地实时递增数据年龄与重置倒计时，轻触卡片可立即触发宿主同步。
   - **ModelDial 榜单**：同步 24 款主流编码模型，支持**触摸实时上下滑动**与点击右上角切换 **`B·F·K 维度`** / **`审美·耗时`**。
-  - **详情与偏好设置（基础 / 进阶双页）**：支持默认主页、功耗档位（自适应 / 长续航 / 灵动）、5 档音量（静音~100%）与 5 档亮度、TTS 语音播报开关、夜间静音（23–08 点）开关、电池自动息屏时长（15s~2m）、AI 编排开关、语音试听与 AP 重新配网。
+  - **详情与偏好设置（基础 / 进阶 / 电源三页）**：支持默认主页、功耗档位（自适应 / 长续航 / 灵动）、5 档音量（静音~100%）与 5 档亮度、TTS 语音播报开关、夜间静音（23–08 点）开关、电池自动息屏时长（15s~2m）、AI 编排开关、语音试听、AP 重新配网，以及充电上限（80/90/100%）与充电速度（温和 / 自动 / 快速）。
+- **智能充电 + 电量估计**：AXP2101 侧补齐 600mAh 电池的预充/恒流/终止电流与 VBUS 限流；充电电流按「亮屏 300mA / 熄屏 500mA」动态调节，并按 PMU 温度分档降流（49°C→200mA、53°C→100mA、59°C 停充）。电量不再用线性电压换算，而是 OCV 曲线 + 充电阶段机 + 满/空锚点 + 单调平滑，充电时不会被端电压虚高骗到「几分钟涨 50%」；顶栏电池图标区分充电中 / 已充满 / 保养停充 / 低电四态。
 - **WiFiManager 配网 + MQTT 双向桥接**：内置 Captive Portal 配网与自定义 Broker IP/端口；配套 `host-plugin/` DSH 插件负责多会话优先汇总、配额抓取、设备偏好联动与一键测试推送。
 
 ## 项目结构
@@ -30,7 +31,7 @@
 │   ├── audio/             # ES8311 提示音合成
 │   ├── boards/            # Waveshare ESP32-S3-Touch-AMOLED-1.8 引脚与屏参
 │   ├── hw/                # QSPI 显示、I2C 总线任务、FT3168 触摸、AXP2101 电源、PCF85063 RTC、QMI8658 IMU
-│   ├── model/             # NVS 设置与线程安全全局状态
+│   ├── model/             # NVS 设置、线程安全全局状态、电量估计/充电策略（battery_model.h）
 │   ├── net/               # WiFiManager 配网、MQTT 客户端与 JSON 协议
 │   └── ui/                # 4-bpp 字体引擎、AA 主题组件、6 页 UI 与导航
 ├── host-plugin/           # DeepSeek Harness (DSH) MQTT 桥接与额度/榜单抓取插件
@@ -52,7 +53,10 @@
 
 ```bash
 ./tools/sim/run.sh
-# 输出 tools/sim/out/page_{home,quota,rank,detail,settings,settings_adv,approval}.png
+# 输出 tools/sim/out/page_{home,quota,rank,detail,settings,settings_adv,settings_power,approval,...}.png
+
+# 电量估计 / 充电策略纯逻辑单测（不需要开发板）
+bash tools/test_battery.sh
 ```
 
 ### 2. 编译与烧录固件 & LittleFS 资源

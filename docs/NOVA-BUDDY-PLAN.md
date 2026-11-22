@@ -456,21 +456,38 @@ MQTT 客户端优先采用成熟 Arduino MQTT 库，支持 QoS1 / retain / LWT �
 - 不切 ALDO3：屏幕断电后重初始化要走 9 步复位时序，唤醒到出画要一两百 ms，动效连续性没了。
 - 不改 `setSysPowerDownVoltage`：保持 2.6V。改成 3.3V 会让大负载时 VSYS 一跌就硬关机 + 黑屏（`/Volumes/hamelin-ssd/embedding/ESP32-S3-Touch-AMOLED-1.8/AGENTS.md:108-113`）。
 
-### 8.4 续航测算
+### 8.4 电量估计（0.4.0 已实装）
 
-**没有这块板的实测电流，以下都是预算不是结论。**
+AXP2101 不暴露真实电池电流，库仑计（0xA4）也**没有为本项目的 600mAh 电池校准**，所以不能做电流积分。现在的做法（`src/model/battery_model.h`）：
 
-AXP2101 经 XPowersLib 不暴露真实电池电流（`src/hw/power.cpp:57-60` 明确写了 `b.mA = 0` 及原因）。要么用库仑计估算，要么接受没有 mA。
+- **OCV 曲线**：18 点分段线性，`4.20V→100%`、`3.35V→0%`；放电端电压补偿 `+50mV`（负载压降），CC 段补偿 `-70mV`（端电压 = OCV + IR）。
+- **阶段机**：PRE/CC 用「电流 × 时间」模型（300mA / 600mAh ≈ 0.79%/min），CV 从 95 缓慢走到 99，DONE 锁到 cap；保养停充（LIMITED）时**锁定显示**，不让静置电压回落被读成耗电。
+- **锚点**：DONE→100、`<3.4V` 持续 10s→0、开机首次无 USB 时用曲线直锚。
+- **显示限速**：放电最多 1%/10s（回升 1%/60s），充电 1%/3s；电量变化的重绘限流为「5% 桶或 15s」。
+- **上限 cap**：`limitPct` 传进模型，CV/DONE/CC 都不会越过保养上限（90% 上限就停在 90，不会先显示 100）。
 
-方案：设备每 10s 采样 `mV`，自报 `{"evt":"stat","ma":86,"mah":12.3}`，Mac 记 CSV，三天出真实曲线。
+参数与断言：`src/model/battery_model.h` + `tools/test_battery_model.cpp`（`bash tools/test_battery.sh`，998 项）。
 
-**必须提前说的取舍**：60fps 和长续航在这块板上对立。1.8" AMOLED 常亮本身几十 mA，ESP32-S3 跑满渲染再加几十。要「一整天不插电」就得降到 15–20fps 或定时熄屏。
+**取舍**：仍然不做「预计可用/充满时间」——没有真实电流，估出来的数字比现状更不可信。60fps 与长续航的对立不变（见 §8.1），靠 `powerProfile` 与熄屏策略处理。
 
-做成可配策略：`power.profile: 'plugged' | 'battery-long' | 'battery-lively'`，默认插电 60fps / 电池 30fps。
+设备自报：`{"evt":"stat","fps":58,"drop":3,"heap":182400,"rssi":-52,"mv":3980,"pct":72,"chg":1,"stage":2,"tmp":33}`。
 
-设备自报改为 `{"evt":"stat","fps":58,"drop":3,"heap":182400,"rssi":-52,"mv":3980}`（`ma` 字段去掉，因为拿不到）。
+### 8.5 充电治理（0.4.0 已实装）
 
-### 8.5 WiFi 省电：抄小智的现成做法
+| 项 | 值 |
+|---|---|
+| 充电上限 | 90%（设置页 80/90/100；到上限停充，**拔插重新武装**） |
+| 电流（温和） | 亮屏 200mA / 熄屏 300mA |
+| 电流（自动，默认） | 亮屏 300mA / 熄屏 500mA |
+| 电流（快速） | 500mA / 500mA |
+| 温度分档（PMU die） | ≥49°C→200mA，≥53°C→100mA，≥59°C 停充，<44°C 恢复 |
+| 硬件参数 | 4.2V 截止 / 预充 50mA / 终止 50mA / VBUS 限流 500mA / 库仑计 0x18 bit3 |
+
+- **不设** `setLowBatShutdownThreshold()`：它按未校准的 gauge SOC 触发，可能在 3.7V 就把整机硬关。
+- **不开** TS/NTC 的 JEITA：库默认 `disableTSPinMeasure()`，且阈值未在本板验证；温度用 die 温度，阈值偏保守。
+- 停充只关电池充电（`0x18 bit1=0`），VBUS 继续供系统；真机需验证停充时设备不掉线。
+
+### 8.6 WiFi 省电：抄小智的现成做法
 
 参考 `78/esp-wifi-connect` 组件（https://github.com/78/esp-wifi-connect）+ xiaozhi 的 `PowerSaveLevel` 状态机。**没有自定义逻辑，只是把 ESP-IDF 两个参数调到合适档位。**
 

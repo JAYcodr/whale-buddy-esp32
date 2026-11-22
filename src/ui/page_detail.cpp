@@ -46,9 +46,22 @@ void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
 
   drawKvRow(c, 20, 269, 328, "当前模型", st.activeModel[0] ? st.activeModel : "待同步", ui::COL_TEXT, true);
 
-  char pwrBuf[48];
+  char pwrBuf[64];
+  const BattStage bs = (BattStage)st.battStage;
+  const char* pwrLabel = "电池";
+  char chgLabel[24];
+  switch (bs) {
+    case BattStage::PRE:      pwrLabel = "预充中"; break;
+    case BattStage::CC:
+    case BattStage::CV:       snprintf(chgLabel, sizeof(chgLabel), "充电%umA", (unsigned)st.chgMa); pwrLabel = chgLabel; break;
+    case BattStage::DONE:     pwrLabel = "已充满"; break;
+    case BattStage::LIMITED:  pwrLabel = (st.battPct + 1 >= cfg.chargeLimitPct) ? "保养停充" : "高温停充"; break;
+    case BattStage::USB_IDLE: pwrLabel = "USB供电"; break;
+    case BattStage::DISCHARGE:pwrLabel = "电池"; break;
+    default:                  pwrLabel = "未接电池"; break;
+  }
   snprintf(pwrBuf, sizeof(pwrBuf), "%u%% · %.2fV · %s",
-           (unsigned)st.battPct, st.battMv / 1000.0f, st.usbPresent ? "USB供电" : "电池");
+           (unsigned)st.battPct, st.battMv / 1000.0f, pwrLabel);
   drawKvRow(c, 20, 301, 328, "电源状态", pwrBuf, ui::COL_TEXT, true);
 
   char perfBuf[48];

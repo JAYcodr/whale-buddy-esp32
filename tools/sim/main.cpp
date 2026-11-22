@@ -134,6 +134,12 @@ static void populateSample(NovaState& st) {
   st.battMv = 4120;
   st.battPct = 92;
   st.usbPresent = true;
+  st.charging = true;
+  st.battStage = (uint8_t)BattStage::CC;
+  st.battTempC = 31;
+  st.chgMa = 300;
+  st.chargeLimited = false;
+  st.gaugePct = 91;
   st.hour = 16;
   st.minute = 55;
   st.second = 10;
@@ -241,8 +247,70 @@ static void mutateApPortalBurn(NovaState& st, NovaSettings& cfg) {
   st.burnInStep = 7;  // burnOffsetX=+2, burnOffsetY=+1
 }
 
-static void mutateApprovalUrgent(NovaState& st, NovaSettings&) {
-  st.apTtlMs = 20000;
+// 电源状态用例：顶栏三态 + 详情页状态串 + 设置页电源 tab。
+static void mutateDetailCharging(NovaState& st, NovaSettings&) {
+  st.battPct = 64;
+  st.battMv = 4050;
+  st.usbPresent = true;
+  st.charging = true;
+  st.battStage = (uint8_t)BattStage::CC;
+  st.chgMa = 300;
+  st.battTempC = 33;
+  st.gaugePct = 61;
+}
+
+static void mutateDetailFull(NovaState& st, NovaSettings&) {
+  st.battPct = 100;
+  st.battMv = 4190;
+  st.usbPresent = true;
+  st.charging = false;
+  st.battStage = (uint8_t)BattStage::DONE;
+  st.chgMa = 0;
+  st.battTempC = 30;
+  st.gaugePct = 100;
+}
+
+static void mutateDetailLimited(NovaState& st, NovaSettings&) {
+  st.battPct = 90;
+  st.battMv = 4100;
+  st.usbPresent = true;
+  st.charging = false;
+  st.battStage = (uint8_t)BattStage::LIMITED;
+  st.chgMa = 0;
+  st.chargeLimited = true;
+  st.battTempC = 34;
+  st.gaugePct = 88;
+}
+
+static void mutateDetailLow(NovaState& st, NovaSettings&) {
+  st.battPct = 9;
+  st.battMv = 3550;
+  st.usbPresent = false;
+  st.charging = false;
+  st.battStage = (uint8_t)BattStage::DISCHARGE;
+  st.chgMa = 0;
+  st.battTempC = 29;
+  st.gaugePct = 7;
+}
+
+static void mutateHomeCharging(NovaState& st, NovaSettings&) {
+  st.battPct = 88;
+  st.battMv = 4180;
+  st.usbPresent = true;
+  st.charging = true;
+  st.battStage = (uint8_t)BattStage::CV;
+  st.chgMa = 300;
+  st.battTempC = 33;
+  st.gaugePct = 86;
+}
+
+static void mutateSettingsPower(NovaState& st, NovaSettings& cfg) {
+  cfg.chargeLimitPct = 90;
+  cfg.chargeSpeed = ChargeSpeed::AUTO;
+  mutateDetailCharging(st, cfg);
+}
+
+static void mutateApprovalUrgent(NovaState& st, NovaSettings&) {  st.apTtlMs = 20000;
   st.nowMs = 25000;
   st.apArrivedMs = st.nowMs - 18000;
   std::snprintf(
@@ -303,6 +371,12 @@ int main(int argc, char** argv) {
     { "quota_fetcherr", UiPage::QUOTA, false, 0, 6500, mutateQuotaFetchErr, nullptr },
     { "rank_scrolled", UiPage::RANK, false, 0, 6500, mutateRankScrolled, cleanupRankScroll },
     { "settings_muted", UiPage::SETTINGS, false, 0, 6500, mutateSettingsMuted, nullptr },
+    { "home_charging", UiPage::HOME, false, 0, 6500, mutateHomeCharging, nullptr },
+    { "detail_charging", UiPage::DETAIL, false, 0, 6500, mutateDetailCharging, nullptr },
+    { "detail_full", UiPage::DETAIL, false, 0, 6500, mutateDetailFull, nullptr },
+    { "detail_limited", UiPage::DETAIL, false, 0, 6500, mutateDetailLimited, nullptr },
+    { "detail_low", UiPage::DETAIL, false, 0, 6500, mutateDetailLow, nullptr },
+    { "settings_power", UiPage::SETTINGS, false, 2, 6500, mutateSettingsPower, nullptr },
     { "approval_urgent", UiPage::HOME, true, 0, 25000, mutateApprovalUrgent, nullptr },
     { "tokens", UiPage::TOKENS, false, 0, 6500, nullptr, nullptr },
     { "tokens_selected", UiPage::TOKENS, false, 0, 6500, mutateTokensSelected, cleanupTokensSelect },

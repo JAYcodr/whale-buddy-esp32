@@ -1,7 +1,8 @@
 #pragma once
 #include <stdint.h>
+#include "model/battery_model.h"
 
-constexpr const char* NOVA_FW_VER = "0.3.1";
+constexpr const char* NOVA_FW_VER = "0.4.0";
 
 enum class HomePageKind : uint8_t {
   PET   = 0,
@@ -25,6 +26,8 @@ struct NovaSettings {
   bool         quietHours    = true;
   bool         choreoEnabled = true;
   uint16_t     batSleepSec   = 30;
+  uint8_t      chargeLimitPct = 90;                  // 80 / 90 / 100
+  ChargeSpeed  chargeSpeed    = ChargeSpeed::AUTO;   // 温和 / 自动 / 快速
   char         brokerHost[40] = "192.168.31.15";
   uint16_t     brokerPort    = 1883;
 };

@@ -113,6 +113,11 @@ struct NovaState {
   uint8_t  battPct;
   bool     usbPresent;
   bool     charging;
+  uint8_t  battStage;       // BattStage (model/battery_model.h)
+  int8_t   battTempC;       // AXP2101 die temperature
+  uint16_t chgMa;           // charge current requested by the governor
+  bool     chargeLimited;   // paused by limit / temperature
+  int8_t   gaugePct;        // AXP2101 gauge SOC, -1 when unavailable
   bool     faceDown;
   uint8_t  hour;
   uint8_t  minute;

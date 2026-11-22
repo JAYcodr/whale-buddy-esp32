@@ -107,7 +107,7 @@ void UiNav::draw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
     case UiPage::QUOTA:    pageQuotaDraw(c, st); break;
     case UiPage::RANK:     pageRankDraw(c, st); break;
     case UiPage::DETAIL:   pageDetailDraw(c, st, cfg); break;
-    case UiPage::SETTINGS: pageSettingsDraw(c, cfg); break;
+    case UiPage::SETTINGS: pageSettingsDraw(c, st, cfg); break;
     case UiPage::TOKENS:   pageTokensDraw(c, st, nowMs); break;
   }
 }

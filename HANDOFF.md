@@ -84,6 +84,25 @@ Broker：`mqtt://192.168.31.15:1883`
 
 ---
 
+## 电源与充电（0.4.0 起）
+
+- **电量显示**：`src/model/battery_model.h` 里的纯逻辑模型 —— OCV 曲线（18 点）+ 充电阶段机（PRE/CC/CV/DONE）+ 满/空锚点 + 单调限速。`hwBattery()` 现在只返回缓存快照，真实采样在 bus task 每秒一次的 `hwPowerTick()`。
+- **充电策略**：默认充电上限 90%（设置页 80/90/100 可改）；电流按 温和 200/300mA、自动 300/500mA、快速 500/500mA（亮屏/熄屏）；PMU die 温度 ≥49°C→200mA、≥53°C→100mA、≥59°C 停充，回落到 <44°C 恢复。
+- **参数落点**：初始化在 `src/hw/power.cpp:init`（4.2V / 300mA / 预充 50mA / 终止 50mA / VBUS 限流 500mA / 库仑计 0x18 bit3）；治理在 `hwPowerTick()`；设置键 `chg_lim`、`chg_spd`。
+- **串口取证**：`{"cmd":"bat"}` 返回 `pct/mv/stage/chg/limited/usb/tmp/gauge`；`stat` 也带一行电源字段。
+- **单测**：`bash tools/test_battery.sh`（998 项断言，覆盖曲线单调、限速、锚点、上限 cap、温度分档、拔插重臂）。
+
+### 电源侧别踩回去
+
+1. `hwBattery()` 已经从「每次调用打 I2C」改成「读缓存」，别再在里面加读取；BLE `status` 也走它。
+2. 库仑计（0xA4）已开但**没校准**：只写进 state 给设置页看，不参与百分比计算。
+3. TS/NTC 的 JEITA 保护**没开**（`initImpl()` 默认 disable），温度用 PMU die 温度并偏保守；不要拿它当电池温度。
+4. **没设** `setLowBatShutdownThreshold()`：它按未校准的 gauge SOC 触发，可能在 3.7V 就把机器硬关掉。低电锚点交给模型（3.4V/10s → 0%）。
+5. 到上限停充后**拔插才会重新武装**（`if (!usb) g.limitCut = false`），显示值会一直停在 90，不会自己掉到 86 再充。
+6. `battPct` 变化触发的全屏重绘有限流（5% 桶或 15s），别把限流删了，否则充电时会一直整屏推。
+
+---
+
 ## 测试
 
 ```bash
@@ -95,8 +114,11 @@ node --test host-plugin/test/bridge.test.mjs host-plugin/test/tokens.test.mjs
 # state 载荷全链路（不需要真机、不需要 broker）
 node tools/verify_state_payload.mjs
 
-# 模拟器出图（23 张）
+# 模拟器出图（29 张，含充电/满电/保养停充/低电/电源页）
 bash tools/sim/run.sh
+
+# 电量估计 + 充电策略纯逻辑单测
+bash tools/test_battery.sh
 
 # 固件编译
 bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8
@@ -114,10 +136,11 @@ bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload
 .venv-shot/bin/python tools/usb_shot.py --port /dev/cu.usbmodem21101 --out /tmp/x.png
 
 # 串口命令
-{"cmd":"stat"}                    # fps / pushUs / heap / psram / mhz
+{"cmd":"stat"}                    # fps / pushUs / heap / psram / mhz / bat
+{"cmd":"bat"}                     # pct / mv / stage / chg / limited / usb / tmp / gauge
 {"cmd":"shot"}                    # 截图
 {"cmd":"reprov"}                  # 进配网模式（会断网，MQTT 掉线）
-{"cmd":"page","page":"quota"}     # 切页：home/quota/rank/detail/settings/tokens
+{"cmd":"page","page":"quota"}     # 切页：home/quota/rank/detail/settings/settings_adv/settings_power/tokens
 {"cmd":"tap","x":184,"y":406}     # 注入点击，走 nav.onTap + handleAction 与真实触屏同路径
 {"cmd":"demo","anim":3}           # 强制动画状态
 ```

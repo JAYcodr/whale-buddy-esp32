@@ -395,6 +395,10 @@ size_t protoBuildStat(char* buf, size_t cap, const NovaState& st) {
   doc["heap"] = st.freeHeap;
   doc["rssi"] = st.rssi;
   doc["mv"]   = st.battMv;
+  doc["pct"]  = st.battPct;
+  doc["chg"]  = st.charging ? 1 : 0;
+  doc["stage"] = st.battStage;
+  doc["tmp"]  = st.battTempC;
   return serializeJson(doc, buf, cap);
 }
 

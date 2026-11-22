@@ -83,10 +83,23 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
           } else if (strcmp(cmd, "stat") == 0) {
             static NovaState snap;
             novaStateRead(&snap);
-            Serial.printf("STAT fps=%.1f pushUs=%lu heap=%lu psram=%lu mhz=%u anim=%d\n",
+            Serial.printf("STAT fps=%.1f pushUs=%lu heap=%lu psram=%lu mhz=%u anim=%d "
+                          "bat=%u%% %umV stage=%u chg=%umA tmp=%dC usb=%d\n",
                           snap.fps, (unsigned long)snap.pushUs,
                           (unsigned long)snap.freeHeap, (unsigned long)snap.freePsram,
-                          (unsigned)snap.cpuMhz, (int)nvaActiveState());
+                          (unsigned)snap.cpuMhz, (int)nvaActiveState(),
+                          (unsigned)snap.battPct, (unsigned)snap.battMv,
+                          (unsigned)snap.battStage, (unsigned)snap.chgMa,
+                          (int)snap.battTempC, snap.usbPresent ? 1 : 0);
+          } else if (strcmp(cmd, "bat") == 0) {
+            // Machine-readable power dump for the real-hardware acceptance run.
+            HwBattery b = hwBattery();
+            Serial.printf("{\"bat\":{\"pct\":%d,\"mv\":%d,\"stage\":%u,\"chg\":%u,"
+                          "\"limited\":%s,\"usb\":%s,\"tmp\":%d,\"gauge\":%d}}\n",
+                          b.pct, b.mV, (unsigned)b.stage, (unsigned)b.chgMa,
+                          b.chargeLimited ? "true" : "false",
+                          b.usbPresent ? "true" : "false",
+                          b.tempC, (int)b.gaugePct);
           } else if (strcmp(cmd, "reprov") == 0) {
             netRequestReprovision();
           } else if (strcmp(cmd, "wifi") == 0) {
@@ -101,6 +114,7 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             else if (strcmp(p, "detail") == 0)   { nav.setPage(UiPage::DETAIL); needFull = true; }
             else if (strcmp(p, "settings") == 0) { pageSettingsSetTab(0); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "settings_adv") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
+            else if (strcmp(p, "settings_power") == 0) { pageSettingsSetTab(2); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "tokens") == 0)   { pageTokensOnEnter(millis()); nav.setPage(UiPage::TOKENS); needFull = true; }
           } else if (strcmp(cmd, "tap") == 0) {
             // 真机验收用：把手动戳屏变成可重放的命令。
@@ -181,6 +195,7 @@ void uiTaskFn(void*) {
   uint8_t  lastSecond = 255;
   uint32_t lastUrgentBreathMs = 0;
   uint8_t  lastBattPct = 255;
+  uint32_t lastBattDrawMs = 0;
   uint8_t  lastBurnStep = 0;
   bool     lastSleepState = false;
   uint32_t curCpuMhz = getCpuFrequencyMhz();
@@ -220,6 +235,11 @@ void uiTaskFn(void*) {
       s.battPct    = snap.battery.pct;
       s.usbPresent = snap.battery.usbPresent;
       s.charging   = snap.battery.charging;
+      s.battStage      = snap.battery.stage;
+      s.battTempC      = (int8_t)snap.battery.tempC;
+      s.chgMa          = snap.battery.chgMa;
+      s.chargeLimited  = snap.battery.chargeLimited;
+      s.gaugePct       = snap.battery.gaugePct;
       s.faceDown   = snap.faceDown;
       s.hour       = snap.time.H;
       s.minute     = snap.time.M;
@@ -382,6 +402,17 @@ void uiTaskFn(void*) {
           break;
         case UiAction::SET_BATSLEEP:
           settingsMut().batSleepSec = (uint16_t)(act.value >= 10 ? act.value : 30);
+          settingsSave();
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_CHGLIMIT:
+          settingsMut().chargeLimitPct =
+              (uint8_t)((act.value == 80 || act.value == 90 || act.value == 100) ? act.value : 90);
+          settingsSave();
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_CHGSPEED:
+          settingsMut().chargeSpeed = (ChargeSpeed)((act.value >= 0 && act.value <= 2) ? act.value : 1);
           settingsSave();
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
@@ -646,6 +677,9 @@ void uiTaskFn(void*) {
       }
     }
 
+    // The charge governor lowers current while the panel is lit.
+    hwPowerSetScreenOn(!(screenOff || dimmedForNap));
+
     // Detect task completion to celebrate cleanly or show error expression.
     if (lastRunCount > 0 && st.run == 0 && !st.approvalActive) {
       if (st.turnError) {
@@ -668,11 +702,18 @@ void uiTaskFn(void*) {
                              : 0u;
     bool curSleepState = (nvaActiveState() == NvaAnimKey::SLEEP);
 
+    // Battery percentage is smoothed by the estimator, but a 1% change still
+    // costs a full-screen push. Redraw immediately on a 5% bucket change,
+    // otherwise at most every 15 s.
+    bool battChanged = (st.battPct != lastBattPct) &&
+                       ((st.battPct / 5u) != (lastBattPct / 5u) ||
+                        (nowMs - lastBattDrawMs) >= 15000u);
+
     // Detect state / heartbeat / burn-in pixel shift changes requiring a full redraw.
     if (st.stateGen != lastStateGen || st.quotaGen != lastQuotaGen || st.rankGen != lastRankGen ||
         st.choreoGen != lastChoreoGen || st.tokenGen != lastTokenGen ||
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
-        st.mqttConnected != lastMqttUp || st.minute != lastMinute || st.battPct != lastBattPct ||
+        st.mqttConnected != lastMqttUp || st.minute != lastMinute || battChanged ||
         st.lastMqttRxMs != lastMqttRxSeen || isStale != lastStaleFlag ||
         staleBucket != lastStaleShownSec || quotaBucket != lastQuotaBucket ||
         burnStep != lastBurnStep || curSleepState != lastSleepState) {
@@ -690,6 +731,7 @@ void uiTaskFn(void*) {
       lastQuotaBucket   = quotaBucket;
       lastMinute        = st.minute;
       lastBattPct       = st.battPct;
+      lastBattDrawMs    = nowMs;
       lastBurnStep      = burnStep;
       lastSleepState    = curSleepState;
       needFull          = true;

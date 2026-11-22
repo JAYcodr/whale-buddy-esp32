@@ -1,4 +1,5 @@
 #pragma once
+#include "model/battery_model.h"
 #include "model/state.h"
 #include "ui/aafont.h"
 #include "ui/canvas.h"
@@ -238,30 +239,51 @@ inline int drawWrappedUtf8(NovaCanvas& c, const AaFont* font, int16_t x, int16_t
 }
 
 inline void drawBatteryIcon(NovaCanvas& c, int16_t rightX, int16_t centerY,
-                            uint8_t pct, bool usbPresent) {
+                            uint8_t pct, bool usbPresent, uint8_t stage) {
   if (pct > 100) pct = 100;
+  const BattStage s  = (BattStage)stage;
+  const bool charging = (s == BattStage::PRE || s == BattStage::CC || s == BattStage::CV);
+  const bool paused   = (s == BattStage::LIMITED);
+  const bool full     = (s == BattStage::DONE);
+
   char pctStr[10];
   snprintf(pctStr, sizeof(pctStr), "%u%%", pct);
 
-  uint16_t col = usbPresent ? COL_MINT : (pct <= 20 ? COL_RED : (pct <= 45 ? COL_AMBER : COL_TEXT));
+  uint16_t col;
+  if (paused)              col = COL_AMBER;
+  else if (charging)       col = COL_MINT;
+  else if (full)           col = COL_MINT;
+  else if (usbPresent)     col = COL_MINT;   // plugged, idle
+  else if (pct <= 10)      col = COL_RED;
+  else if (pct <= 20)      col = COL_AMBER;
+  else                     col = COL_TEXT;
+
   const int16_t bw = 26;
   const int16_t bh = 14;
   const int16_t bx = rightX - bw - 3;
   const int16_t by = centerY - bh / 2;
 
-  aaDrawRoundRect(c, bx, by, bw, bh, 3, COL_DIM);
-  c.fillRect(bx + bw, centerY - 3, 2, 6, COL_DIM);
-  int16_t fillW = (int16_t)(((bw - 4) * pct + 50) / 100);
+  const uint16_t frameCol = paused ? COL_AMBER
+                           : ((!usbPresent && pct <= 10) ? COL_RED : COL_DIM);
+
+  aaDrawRoundRect(c, bx, by, bw, bh, 3, frameCol);
+  c.fillRect(bx + bw, centerY - 3, 2, 6, frameCol);
+  int16_t fillW = full ? (bw - 4) : (int16_t)(((bw - 4) * pct + 50) / 100);
   if (fillW < 2 && pct > 0) fillW = 2;
   if (fillW > bw - 4) fillW = bw - 4;
   if (fillW > 0) {
     c.fillRect(bx + 2, by + 2, fillW, bh - 4, col);
   }
-  if (usbPresent) {
+
+  // Bolt = "powered and moving charge"; amber bolt = paused by policy;
+  // dim bolt = plugged but not charging; full pack = no bolt at all.
+  const bool drawBolt = charging || paused || (usbPresent && !full);
+  if (drawBolt) {
+    const uint16_t boltCol = (charging || paused) ? COL_BG : COL_DIM;
     int16_t mx = bx + bw / 2;
-    c.drawLine(mx + 1, by + 2, mx - 2, centerY, COL_BG);
-    c.drawLine(mx - 2, centerY, mx + 2, centerY, COL_BG);
-    c.drawLine(mx + 2, centerY, mx - 1, by + bh - 3, COL_BG);
+    c.drawLine(mx + 1, by + 2, mx - 2, centerY, boltCol);
+    c.drawLine(mx - 2, centerY, mx + 2, centerY, boltCol);
+    c.drawLine(mx + 2, centerY, mx - 1, by + bh - 3, boltCol);
   }
   drawTextRight(c, fontAscii14(), bx - 6, centerY + 6, pctStr, col, COL_BG);
 }
@@ -337,7 +359,7 @@ inline void drawTopBar(NovaCanvas& c, const NovaState& st, int activeDot, int to
   drawTextCenteredInRect(c, fontCjk14(), { (int16_t)(pillX + 16), pillY, (int16_t)(pillW - 20), 26 },
                          netBuf, txtCol, COL_CARD);
 
-  drawBatteryIcon(c, UI_SAFE_R - 4 + ox, 29 + oy, st.battPct, st.usbPresent);
+  drawBatteryIcon(c, UI_SAFE_R - 4 + ox, 29 + oy, st.battPct, st.usbPresent, st.battStage);
   drawPagePills(c, UI_W / 2 + ox, 52 + oy, activeDot, totalDots);
 }
 

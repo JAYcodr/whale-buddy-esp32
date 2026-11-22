@@ -117,16 +117,18 @@ inline bool xferCommand(JsonDocument& doc) {
     int iBat = hb.mA;
     int vBus = hb.usbPresent ? 5000 : 0;
     int pct  = hb.pct;
-    char b[320];
+    char b[420];
     int len = snprintf(b, sizeof(b),
       "{\"ack\":\"status\",\"ok\":true,\"n\":0,\"data\":{"
       "\"name\":\"%s\",\"owner\":\"%s\",\"sec\":%s,"
-      "\"bat\":{\"pct\":%d,\"mV\":%d,\"mA\":%d,\"usb\":%s},"
+      "\"bat\":{\"pct\":%d,\"mV\":%d,\"mA\":%d,\"usb\":%s,"
+      "\"stage\":%u,\"chg\":%u,\"tmp\":%d,\"gauge\":%d},"
       "\"sys\":{\"up\":%lu,\"heap\":%u,\"fsFree\":%lu,\"fsTotal\":%lu},"
       "\"stats\":{\"appr\":%u,\"deny\":%u,\"vel\":%u,\"nap\":%lu,\"lvl\":%u}"
       "}}\n",
       petName(), ownerName(), bleSecure() ? "true" : "false",
       pct, vBat, iBat, (vBus > 4000) ? "true" : "false",
+      (unsigned)hb.stage, (unsigned)hb.chgMa, hb.tempC, (int)hb.gaugePct,
       millis() / 1000, ESP.getFreeHeap(),
       (unsigned long)(LittleFS.totalBytes() - LittleFS.usedBytes()),
       (unsigned long)LittleFS.totalBytes(),

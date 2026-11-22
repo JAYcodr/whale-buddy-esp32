@@ -28,6 +28,9 @@ static void busTaskFn(void*) {
   uint8_t i2cErrStreak = 0;
 
   // Initial read so snapshot is valid immediately after startup.
+  // settingsLoad() has run by now, so this tick also applies the saved
+  // charge-limit / charge-speed policy.
+  hwPowerTick(millis());
   HwBattery bat = hwBattery();
   HwTime tm = {};
   bool tmOk = hwRtcRead(&tm);
@@ -106,10 +109,8 @@ static void busTaskFn(void*) {
       }
     }
     if ((tickCount % 50) == 0) {
-      HwBattery nextBat = hwBattery();
-      if (nextBat.mV >= 2500 && nextBat.mV <= 5000) {
-        bat = nextBat;
-      }
+      hwPowerTick(now);
+      bat = hwBattery();
     }
     tickCount++;
     esp_task_wdt_reset();

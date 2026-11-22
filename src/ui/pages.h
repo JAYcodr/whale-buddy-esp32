@@ -26,6 +26,8 @@ struct UiAction {
     SET_TTS,
     SET_QUIET,
     SET_BATSLEEP,
+    SET_CHGLIMIT,
+    SET_CHGSPEED,
     SET_CHOREO,
     TEST_SOUND,
     SYNC_HOST,
@@ -72,7 +74,7 @@ bool pageRankIsFlinging();
 void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg);
 UiAction pageDetailTap(int16_t x, int16_t y);
 
-void pageSettingsDraw(NovaCanvas& c, const NovaSettings& cfg);
+void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg);
 UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg);
 void pageSettingsSetTab(uint8_t tab);
 bool pageSettingsTick(uint32_t nowMs);

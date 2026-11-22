@@ -12,10 +12,11 @@ uint32_t s_reprovAtMs = 0;
 constexpr uint32_t REPROV_CONFIRM_TIMEOUT_MS = 3000u;
 
 constexpr ui::Rect HDR_BACK { 14,  12, 196, 36 };
-constexpr ui::Rect TAB_SEG  { 226, 13, 122, 34 };
-constexpr ui::Rect TAB_BASIC{ 226, 13, 61,  34 };
-constexpr ui::Rect TAB_ADV  { 287, 13, 61,  34 };
-constexpr const char* TAB_LABELS[2] = { "基础", "进阶" };
+constexpr ui::Rect TAB_SEG  { 186, 13, 162, 34 };
+constexpr ui::Rect TAB_BASIC{ 186, 13, 54,  34 };
+constexpr ui::Rect TAB_ADV  { 240, 13, 54,  34 };
+constexpr ui::Rect TAB_PWR  { 294, 13, 54,  34 };
+constexpr const char* TAB_LABELS[3] = { "基础", "进阶", "电源" };
 
 // Tab 0: 基础偏好
 constexpr ui::Rect HOME_SEG{ 34, 84, 300, 34 };
@@ -77,6 +78,26 @@ constexpr ui::Rect BTN_TEST_SND{ 24,  386, 162, 44 };
 constexpr ui::Rect BTN_REPROV  { 24,  386, 162, 44 };
 constexpr ui::Rect BTN_BACK    { 198, 386, 146, 44 };
 
+// Tab 2: power / charge policy
+constexpr ui::Rect CHG_LIM_SEG{ 34, 86, 300, 34 };
+constexpr ui::Rect CHG_LIM_BTNS[3] = {
+  { 34,  86, 100, 34 },
+  { 134, 86, 100, 34 },
+  { 234, 86, 100, 34 },
+};
+constexpr const char* CHG_LIM_LABELS[3] = { "80%", "90%", "100%" };
+constexpr uint8_t CHG_LIM_VALS[3] = { 80, 90, 100 };
+
+constexpr ui::Rect CHG_SPD_SEG{ 34, 192, 300, 34 };
+constexpr ui::Rect CHG_SPD_BTNS[3] = {
+  { 34,  192, 100, 34 },
+  { 134, 192, 100, 34 },
+  { 234, 192, 100, 34 },
+};
+constexpr const char* CHG_SPD_LABELS[3] = { "温和", "自动", "快速" };
+
+constexpr ui::Rect BTN_PWR_BACK{ 24, 386, 320, 44 };
+
 int soundStepIndex(uint8_t pct) {
   if (pct == 0) return 0;
   if (pct <= 35) return 1;
@@ -92,6 +113,19 @@ int sleepStepIndex(uint16_t sec) {
   return 3;
 }
 
+const char* powerStageLabel(const NovaState& st, const NovaSettings& cfg) {
+  switch ((BattStage)st.battStage) {
+    case BattStage::PRE:       return "涓流预充";
+    case BattStage::CC:
+    case BattStage::CV:        return "充电中";
+    case BattStage::DONE:      return "已充满";
+    case BattStage::LIMITED:   return (st.battPct + 1 >= cfg.chargeLimitPct) ? "保养停充" : "高温停充";
+    case BattStage::USB_IDLE:  return "USB 供电";
+    case BattStage::DISCHARGE: return "电池供电";
+    default:                   return "未接电池";
+  }
+}
+
 // aafont_data.cpp lacks U+2039 ('‹'); draw a crisp 2px vector chevron instead.
 void drawHeaderBackChevron(NovaCanvas& c) {
   c.drawLine(29, 23, 22, 30, ui::COL_ACCENT);
@@ -103,7 +137,7 @@ void drawHeaderBackChevron(NovaCanvas& c) {
 }  // namespace
 
 void pageSettingsSetTab(uint8_t tab) {
-  s_tab = (tab <= 1) ? tab : 0;
+  s_tab = (tab <= 2) ? tab : 0;
   s_reprovConfirm = false;
 }
 
@@ -115,14 +149,14 @@ bool pageSettingsTick(uint32_t nowMs) {
   return false;
 }
 
-void pageSettingsDraw(NovaCanvas& c, const NovaSettings& cfg) {
+void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg) {
   c.fillScreen(ui::COL_BG);
 
   drawHeaderBackChevron(c);
   ui::drawText(c, ui::fontCjk16(), 38, 37, "系统与偏好设置", ui::COL_TEXT, ui::COL_BG);
 
-  // Header tab segmented pill: 基础 / 进阶
-  ui::drawSegmented(c, TAB_SEG, TAB_LABELS, 2, s_tab, ui::COL_ACCENT, ui::fontCjk14());
+  // Header tab segmented pill: 基础 / 进阶 / 电源
+  ui::drawSegmented(c, TAB_SEG, TAB_LABELS, 3, s_tab, ui::COL_ACCENT, ui::fontCjk14());
 
   if (s_tab == 0) {
     // Card 1: Default home page
@@ -157,7 +191,7 @@ void pageSettingsDraw(NovaCanvas& c, const NovaSettings& cfg) {
     ui::drawLevelBar(c, BRT_BAR, 5, brtIdx, ui::COL_AMBER, false);
 
     ui::drawButton(c, BTN_TEST_SND, "试听语音", false, ui::COL_MINT, ui::fontCjk14());
-  } else {
+  } else if (s_tab == 1) {
     // Card 1: Voice & Quiet Hours
     ui::drawCard(c, 20, 52, 328, 104, ui::COL_CARD, ui::COL_BORDER, 16);
     ui::drawText(c, ui::fontCjk14(), 34, 84, "宿主 TTS 语音播报", ui::COL_TEXT, ui::COL_CARD);
@@ -204,9 +238,58 @@ void pageSettingsDraw(NovaCanvas& c, const NovaSettings& cfg) {
       ui::drawTextCenteredInRect(c, ui::fontCjk14(), BTN_REPROV, "重新配网 (AP)",
                                  ui::COL_AMBER, reprovBg);
     }
+  } else {
+    // Card 1: charge limit (battery care)
+    ui::drawCard(c, 20, 52, 328, 98, ui::COL_CARD, ui::COL_BORDER, 16);
+    ui::drawSectionLabel(c, 34, 74, "充电上限（电池保养）");
+    const uint8_t lim = cfg.chargeLimitPct;
+    const int limIdx = (lim <= 80) ? 0 : (lim >= 100 ? 2 : 1);
+    ui::drawSegmented(c, CHG_LIM_SEG, CHG_LIM_LABELS, 3, limIdx,
+                      ui::COL_MINT, ui::fontAscii14());
+    char cap[64];
+    snprintf(cap, sizeof(cap), "到 %u%% 自动停充 · 拔插后重充", (unsigned)lim);
+    ui::drawText(c, ui::fontCjk14(), 34, 140, cap, ui::COL_MUTED, ui::COL_CARD);
+
+    // Card 2: charge speed
+    ui::drawCard(c, 20, 158, 328, 98, ui::COL_CARD, ui::COL_BORDER, 16);
+    ui::drawSectionLabel(c, 34, 180, "充电速度");
+    ui::drawSegmented(c, CHG_SPD_SEG, CHG_SPD_LABELS, 3, (int)cfg.chargeSpeed,
+                      ui::COL_MINT, ui::fontCjk14());
+    char cap2[64];
+    snprintf(cap2, sizeof(cap2), "亮屏 %umA · 熄屏 %umA",
+             (unsigned)chargeBaseMa(cfg.chargeSpeed, true),
+             (unsigned)chargeBaseMa(cfg.chargeSpeed, false));
+    ui::drawText(c, ui::fontCjk14(), 34, 246, cap2, ui::COL_MUTED, ui::COL_CARD);
+
+    // Card 3: live battery status (read-only)
+    ui::drawCard(c, 20, 258, 328, 114, ui::COL_CARD, ui::COL_BORDER, 16);
+    ui::drawText(c, ui::fontCjk14(), 34, 282, "电池状态", ui::COL_MINT, ui::COL_CARD);
+    char b1[48];
+    snprintf(b1, sizeof(b1), "%u%% · %.2fV", (unsigned)st.battPct, st.battMv / 1000.0f);
+    ui::drawText(c, ui::fontCjk14(), 34, 308, b1, ui::COL_TEXT, ui::COL_CARD);
+
+    char b2[64];
+    if (st.gaugePct >= 0) {
+      snprintf(b2, sizeof(b2), "温度 %d°C · 库仑计 %d%%",
+               (int)st.battTempC, (int)st.gaugePct);
+    } else {
+      snprintf(b2, sizeof(b2), "温度 %d°C", (int)st.battTempC);
+    }
+    ui::drawText(c, ui::fontCjk14(), 34, 332, b2, ui::COL_DIM, ui::COL_CARD);
+    ui::drawTextRight(c, ui::fontCjk14(), 334, 332,
+                      powerStageLabel(st, cfg), ui::COL_ACCENT, ui::COL_CARD);
+
+    char b3[48];
+    if (st.chgMa > 0) snprintf(b3, sizeof(b3), "当前充电 %umA", (unsigned)st.chgMa);
+    else              snprintf(b3, sizeof(b3), "充电已暂停");
+    ui::drawText(c, ui::fontCjk14(), 34, 356, b3, ui::COL_MUTED, ui::COL_CARD);
   }
 
-  ui::drawButton(c, BTN_BACK, "完成返回", true, ui::COL_ACCENT, ui::fontCjk16());
+  if (s_tab == 2) {
+    ui::drawButton(c, BTN_PWR_BACK, "完成返回", true, ui::COL_ACCENT, ui::fontCjk16());
+  } else {
+    ui::drawButton(c, BTN_BACK, "完成返回", true, ui::COL_ACCENT, ui::fontCjk16());
+  }
 }
 
 UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
@@ -224,6 +307,11 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
     s_reprovConfirm = false;
     return UiAction{ UiAction::SETTINGS_REDRAW, 1 };
   }
+  if (TAB_PWR.contains(x, y) && s_tab != 2) {
+    s_tab = 2;
+    s_reprovConfirm = false;
+    return UiAction{ UiAction::SETTINGS_REDRAW, 3 };
+  }
 
   if (s_tab == 0) {
     for (int i = 0; i < 3; i++) {
@@ -237,7 +325,7 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
       if (BRT_STEPS[i].contains(x, y)) return UiAction{ UiAction::SET_BRIGHT, i };
     }
     if (BTN_TEST_SND.contains(x, y)) return UiAction{ UiAction::TEST_SOUND, 0 };
-  } else {
+  } else if (s_tab == 1) {
     if (BTN_TTS_TOGGLE.contains(x, y)) {
       return UiAction{ UiAction::SET_TTS, cfg.ttsEnabled ? 0 : 1 };
     }
@@ -262,6 +350,19 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
       s_reprovConfirm = false;
       return UiAction{ UiAction::REPROVISION, 0 };
     }
+  } else {
+    for (int i = 0; i < 3; i++) {
+      if (CHG_LIM_BTNS[i].contains(x, y)) {
+        return UiAction{ UiAction::SET_CHGLIMIT, (int)CHG_LIM_VALS[i] };
+      }
+      if (CHG_SPD_BTNS[i].contains(x, y)) {
+        return UiAction{ UiAction::SET_CHGSPEED, i };
+      }
+    }
+    if (BTN_PWR_BACK.contains(x, y)) {
+      s_reprovConfirm = false;
+      return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
+    }
   }
 
   if (BTN_BACK.contains(x, y)) {
@@ -277,6 +378,7 @@ bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState&, const NovaSetti
   if (HDR_BACK.contains(x, y))  { *out = HDR_BACK;  return true; }
   if (TAB_BASIC.contains(x, y)) { *out = TAB_BASIC; return true; }
   if (TAB_ADV.contains(x, y))   { *out = TAB_ADV;   return true; }
+  if (TAB_PWR.contains(x, y))   { *out = TAB_PWR;   return true; }
   if (s_tab == 0) {
     for (int i = 0; i < 3; i++) {
       if (HOME_BTNS[i].contains(x, y)) { *out = HOME_BTNS[i]; return true; }
@@ -287,7 +389,7 @@ bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState&, const NovaSetti
       if (BRT_STEPS[i].contains(x, y)) { *out = BRT_STEPS[i]; return true; }
     }
     if (BTN_TEST_SND.contains(x, y)) { *out = BTN_TEST_SND; return true; }
-  } else {
+  } else if (s_tab == 1) {
     if (BTN_TTS_TOGGLE.contains(x, y))    { *out = BTN_TTS_TOGGLE;    return true; }
     if (BTN_QUIET_TOGGLE.contains(x, y))  { *out = BTN_QUIET_TOGGLE;  return true; }
     if (BTN_CHOREO_TOGGLE.contains(x, y)) { *out = BTN_CHOREO_TOGGLE; return true; }
@@ -295,6 +397,12 @@ bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState&, const NovaSetti
       if (SLEEP_BTNS[i].contains(x, y)) { *out = SLEEP_BTNS[i]; return true; }
     }
     if (BTN_REPROV.contains(x, y)) { *out = BTN_REPROV; return true; }
+  } else {
+    for (int i = 0; i < 3; i++) {
+      if (CHG_LIM_BTNS[i].contains(x, y)) { *out = CHG_LIM_BTNS[i]; return true; }
+      if (CHG_SPD_BTNS[i].contains(x, y)) { *out = CHG_SPD_BTNS[i]; return true; }
+    }
+    if (BTN_PWR_BACK.contains(x, y)) { *out = BTN_PWR_BACK; return true; }
   }
   if (BTN_BACK.contains(x, y)) { *out = BTN_BACK; return true; }
   return false;
