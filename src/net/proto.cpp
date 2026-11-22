@@ -412,6 +412,7 @@ size_t protoBuildStat(char* buf, size_t cap, const NovaState& st) {
   doc["brt"]     = st.effBright;
   doc["lcd"]     = st.lcdOff ? 0 : 1;
   doc["aod"]     = st.aodActive ? 1 : 0;
+  doc["tx"]      = st.txPower;
   JsonObject cpu = doc["cpu"].to<JsonObject>();
   cpu["ui"]  = st.uiBusyPct;
   cpu["dec"] = st.decBusyPct;

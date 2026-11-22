@@ -15,3 +15,5 @@ void netPublishPrefs();
 void netPublishSync();
 void netSetPowerSave(NetPsMode mode);
 void netSetStatIntervalMs(uint16_t ms);   // 5..300s，0=回默认 30s
+void netSetPowerState(bool usbPresent);   // 电池下按 RSSI 降发射功率
+int8_t netTxPowerApplied();               // 0.25dBm 单位；-1 = 还没设过

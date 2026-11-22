@@ -39,6 +39,28 @@ bool            s_portalActive = false;
 
 char s_apName[24] = "Nova-0000";
 volatile uint16_t s_statIntervalMs = 30000;
+volatile bool    s_usbPresent = true;
+int8_t           s_txPowerApplied = -1;   // 0.25dBm 单位；80=20dBm，52=13dBm
+
+// 电池下按 RSSI 分三档，带迟滞；插电一律满功率。RSSI -13 这种强信号降到 13dBm
+// 足够，省的是发射电流，不改任何交互延迟。
+int8_t txPowerFor(bool usb, int8_t rssi, int8_t applied) {
+  if (usb) return 80;
+  if (applied < 0) return (rssi >= -72) ? 52 : ((rssi >= -78) ? 68 : 80);
+  if (applied <= 52) return (rssi < -72) ? 68 : 52;
+  if (applied <= 68) return (rssi < -76) ? 80 : ((rssi > -68) ? 52 : 68);
+  return (rssi > -74) ? 68 : 80;
+}
+
+void applyTxPower(bool usb, int8_t rssi) {
+  const int8_t target = txPowerFor(usb, rssi, s_txPowerApplied);
+  if (target == s_txPowerApplied) return;
+  if (esp_wifi_set_max_tx_power(target) == ESP_OK) {
+    s_txPowerApplied = target;
+    Serial.printf("net: max tx power %d (%.2f dBm), rssi=%d usb=%d\n",
+                  (int)target, target * 0.25f, (int)rssi, usb ? 1 : 0);
+  }
+}
 char s_clientId[24] = "nova-000000";
 char s_topicPrefix[24] = "nova/000000";
 
@@ -176,6 +198,7 @@ void netTaskFn(void*) {
   uint32_t retryBackoffMs = 2000;
   uint32_t nextConnectAttemptMs = 0;
   uint32_t lastStatMs = 0;
+  uint32_t lastTxEvalMs = 0;
   char configuredHost[40] = "";
   uint16_t configuredPort = 0;
 
@@ -265,6 +288,7 @@ void netTaskFn(void*) {
             retryBackoffMs = 2000;
             subscribeTopics();
             publishHello(true);
+            applyTxPower(s_usbPresent, (int8_t)WiFi.RSSI());
             novaStateWithLock([&](NovaState& st) {
               st.mqttConnected = true;
               st.lastMqttRxMs = now;
@@ -282,6 +306,12 @@ void netTaskFn(void*) {
         NetTxMsg tx;
         while (s_txQ && xQueueReceive(s_txQ, &tx, 0) == pdTRUE) {
           s_mqtt.publish(tx.topic, tx.payload, (int)strlen(tx.payload), tx.retained, tx.qos);
+        }
+
+        // 发射功率：30s 重估一次（USB 满功率；电池按 RSSI 分 13/17/20dBm）
+        if (now - lastTxEvalMs >= 30000) {
+          lastTxEvalMs = now;
+          applyTxPower(s_usbPresent, (int8_t)WiFi.RSSI());
         }
 
         // Periodic device telemetry (default 30 s; `{"cmd":"statrate"}` 可临时改密)
@@ -335,6 +365,9 @@ void netSetStatIntervalMs(uint16_t ms) {
   if (ms > 300000) ms = 300000;
   s_statIntervalMs = ms;
 }
+
+void netSetPowerState(bool usbPresent) { s_usbPresent = usbPresent; }
+int8_t netTxPowerApplied() { return s_txPowerApplied; }
 
 void netPublishDecision(const char* approvalId, bool accept, bool toPc) {
   if (!s_txQ || !approvalId || !approvalId[0]) return;

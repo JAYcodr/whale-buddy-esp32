@@ -140,6 +140,7 @@ struct NovaState {
   bool     aodActive;    // 正在显示 AOD
   uint8_t  uiBusyPct;    // UI 任务忙时占比（1s 窗口）
   uint8_t  decBusyPct;   // 解码任务忙时占比（1s 窗口）
+  int8_t   txPower;      // 当前 WiFi 最大发射功率（0.25dBm 单位，80=20dBm）
 
   // LLM choreography loop
   char       choreoMood[32];

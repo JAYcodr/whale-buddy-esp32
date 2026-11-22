@@ -278,6 +278,7 @@ void uiTaskFn(void*) {
 
     const NovaSettings& cfg = settingsGet();
     BusSnapshot snap = hwBusSnapshot();
+    netSetPowerState(snap.battery.usbPresent);
     uint8_t burnStep = (uint8_t)((nowMs / 30000u) % 25u);
 
     // Update shared NovaState hardware fields.
@@ -389,6 +390,7 @@ void uiTaskFn(void*) {
       s.drawFps = drawFps;
       s.lastDrawMs = lastDrawMs;
       s.drawCount = drawCount;
+      s.txPower = netTxPowerApplied();
     });
 
     // CPU Dynamic Frequency Scaling (DFS via PLL 240/160/80 MHz, keeping APB >= 80 MHz).
@@ -1023,8 +1025,11 @@ void uiTaskFn(void*) {
         nvaSetState(bgAutoKey, false);
       }
     }
-    // AOD 期间不跑动画：进入后先让 SLEEP 帧解码 0.9s，然后冻结在那一帧。
-    if (!aodActive || (uint32_t)(nowMs - aodEnterMs) < 900u) {
+    // 屏幕不亮就不解码；AOD 进入后先让目标姿势解 0.9s，然后冻结。
+    // 熄屏时原来还在 10fps 空转 zlib，纯白耗电（2026-11-23 实测补上）。
+    const bool animNeeded =
+        !screenOff && (!aodActive || (uint32_t)(nowMs - aodEnterMs) < 900u);
+    if (animNeeded) {
       nvaTick(nowMs);
     }
     {
