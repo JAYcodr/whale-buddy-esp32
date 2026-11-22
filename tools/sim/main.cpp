@@ -207,7 +207,7 @@ static void mutateSettingsMuted(NovaState&, NovaSettings& cfg) {
 
 // 主屏码头扩展：会话名 + 工具名 + 异常详情浮层。
 static void mutateDockDetail(NovaState& st, NovaSettings&) {
-  std::snprintf(st.sessTitle, sizeof(st.sessTitle), "修渲染管线");
+  std::snprintf(st.sessTitle, sizeof(st.sessTitle), "issue 核查与复盘");
   std::snprintf(st.lastTool, sizeof(st.lastTool), "bash");
 }
 

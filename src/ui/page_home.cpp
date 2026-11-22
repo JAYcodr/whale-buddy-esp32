@@ -545,10 +545,17 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
     int16_t metaMaxW = (int16_t)(dockX + dockW - 14 - (dockX + 16));
 
     // 会话名做第二行的前缀（灰色小字），而不是跟 CTX 抢第一行右端。
+    // 宽度按可用空间分：给标题最多 55%，剩下的留给内容；
+    // 以前写死 108px，实战里「issue 核查与复盘」被砍成「issue 核查与...」。
     int16_t metaX = (int16_t)(dockX + 16);
     if (st.sessTitle[0]) {
-      char titleBuf[40];
-      ui::fitUtf8Line(c, ui::fontCjk14(), st.sessTitle, 108, titleBuf, sizeof(titleBuf));
+      int16_t avail = (int16_t)(dockX + dockW - 14 - metaX);
+      if (st.turnError) avail = (int16_t)(avail - 62);  // 给「详情」角标让位
+      int16_t titleMaxW = (int16_t)(avail * 55 / 100);
+      if (titleMaxW < 90) titleMaxW = 90;
+
+      char titleBuf[56];
+      ui::fitUtf8Line(c, ui::fontCjk14(), st.sessTitle, titleMaxW, titleBuf, sizeof(titleBuf));
       ui::drawText(c, ui::fontCjk14(), metaX, row2Y, titleBuf, ui::COL_MUTED, ui::COL_CARD);
       ui::TextMetrics tm = ui::measureText(c, ui::fontCjk14(), titleBuf);
       metaX = (int16_t)(metaX + tm.w + 10);
