@@ -172,17 +172,17 @@ inline BatteryOut batteryModelStep(BatteryModel& m, const BatteryIn& in) {
     stage = BattStage::USB_IDLE;
   }
 
-  // Metered stage (for rawPct compensation): CV pins the voltage at 4.2V, so
-  // the table is meaningless there and the time model owns the number.
-  bool useTable = stage == BattStage::DISCHARGE || stage == BattStage::USB_IDLE ||
-                  stage == BattStage::PRE || stage == BattStage::CC ||
-                  stage == BattStage::LIMITED;
-
+  // Always compute the table value. Even in CV/DONE (where the time model owns
+  // the number) it seeds the first tick after boot — otherwise pct starts at 0
+  // and has to walk up 1%/s while charging, which reads as "10%" on a full pack.
   int compMv = (int)m.smoothMv + (int)kBattDischargeCompMv;
-  if (stage == BattStage::PRE || stage == BattStage::CC) compMv -= (int)kBattChargeCompMv;
+  if (stage == BattStage::PRE || stage == BattStage::CC ||
+      stage == BattStage::CV || stage == BattStage::DONE) {
+    compMv -= (int)kBattChargeCompMv;
+  }
   if (compMv < 2500) compMv = 2500;
   if (compMv > 5000) compMv = 5000;
-  const uint8_t raw = useTable ? battOcvPct(compMv) : m.rawPct;
+  const uint8_t raw = battOcvPct(compMv);
   m.rawPct = raw;
 
   // 3. Target percentage by stage.
@@ -190,15 +190,19 @@ inline BatteryOut batteryModelStep(BatteryModel& m, const BatteryIn& in) {
   int target = m.target;
   if (!m.init) {
     m.init = true;
-    target = raw;
-    m.pct = raw;
+    // A pack already above the maintenance cap must boot at the cap, not show
+    // 96% while the governor says "paused at 90%".
+    target = (raw > cap) ? cap : raw;
+    m.pct  = target;
   } else if (stage == BattStage::DISCHARGE) {
     target = raw;
     m.chgPrimed = false;
   } else if (stage == BattStage::LIMITED) {
     // Paused by policy: hold the displayed value, the pack is resting and its
     // terminal voltage will fall a bit — don't let that read as consumption.
-    target = m.pct;
+    // But if the cap was just lowered below the current estimate, walk down
+    // to it (10 s per point) instead of showing 95% next to a 90% cap.
+    target = (m.pct > cap) ? cap : m.pct;
     m.chgPrimed = false;
   } else if (stage == BattStage::USB_IDLE) {
     target = raw;
@@ -347,7 +351,10 @@ inline ChargeDecision chargeGovernorStep(ChargeGovernor& g, ChargeSpeed speed,
 
   // Charge-limit latch: cut at the cap, re-arm when unplugged (so the next
   // plug-in tops up to the cap again) or if the pack fell well below it.
-  if (!usb) g.limitCut = false;
+  // limitPct == 100 means "no cap": let the PMU terminate on its own and
+  // report DONE, instead of cutting at 100% and reporting a fake LIMITED.
+  if (limitPct >= 100) g.limitCut = false;
+  else if (!usb) g.limitCut = false;
   else if (pct >= limitPct) g.limitCut = true;
   else if ((int)pct <= (int)limitPct - (int)kBattLimitHyst) g.limitCut = false;
 

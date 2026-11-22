@@ -280,8 +280,13 @@ void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
                       powerStageLabel(st, cfg), ui::COL_ACCENT, ui::COL_CARD);
 
     char b3[48];
-    if (st.chgMa > 0) snprintf(b3, sizeof(b3), "当前充电 %umA", (unsigned)st.chgMa);
-    else              snprintf(b3, sizeof(b3), "充电已暂停");
+    if ((BattStage)st.battStage == BattStage::DONE) {
+      snprintf(b3, sizeof(b3), "充电已完成");
+    } else if (st.chgMa > 0) {
+      snprintf(b3, sizeof(b3), "当前充电 %umA", (unsigned)st.chgMa);
+    } else {
+      snprintf(b3, sizeof(b3), "充电已暂停");
+    }
     ui::drawText(c, ui::fontCjk14(), 34, 356, b3, ui::COL_MUTED, ui::COL_CARD);
   }
 

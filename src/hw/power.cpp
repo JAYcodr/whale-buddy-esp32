@@ -91,6 +91,10 @@ bool hwPowerInit() {
   // version, but the bit is the same one the official board example sets.
   s_pmu.setRegisterBit(XPOWERS_AXP2101_CHARGE_GAUGE_WDT_CTRL, 3);
 
+  // The charge-enable bit survives a reset. If the previous run paused at the
+  // cap, the pack would stay uncharged forever; re-arm explicitly on boot.
+  s_pmu.enableCellbatteryCharge();
+
   // ALDO3 → display rail on all three boards. enableALDO3() is idempotent.
   s_pmu.enableALDO3();
 
@@ -182,7 +186,9 @@ void hwPowerTick(uint32_t nowMs) {
   s_bat.charging      = charging;
   s_bat.tempC         = tempOk ? tempC : s_bat.tempC;
   s_bat.stage         = (uint8_t)out.stage;
-  s_bat.chgMa         = dec.enable ? dec.ma : 0;
+  // A terminated charge is not "charging at 300mA" even though the CC register
+  // still holds 300 — hide the number once the PMU says DONE.
+  s_bat.chgMa         = (out.stage == BattStage::DONE) ? 0 : (dec.enable ? dec.ma : 0);
   s_bat.chargeLimited = dec.limited;
   s_bat.gaugePct      = (int8_t)gauge;
   portEXIT_CRITICAL(&s_mux);

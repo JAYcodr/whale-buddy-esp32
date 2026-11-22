@@ -139,6 +139,25 @@ static void testLimitedHold() {
   BatteryOut lim = run(m, 300, tickIn(4020, true, false, AXP_CHG_STOP, 0, true));
   CHECK_MSG(lim.stage == BattStage::LIMITED, "stage %u", (unsigned)lim.stage);
   CHECK_MSG(lim.pct >= held - 1, "LIMITED must hold, %u -> %u", held, lim.pct);
+
+  // Lowering the cap below the current estimate walks down to the cap.
+  BatteryOut lower = run(m, 120, tickIn(4050, true, false, AXP_CHG_STOP, 0, true, NAN, 80));
+  CHECK_MSG(lower.stage == BattStage::LIMITED, "stage %u", (unsigned)lower.stage);
+  CHECK_MSG(lower.pct <= 84, "LIMITED above cap should walk down, got %u", lower.pct);
+}
+
+static void testBootOnDone() {
+  // Regression: booting while the PMU already reports DONE used to start the
+  // estimate at 0 because CV/DONE skipped the table and rawPct was still 0.
+  BatteryModel m;
+  BatteryOut o = run(m, 2, tickIn(4167, true, false, AXP_CHG_DONE, 0, false, NAN, 90));
+  CHECK_MSG(o.stage == BattStage::DONE, "stage %u", (unsigned)o.stage);
+  CHECK_MSG(o.pct == 90, "boot on a full pack must clamp to the cap, got %u%%", o.pct);
+
+  // With the cap off it may show the real state.
+  BatteryModel f;
+  o = run(f, 2, tickIn(4167, true, false, AXP_CHG_DONE, 0, false, NAN, 100));
+  CHECK_MSG(o.pct >= 88, "unlimited boot pct %u", o.pct);
 }
 
 static void testLimitCap() {
@@ -207,6 +226,12 @@ static void testGovernor() {
   d = chargeGovernorStep(h, ChargeSpeed::AUTO, false, 43.0f, 50, 100, true, 0);
   CHECK_MSG(d.enable && d.ma == 500, "cooled ma %u", d.ma);
 
+  // limit 100 = no cap: no cut even at 100%.
+  ChargeGovernor c;
+  d = chargeGovernorStep(c, ChargeSpeed::AUTO, true, 30.0f, 100, 100, true, 0);
+  CHECK(d.enable);
+  CHECK_MSG(!d.limited, "limit 100 must not report LIMITED");
+
   // Bad temperature must not disable charging.
   ChargeGovernor n;
   d = chargeGovernorStep(n, ChargeSpeed::AUTO, false, NAN, 50, 100, true, 0);
@@ -218,6 +243,7 @@ int main() {
   testDischargeSlew();
   testChargeSequence();
   testLimitedHold();
+  testBootOnDone();
   testLimitCap();
   testGovernorReArm();
   testLowAnchor();
