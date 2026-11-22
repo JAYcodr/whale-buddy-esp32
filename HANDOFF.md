@@ -1,11 +1,11 @@
 # Nova Buddy — 交接
 
-仓库：`/Volumes/hamelin-ssd/gemini工作区/nova-buddy`（GitHub `JAYcodr/whale-buddy-esp32`，分支 `feature/whale-tokens`）
+仓库：`/Volumes/hamelin-ssd/gemini工作区/nova-buddy`（GitHub `JAYcodr/whale-buddy-esp32`，分支 `feature/v050-aod`）
 插件：`host-plugin/`（`dsh-plugin-nova-buddy` v0.3.0），通过 symlink 装入 `~/.dsh/profiles/desktop`
 环境：DeepSeek Harness `0.2.2-rc.5`，profile `desktop`；Node v25.9.0
 设备：Waveshare ESP32-S3 Touch AMOLED 1.8（SH8601 + FT3168），deviceId `D93468`，IP 192.168.31.219
 Broker：`mqtt://192.168.31.15:1883`
-当前 git HEAD：`6286b54`
+固件版本：`0.5.0`（AOD + 观测）；当前 git HEAD 见 `git log -1`
 
 ---
 
@@ -108,6 +108,39 @@ Broker：`mqtt://192.168.31.15:1883`
 
 ---
 
+
+## AOD 与观测（0.5.0 起）
+
+- **进入条件**：主屏 + 无审批 + `run=0` + `wait=0` + 无交互 N 分钟（设置 1/2/5，默认 2 分钟）。模式：`关 / 仅插电（默认）/ 常开`。策略全在 `src/model/aod_policy.h`，主循环只在进出时改 `aodActive`。
+- **退出**：触摸 / 按键 / 审批 / 来任务 / 切页 / AP 模式 / 拔电（仅插电模式）/ 电池 ≤10%（常开自救）。
+- **电池常开**：AOD 接管主屏熄屏（否则 30s 一到表盘就被熄掉）；只要不在主屏、或有审批、或电量 ≤10%，仍按 `batSleepSec` 熄屏。
+- **画面**：DIN 92 大时钟（字体 `g_fontDin92`，由 `tools/fonts/gen_aafonts.py` 生成；这套字没有 `:`，冒号是两个矢量圆点）+ 16px 日期 + 150×176 定格睡姿 + 一行「会话 N · 今日 X 亿」。没有 RTC 时显示「时间未同步 / 等待宿主校时」，不画假数字。
+- **防烧屏**：`burnOffset` ±2px/30s + `aod::drift` ±3px/10min + 亮度封顶 2 档（23–07 点 1 档）。
+
+### 实测数字（2026-11-22，USB 供电，23:2x）
+
+| 场景 | 绘制/分钟 | UI 忙时 | 解码忙时 | 主频 | push |
+|---|---|---|---|---|---|
+| 插电首页 60fps | 3591 | 52–64% | 4–14% | 240MHz | 10.5ms |
+| AOD（无 state 事件） | 5 | ~2% | 0% | 80MHz | 51.8ms |
+| AOD（会话活动，20 条 state） | 16 | 1.9% | 0% | 80MHz | 51.8ms |
+
+触摸唤醒：`aod=0 → brt=4, mhz=240`，即时。
+
+### 观测字段与采集
+
+- `stat` 新增：`drawFps / pushUs / idle / draws / pwr / brt / lcd / aod / cpu{ui,dec} / mhz / psram`；`hello` 新增 `pwr / aod`。
+- 采样：`node tools/power_probe.mjs --id D93468 --minutes 20 --tag aod-off`（落 `~/.dsh/nova-buddy/power-*.csv` + `.md` 汇总）。充电段不算斜率，脚本会明确写出来。
+- 采样前可 `{"cmd":"statrate","ms":5000}` 改密（5–300s，0=默认 30s）。
+
+### AOD 侧别踩回去
+
+1. **AOD 期间任何 `nvaSetState` 都要被跳过**，否则宠物会被状态机改成 WAITING/IDLE（实测第一次上真机就是站着睡的）。
+2. **电池熄屏条件**：`aodCoversBattery` 必须同时满足「常开 + 主屏 + 电量 >10%」，否则要么把表盘熄掉，要么把电耗干。
+3. **DIN 92 没有冒号**，`--:--` 会落到 20px fallback 字体，看起来像两个小点；没时间就整块换成文字提示。
+4. **`stat` 载荷缓冲**已加到 320B（net.cpp），再加字段记得一起看。
+5. **AOD 强制验收钩子**：`{"cmd":"aodforce","on":1|0}`（宿主 `run>0` 时也能看表盘）；自然进入要等 `run` 归零，别拿 force 的数字当自然进入的证据。
+
 ## 测试
 
 ```bash
@@ -124,6 +157,9 @@ bash tools/sim/run.sh
 
 # 电量估计 + 充电策略纯逻辑单测
 bash tools/test_battery.sh
+
+# AOD 策略纯逻辑单测（500 项断言）
+bash tools/test_aod.sh
 
 # 固件编译
 bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8
@@ -148,6 +184,11 @@ bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload
 {"cmd":"page","page":"quota"}     # 切页：home/quota/rank/detail/settings/settings_adv/settings_power/tokens
 {"cmd":"tap","x":184,"y":406}     # 注入点击，走 nav.onTap + handleAction 与真实触屏同路径
 {"cmd":"demo","anim":3}           # 强制动画状态
+{"cmd":"aod","on":0|1|2}          # AOD：关/仅插电/常开（写 NVS）
+{"cmd":"aodidle","sec":30}        # 进入阈值（30..600s）
+{"cmd":"aodforce","on":1}         # 验收用：不管宿主 run 计数直接进 AOD
+{"cmd":"statrate","ms":5000}      # stat 上行改密（0=默认 30s）
+{"cmd":"pwr","profile":1}         # 切功耗档
 ```
 
 ⚠️ **`animPage` 生效时设备走局部重绘**，此时 MQTT 推的 state 会被宠物动画覆盖部分区域。
@@ -166,4 +207,4 @@ bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload
 
 ## Git
 
-分支 `feature/whale-tokens`，比 `main` 领先 9 个提交。要合进 main 还没做。
+分支 `feature/v050-aod`，包含 0.5.0 的 AOD + 观测 + 宿主文案清洗。验证通过后 ff 合进 `main`。
