@@ -64,13 +64,21 @@ void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
            (unsigned)st.battPct, st.battMv / 1000.0f, pwrLabel);
   drawKvRow(c, 20, 301, 328, "电源状态", pwrBuf, ui::COL_TEXT, true);
 
-  char perfBuf[48];
-  if (st.cpuMhz > 0) {
-    snprintf(perfBuf, sizeof(perfBuf), "%.0ffps · %uMHz · %.1fM",
-             st.fps, (unsigned)st.cpuMhz, st.freePsram / (1024.0f * 1024.0f));
+  // 静帧不报 0fps：活跃时报实测帧率 + 单帧 push 耗时，静帧时报静了多久。
+  char perfBuf[64];
+  const uint32_t idleMs = (st.nowMs > st.lastDrawMs) ? (st.nowMs - st.lastDrawMs) : 0;
+  if (st.aodActive) {
+    snprintf(perfBuf, sizeof(perfBuf), "AOD · 亮%u/4 · %uMHz",
+             (unsigned)st.effBright, (unsigned)st.cpuMhz);
+  } else if (st.fps > 0.5f) {
+    snprintf(perfBuf, sizeof(perfBuf), "%.0ffps · %.1fms · %uMHz",
+             st.fps, st.pushUs / 1000.0f, (unsigned)st.cpuMhz);
+  } else if (idleMs >= 3000u) {
+    snprintf(perfBuf, sizeof(perfBuf), "静帧 %lus · 亮%u/4",
+             (unsigned long)(idleMs / 1000u), (unsigned)st.effBright);
   } else {
-    snprintf(perfBuf, sizeof(perfBuf), "%.0ffps · %.1fM",
-             st.fps, st.freePsram / (1024.0f * 1024.0f));
+    snprintf(perfBuf, sizeof(perfBuf), "就绪 · 亮%u/4 · %uMHz",
+             (unsigned)st.effBright, (unsigned)st.cpuMhz);
   }
   drawKvRow(c, 20, 333, 328, "系统性能", perfBuf, ui::COL_DIM, false);
 

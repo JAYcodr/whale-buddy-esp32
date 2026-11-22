@@ -58,6 +58,7 @@ void sendUsbScreenshot() {
 
 // 串口 tap 注入：串口任务写、UI 任务读。坐标是独立标量，
 // 即使读到中间的写也不会画错，最多点歪一格，所以 volatile 足够。
+volatile int8_t  s_aodForceReq = -1;   // 串口 {"cmd":"aodforce","on":0|1}，V0.5.0 验收用
 volatile bool    s_pendingTap  = false;
 volatile int16_t s_pendingTapX = 0;
 volatile int16_t s_pendingTapY = 0;
@@ -83,11 +84,17 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
           } else if (strcmp(cmd, "stat") == 0) {
             static NovaState snap;
             novaStateRead(&snap);
-            Serial.printf("STAT fps=%.1f pushUs=%lu heap=%lu psram=%lu mhz=%u anim=%d "
-                          "bat=%u%% %umV stage=%u chg=%umA tmp=%dC usb=%d\n",
-                          snap.fps, (unsigned long)snap.pushUs,
+            Serial.printf("STAT fps=%.1f drawFps=%.1f pushUs=%lu idle=%lu draws=%lu "
+                          "heap=%lu psram=%lu mhz=%u anim=%d pwr=%u brt=%u lcd=%u aod=%u "
+                          "cpu=%u/%u bat=%u%% %umV stage=%u chg=%umA tmp=%dC usb=%d\n",
+                          snap.fps, snap.drawFps, (unsigned long)snap.pushUs,
+                          (unsigned long)(snap.nowMs > snap.lastDrawMs ? snap.nowMs - snap.lastDrawMs : 0),
+                          (unsigned long)snap.drawCount,
                           (unsigned long)snap.freeHeap, (unsigned long)snap.freePsram,
                           (unsigned)snap.cpuMhz, (int)nvaActiveState(),
+                          (unsigned)snap.pwrProfile, (unsigned)snap.effBright,
+                          snap.lcdOff ? 0u : 1u, snap.aodActive ? 1u : 0u,
+                          (unsigned)snap.uiBusyPct, (unsigned)snap.decBusyPct,
                           (unsigned)snap.battPct, (unsigned)snap.battMv,
                           (unsigned)snap.battStage, (unsigned)snap.chgMa,
                           (int)snap.battTempC, snap.usbPresent ? 1 : 0);
@@ -115,6 +122,7 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             else if (strcmp(p, "settings") == 0) { pageSettingsSetTab(0); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "settings_adv") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "settings_power") == 0) { pageSettingsSetTab(2); nav.setPage(UiPage::SETTINGS); needFull = true; }
+            else if (strcmp(p, "settings_display") == 0) { pageSettingsSetTab(3); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "tokens") == 0)   { pageTokensOnEnter(millis()); nav.setPage(UiPage::TOKENS); needFull = true; }
           } else if (strcmp(cmd, "tap") == 0) {
             // 真机验收用：把手动戳屏变成可重放的命令。
@@ -126,6 +134,31 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             int anim = doc["anim"] | -1;
             pageHomeSetDemoOverride(anim);
             needFull = true;
+          } else if (strcmp(cmd, "statrate") == 0) {
+            // 采数用：临时把 stat 上行从 30s 改密（5..300s，0=默认）
+            netSetStatIntervalMs((uint16_t)(doc["ms"] | 0));
+          } else if (strcmp(cmd, "pwr") == 0) {
+            int pr = doc["profile"] | 0;
+            if (pr < 0 || pr > 2) pr = 0;
+            settingsMut().powerProfile = (PowerProfile)pr;
+            settingsSave();
+            needFull = true;
+          } else if (strcmp(cmd, "aod") == 0) {
+            int am = doc["on"] | 255;
+            if (am >= 0 && am <= 2) {
+              settingsMut().aodMode = (uint8_t)am;
+              settingsSave();
+              needFull = true;
+            }
+          } else if (strcmp(cmd, "aodforce") == 0) {
+            s_aodForceReq = (doc["on"] | 0) ? 1 : 0;
+          } else if (strcmp(cmd, "aodidle") == 0) {
+            // 验收用：把进入阈值临时改短（策略层下限 30s）
+            int sec = doc["sec"] | 120;
+            if (sec < 30) sec = 30;
+            if (sec > 600) sec = 600;
+            settingsMut().aodIdleSec = (uint16_t)sec;
+            settingsSave();
           }
         }
       } else if (strstr(line, "shot") != nullptr) {
@@ -158,6 +191,21 @@ void uiTaskFn(void*) {
   bool wasApprovalActive = false;
   bool wasTokensAnim = false;
   bool needTokensSettle = false;
+
+  // v0.5.0：AOD + 观测
+  bool     aodActive = false;
+  bool     aodForced = false;       // 串口 aodforce 打开的验收模式
+  uint32_t aodEnterMs = 0;
+  bool     swallowTap = false;      // 唤醒 AOD 的那一击不派发
+  uint8_t  lastAppliedBright = 255;
+  uint32_t uiBusyUs = 0;
+  uint32_t decBusyUs = 0;
+  uint32_t lastDecBusyUs = 0;
+  uint8_t  uiBusyPct = 0;
+  uint8_t  decBusyPct = 0;
+  uint32_t drawCount = 0;
+  uint32_t lastDrawMs = 0;
+  float    drawFps = 0.0f;
 
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
@@ -214,6 +262,14 @@ void uiTaskFn(void*) {
     }
   };
 
+  // 亮度去重：只有有效档变化才写 I2C（AOD 降档 + 熄屏前预降会频繁调用）。
+  auto applyBright = [&](uint8_t lvl) {
+    if (lvl > 4) lvl = 4;
+    if (lvl == lastAppliedBright) return;
+    lastAppliedBright = lvl;
+    hwDisplayBrightness(lvl);
+  };
+
   for (;;) {
     esp_task_wdt_reset();
     uint32_t nowMs = millis();
@@ -259,11 +315,72 @@ void uiTaskFn(void*) {
     static NovaState st;
     novaStateRead(&st);
 
+    // ── AOD（熄屏待机）状态机 ────────────────────────────────────────
+    // 进入阈值：电池常开时压到 batSleepSec，否则「30 秒先熄屏、120 秒才想进 AOD」永远轮不到。
+    uint32_t aodThresholdMs = aod::idleMsFor(cfg.aodIdleSec);
+    if (cfg.aodMode == aod::ALWAYS && !snap.battery.usbPresent) {
+      const uint32_t sleepMs =
+          (uint32_t)(cfg.batSleepSec >= 10 ? cfg.batSleepSec : 30) * 1000u;
+      if (sleepMs < aodThresholdMs) aodThresholdMs = sleepMs;
+    }
+    if (s_aodForceReq >= 0) {
+      aodForced = (s_aodForceReq == 1);
+      s_aodForceReq = -1;
+      if (aodForced && !aodActive) {
+        aodActive = true;
+        aodEnterMs = nowMs;
+        lastAppliedBright = 255;
+        needFull = true;
+        nvaSetState(NvaAnimKey::SLEEP, false);
+      } else if (!aodForced && aodActive) {
+        aodActive = false;
+        lastAppliedBright = 255;
+        needFull = true;
+      }
+    }
+    if (aodActive) {
+      const bool exitNow = !aodForced &&
+          (aod::shouldExit(cfg.aodMode, snap.battery.usbPresent, st.run, st.wait,
+                           st.approvalActive, st.wifiApMode, screenOff, st.battPct) ||
+           nav.currentPage() != UiPage::HOME);
+      if (exitNow) {
+        aodActive = false;
+        lastAppliedBright = 255;
+        needFull = true;
+      }
+    } else if (!aodForced && aod::shouldEnter(cfg.aodMode, snap.battery.usbPresent, st.run, st.wait,
+                                st.approvalActive, st.wifiApMode, screenOff, dimmedForNap,
+                                nowMs - lastInteractMs, aodThresholdMs)) {
+      aodActive = true;
+      aodEnterMs = nowMs;
+      lastAppliedBright = 255;
+      needFull = true;
+      nvaSetState(NvaAnimKey::SLEEP, false);
+    }
+
+    // 观测字段：探针从 stat 读这些，别让它们跟主状态错过一整轮。
+    novaStateWithLock([&](NovaState& s) {
+      s.month = snap.time.Mo;
+      s.day = snap.time.D;
+      s.dow = snap.time.dow;
+      s.aodActive = aodActive;
+      s.pwrProfile = (uint8_t)cfg.powerProfile;
+      s.effBright = lastAppliedBright;
+      s.lcdOff = (screenOff || dimmedForNap);
+      s.uiBusyPct = uiBusyPct;
+      s.decBusyPct = decBusyPct;
+      s.drawFps = drawFps;
+      s.lastDrawMs = lastDrawMs;
+      s.drawCount = drawCount;
+    });
+
     // CPU Dynamic Frequency Scaling (DFS via PLL 240/160/80 MHz, keeping APB >= 80 MHz).
     bool activeDemand = st.approvalActive || st.run > 0 || st.wait > 0 ||
                         ((nowMs - lastInteractMs) < 10000u);
     uint32_t wantMhz = 240;
-    if (cfg.powerProfile == PowerProfile::LONG_BATT) {
+    if (aodActive) {
+      wantMhz = 80;   // 静止画面 + 4fps 轮询，80MHz 足够
+    } else if (cfg.powerProfile == PowerProfile::LONG_BATT) {
       wantMhz = (screenOff || dimmedForNap) ? 80 : (st.approvalActive ? 160 : 80);
     } else if (cfg.powerProfile == PowerProfile::ADAPTIVE) {
       wantMhz = (screenOff || dimmedForNap || (!snap.battery.usbPresent && !activeDemand)) ? 80 : 240;
@@ -275,13 +392,14 @@ void uiTaskFn(void*) {
       lastInteractMs = nowMs;
       if (screenOff) {
         hwDisplaySleep(false);
-        hwDisplayBrightness(cfg.brightLevel);
         screenOff = false;
+        lastAppliedBright = 255;   // 面板重开后必须重刷一次
         needFull = true;
       }
       if (dimmedForNap) {
-        hwDisplayBrightness(cfg.brightLevel);
         dimmedForNap = false;
+        lastAppliedBright = 255;
+        needFull = true;
       }
     };
 
@@ -316,8 +434,8 @@ void uiTaskFn(void*) {
       if (st.approvalActive) {
         if (!snap.faceDown && screenOff) {
           hwDisplaySleep(false);
-          hwDisplayBrightness(cfg.brightLevel);
           screenOff = false;
+          lastAppliedBright = 255;
         }
         if (!snap.faceDown) {
           sfxPlay(SfxKind::APPROVAL_ARRIVE, cfg.soundPct);
@@ -385,7 +503,7 @@ void uiTaskFn(void*) {
         case UiAction::SET_BRIGHT:
           settingsMut().brightLevel = (uint8_t)act.value;
           settingsSave();
-          hwDisplayBrightness(settingsGet().brightLevel);
+          lastAppliedBright = 255;   // 交给统一亮度逻辑落地
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::SET_TTS:
@@ -409,6 +527,28 @@ void uiTaskFn(void*) {
           settingsMut().chargeLimitPct =
               (uint8_t)((act.value == 80 || act.value == 90 || act.value == 100) ? act.value : 90);
           settingsSave();
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_AOD_MODE:
+          settingsMut().aodMode =
+              (uint8_t)((act.value >= 0 && act.value <= 2) ? act.value : (int)aod::USB);
+          settingsSave();
+          lastAppliedBright = 255;
+          needFull = true;
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_AOD_IDLE:
+          settingsMut().aodIdleSec =
+              (uint16_t)((act.value == 60 || act.value == 120 || act.value == 300) ? act.value : 120);
+          settingsSave();
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::SET_AOD_NIGHT:
+          settingsMut().aodNightCap =
+              (uint8_t)((act.value >= 0 && act.value <= 2) ? act.value : 1);
+          settingsSave();
+          lastAppliedBright = 255;
+          needFull = true;
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::SET_CHGSPEED:
@@ -532,11 +672,18 @@ void uiTaskFn(void*) {
       const int16_t tx = s_pendingTapX;
       const int16_t ty = s_pendingTapY;
       s_pendingTap = false;
-      UiAction act = nav.onTap(tx, ty, st, cfg);
-      if (act.kind != UiAction::NONE) {
-        handleAction(act);
+      if (aodActive) {
+        aodActive = false;
+        aodForced = false;
+        lastAppliedBright = 255;
+        needFull = true;
       } else {
-        needFull = true;  // 至少重绘一次，方便截图对比
+        UiAction act = nav.onTap(tx, ty, st, cfg);
+        if (act.kind != UiAction::NONE) {
+          handleAction(act);
+        } else {
+          needFull = true;  // 至少重绘一次，方便截图对比
+        }
       }
     }
 
@@ -548,6 +695,13 @@ void uiTaskFn(void*) {
           tpActive = false;
           continue;
         }
+        if (aodActive) {
+          aodActive = false;
+          aodForced = false;
+          lastAppliedBright = 255;
+          needFull = true;
+          swallowTap = true;
+        }
         wakeScreen();
         tpActive = true;
         tpDraggedV = false;
@@ -557,7 +711,8 @@ void uiTaskFn(void*) {
         if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
           pageRankTouchDown(ev.y, ev.tsMs);
         }
-        if (!dimmedForNap && canvas && nav.pressedRect(ev.x, ev.y, st, cfg, &pressedRect)) {
+        if (!swallowTap && !dimmedForNap && canvas &&
+            nav.pressedRect(ev.x, ev.y, st, cfg, &pressedRect)) {
           ui::drawPressedOverlay(*canvas, pressedRect, 12);
           hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
           hasPressedRect = true;
@@ -586,6 +741,10 @@ void uiTaskFn(void*) {
       } else if (ev.type == InputEvtType::TOUCH_UP && tpActive) {
         tpActive = false;
         wakeScreen();
+        if (swallowTap) {
+          swallowTap = false;
+          continue;
+        }
         if (hasPressedRect) {
           hasPressedRect = false;
           needFull = true;
@@ -618,6 +777,12 @@ void uiTaskFn(void*) {
           handleAction(act);
         }
       } else if (ev.type == InputEvtType::KEY1_DOWN) {
+        if (aodActive) {
+          aodActive = false;
+          aodForced = false;
+          lastAppliedBright = 255;
+          needFull = true;
+        }
         wakeScreen();
         key1DownAt = nowMs;
         key1LongFired = false;
@@ -636,7 +801,12 @@ void uiTaskFn(void*) {
         }
         key1DownAt = 0;
       } else if (ev.type == InputEvtType::AXP_SHORT) {
-        if (screenOff) {
+        if (aodActive) {
+          aodActive = false;
+          aodForced = false;
+          lastAppliedBright = 255;
+          needFull = true;
+        } else if (screenOff) {
           wakeScreen();
         } else {
           hwDisplaySleep(true);
@@ -656,21 +826,37 @@ void uiTaskFn(void*) {
       }
     }
 
-    // Face-down nap dim/wake (skip during approval).
+    // Face-down nap dim/wake (skip during approval)。亮度统一在下面 applyBright。
     if (!st.approvalActive && !screenOff) {
       if (snap.faceDown && !dimmedForNap) {
         dimmedForNap = true;
-        hwDisplayBrightness(0);
+        lastAppliedBright = 255;
       } else if (!snap.faceDown && dimmedForNap) {
         dimmedForNap = false;
-        hwDisplayBrightness(cfg.brightLevel);
+        lastAppliedBright = 255;
         needFull = true;
       }
     }
 
-    // Battery idle screen-off (USB never turns off).
+    // 统一亮度：暗屏 0 / AOD 降档 / 平时用户档；只在有效值变化时写 I2C。
+    {
+      uint8_t wantBright = cfg.brightLevel;
+      if (dimmedForNap) {
+        wantBright = 0;
+      } else if (aodActive) {
+        wantBright = aod::brightness(cfg.brightLevel, cfg.aodNightCap, aod::isNight(st.hour));
+      }
+      applyBright(wantBright);
+    }
+
+    // Battery idle screen-off (USB never turns off)。
+    // AOD 常开时由 AOD 接管主屏这块屏，但只在主屏、且电量还够的时候接管：
+    // 低电自救 / 别的页 / 审批时仍然按 batSleepSec 熄屏，别把电池耗干。
+    const bool aodCoversBattery = (cfg.aodMode == aod::ALWAYS) &&
+                                  nav.currentPage() == UiPage::HOME &&
+                                  st.battPct > aod::kLowBattPct;
     const uint32_t batOffMs = (uint32_t)(cfg.batSleepSec >= 10 ? cfg.batSleepSec : 30) * 1000u;
-    if (!screenOff && !st.approvalActive && !snap.battery.usbPresent) {
+    if (!screenOff && !st.approvalActive && !snap.battery.usbPresent && !aodCoversBattery) {
       if (nowMs - lastInteractMs > batOffMs) {
         hwDisplaySleep(true);
         screenOff = true;
@@ -714,7 +900,7 @@ void uiTaskFn(void*) {
         st.choreoGen != lastChoreoGen || st.tokenGen != lastTokenGen ||
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
         st.mqttConnected != lastMqttUp || st.minute != lastMinute || battChanged ||
-        st.lastMqttRxMs != lastMqttRxSeen || isStale != lastStaleFlag ||
+        (!aodActive && st.lastMqttRxMs != lastMqttRxSeen) || isStale != lastStaleFlag ||
         staleBucket != lastStaleShownSec || quotaBucket != lastQuotaBucket ||
         burnStep != lastBurnStep || curSleepState != lastSleepState) {
       lastStateGen      = st.stateGen;
@@ -764,10 +950,13 @@ void uiTaskFn(void*) {
     // (inspired by dsh-pet AnimationFlow & aipets Director / ClipSelector).
     int demoIdx = pageHomeDemoOverride();
     int choreoAnim = pageHomeChoreoAnim();
-    if (st.approvalActive || st.wait > 0) {
+    if (!aodActive && (st.approvalActive || st.wait > 0)) {
       clickAnimActive = false;
       oneShotActive = false;
       nvaSetState(NvaAnimKey::WAITING, false);
+    } else if (aodActive) {
+      // AOD 期间宠物定格，任何自动状态机都不许改它。
+      nvaSetState(NvaAnimKey::SLEEP, false);
     } else if (demoIdx >= 0 && demoIdx <= 8) {
       clickAnimActive = false;
       oneShotActive = false;
@@ -788,7 +977,8 @@ void uiTaskFn(void*) {
       }
     }
 
-    if (!st.approvalActive && st.wait == 0 && demoIdx < 0 && !clickAnimActive && !oneShotActive) {
+    if (!aodActive && !st.approvalActive && st.wait == 0 && demoIdx < 0 &&
+        !clickAnimActive && !oneShotActive) {
       if (st.run > 0) {
         nvaSetState(NvaAnimKey::WORKING, false);
       } else if (pageHomeIsWalking()) {
@@ -815,7 +1005,15 @@ void uiTaskFn(void*) {
         nvaSetState(bgAutoKey, false);
       }
     }
-    nvaTick(nowMs);
+    // AOD 期间不跑动画：进入后先让 SLEEP 帧解码 0.9s，然后冻结在那一帧。
+    if (!aodActive || (uint32_t)(nowMs - aodEnterMs) < 900u) {
+      nvaTick(nowMs);
+    }
+    {
+      const uint32_t decTotal = nvaDecodeBusyUs();
+      decBusyUs += decTotal - lastDecBusyUs;
+      lastDecBusyUs = decTotal;
+    }
 
     if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
       if (pageRankTick(nowMs)) {
@@ -834,7 +1032,8 @@ void uiTaskFn(void*) {
     // Frame rate target depends on active page & power profile.
     // 异常详情浮层开着时不能走舞台局部重绘：pageHomeDrawStage 只重画宠物那一块，
     // 浮层画完立刻会被动画覆盖（真机实测：宠物和气泡压在浮层上）。
-    bool animPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::HOME &&
+    bool animPage = (!aodActive && !st.approvalActive && !st.wifiApMode &&
+                     nav.currentPage() == UiPage::HOME &&
                      !(st.dockExpanded && st.turnError && st.errMsg[0]));
     bool tokensPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::TOKENS);
     bool tokensAnim = tokensPage && pageTokensIsAnimating(st, cfg, nowMs);
@@ -853,12 +1052,19 @@ void uiTaskFn(void*) {
                           : (tokensAnim ? tokensFps
                                         : (interactive ? 60 : (st.approvalActive ? 30 : 10)));
     if (screenOff || dimmedForNap) targetFps = 5;
+    else if (aodActive) targetFps = 4;   // 只在分钟/位移/状态变化时真画
     int64_t frameUs = 1000000LL / targetFps;
 
+    const int64_t drawStartUs = esp_timer_get_time();
+    const uint32_t framesBefore = fpsFrames;
     if (!screenOff && !dimmedForNap && canvas) {
       if (needFull) {
         int64_t t0 = esp_timer_get_time();
-        nav.draw(*canvas, st, cfg, frame, nowMs);
+        if (aodActive) {
+          pageHomeDrawAod(*canvas, st, nowMs);
+        } else {
+          nav.draw(*canvas, st, cfg, frame, nowMs);
+        }
         hwDisplayPush();
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needFull = false;
@@ -899,14 +1105,30 @@ void uiTaskFn(void*) {
         fpsFrames++;
       }
     }
+    if (fpsFrames != framesBefore) {
+      uiBusyUs += (uint32_t)(esp_timer_get_time() - drawStartUs);
+      lastDrawMs = nowMs;
+      drawCount++;
+    }
 
     int64_t nowUs = esp_timer_get_time();
     int64_t elapsedUs = nowUs - fpsWindowStartUs;
     if (elapsedUs >= 1000000) {
       curFps = (float)fpsFrames * 1000000.0f / (float)elapsedUs;
+      // 只有"真在动"的窗口才更新 drawFps；静帧保留上次值，别再显示 0fps。
+      if (fpsFrames >= 8) drawFps = curFps;
       if (animPage && !screenOff && !dimmedForNap && curFps > 5.0f) {
         lastHomeFps = curFps;
       }
+      if (elapsedUs > 0) {
+        const uint64_t win = (uint64_t)elapsedUs;
+        const uint32_t uiPct = (uint32_t)((uint64_t)uiBusyUs * 100u / win);
+        const uint32_t decPct = (uint32_t)((uint64_t)decBusyUs * 100u / win);
+        uiBusyPct = (uint8_t)(uiPct > 100 ? 100 : uiPct);
+        decBusyPct = (uint8_t)(decPct > 100 ? 100 : decPct);
+      }
+      uiBusyUs = 0;
+      decBusyUs = 0;
       fpsFrames = 0;
       fpsWindowStartUs = nowUs;
     }

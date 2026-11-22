@@ -365,6 +365,8 @@ size_t protoBuildHello(char* buf, size_t cap, const NovaState& st, const NovaSet
     h["h"]   = 448;
     h["fps"] = 60;
     h["ip"]  = st.ip;
+    h["pwr"] = (uint8_t)cfg.powerProfile;   // v0.5.0：探针要知道现在跑哪档
+    h["aod"] = cfg.aodMode;
 
     JsonObject p = doc["prefs"].to<JsonObject>();
     p["snd"]    = cfg.soundPct;
@@ -393,12 +395,26 @@ size_t protoBuildStat(char* buf, size_t cap, const NovaState& st) {
   doc["fps"]  = (int)(st.fps + 0.5f);
   doc["drop"] = st.droppedFps;
   doc["heap"] = st.freeHeap;
+  doc["psram"] = st.freePsram;
+  doc["mhz"] = st.cpuMhz;
   doc["rssi"] = st.rssi;
   doc["mv"]   = st.battMv;
   doc["pct"]  = st.battPct;
   doc["chg"]  = st.charging ? 1 : 0;
   doc["stage"] = st.battStage;
   doc["tmp"]  = st.battTempC;
+  // v0.5.0 观测：绘制口径 + 功耗状态 + 忙时占比，给 tools/power_probe.mjs 采数
+  doc["drawFps"] = (int)(st.drawFps + 0.5f);
+  doc["pushUs"]  = st.pushUs;
+  doc["idle"]    = (st.nowMs > st.lastDrawMs) ? (st.nowMs - st.lastDrawMs) : 0;
+  doc["draws"]   = st.drawCount;
+  doc["pwr"]     = st.pwrProfile;
+  doc["brt"]     = st.effBright;
+  doc["lcd"]     = st.lcdOff ? 0 : 1;
+  doc["aod"]     = st.aodActive ? 1 : 0;
+  JsonObject cpu = doc["cpu"].to<JsonObject>();
+  cpu["ui"]  = st.uiBusyPct;
+  cpu["dec"] = st.decBusyPct;
   return serializeJson(doc, buf, cap);
 }
 

@@ -73,6 +73,13 @@ static void populateSample(NovaState& st) {
   st.sess = 3;
   std::strcpy(st.msg, "Bash: ./tools/pio.sh run -e waveshare");
   st.ctxPct = 42;
+  st.hour = 23; st.minute = 41; st.second = 5;
+  st.month = 11; st.day = 22; st.dow = 0;   // 2026-11-22 是周日
+  st.timeValid = true;
+  st.drawFps = 55.0f;
+  st.lastDrawMs = 1000;
+  st.drawCount = 12345;
+  st.effBright = 4;
   std::strcpy(st.activeModel, "GPT-6.2 Astra");
 
   st.nCards = 3;
@@ -333,6 +340,15 @@ static void mutateTokensEmpty(NovaState& st, NovaSettings&) {
   st.nTokenDays = 0;
 }
 
+static void mutateAodTime(NovaState& st, NovaSettings&) {
+  st.hour = 23; st.minute = 41; st.second = 0;
+}
+
+static void mutateAodNoTime(NovaState& st, NovaSettings& cfg) {
+  mutateAodTime(st, cfg);
+  st.timeValid = false;
+}
+
 int main(int argc, char** argv) {
   std::string outDir = (argc > 1) ? argv[1] : "tools/sim/out";
   Arduino_Canvas canvas(UI_W, UI_H, nullptr);
@@ -350,6 +366,7 @@ int main(int argc, char** argv) {
     uint32_t drawNowMs;
     void (*mutate)(NovaState&, NovaSettings&);
     void (*afterDraw)();
+    bool aod = false;
   };
   Case cases[] = {
     { "home", UiPage::HOME, false, 0, 6500, nullptr, nullptr },
@@ -381,6 +398,9 @@ int main(int argc, char** argv) {
     { "tokens", UiPage::TOKENS, false, 0, 6500, nullptr, nullptr },
     { "tokens_selected", UiPage::TOKENS, false, 0, 6500, mutateTokensSelected, cleanupTokensSelect },
     { "tokens_empty", UiPage::TOKENS, false, 0, 6500, mutateTokensEmpty, nullptr },
+    { "settings_display", UiPage::SETTINGS, false, 3, 6500, nullptr, nullptr },
+    { "aod", UiPage::HOME, false, 0, 6500, mutateAodTime, nullptr, true },
+    { "aod_nolock", UiPage::HOME, false, 0, 6500, mutateAodNoTime, nullptr, true },
   };
 
   for (const auto& cs : cases) {
@@ -397,7 +417,14 @@ int main(int argc, char** argv) {
     if (cs.mutate) cs.mutate(st, cfg);
     pageSettingsSetTab(cs.settingsTab);
     nav.setPage(cs.page);
-    nav.draw(canvas, st, cfg, 24, cs.drawNowMs);
+    if (cs.aod) {
+      // 真机在进入 AOD 时切 SLEEP 并解出一帧；模拟器同样先播三帧再定格。
+      nvaSetState(NvaAnimKey::SLEEP, false);
+      for (int i = 0; i < 3; i++) nvaTick(cs.drawNowMs + (uint32_t)i * 120u);
+      pageHomeDrawAod(canvas, st, cs.drawNowMs);
+    } else {
+      nav.draw(canvas, st, cfg, 24, cs.drawNowMs);
+    }
     if (cs.afterDraw) cs.afterDraw();
     std::string path = outDir + "/page_" + cs.name + ".png";
     if (!saveRgb565Png(path.c_str(), canvas.getFramebuffer(), UI_W, UI_H)) return 1;

@@ -32,6 +32,12 @@ void settingsLoad() {
     uint8_t spd = prefs.getUChar("chg_spd", (uint8_t)ChargeSpeed::AUTO);
     s_cfg.chargeSpeed = (spd <= (uint8_t)ChargeSpeed::FAST)
                           ? (ChargeSpeed)spd : ChargeSpeed::AUTO;
+    uint8_t aodm = prefs.getUChar("aod", aod::USB);
+    s_cfg.aodMode = (aodm <= aod::ALWAYS) ? aodm : aod::USB;
+    uint16_t aodIdle = prefs.getUShort("aod_idle", 120);
+    s_cfg.aodIdleSec = (aodIdle == 60 || aodIdle == 120 || aodIdle == 300) ? aodIdle : 120;
+    uint8_t aodNight = prefs.getUChar("aod_night", 1);
+    s_cfg.aodNightCap = (aodNight <= 2) ? aodNight : 1;
     String host = prefs.getString("mqtt_host", "192.168.31.15");
     strncpy(s_cfg.brokerHost, host.c_str(), sizeof(s_cfg.brokerHost) - 1);
     s_cfg.brokerHost[sizeof(s_cfg.brokerHost) - 1] = '\0';
@@ -57,6 +63,9 @@ void settingsSave() {
     prefs.putUShort("sleep_s", s_cfg.batSleepSec);
     prefs.putUChar("chg_lim", s_cfg.chargeLimitPct);
     prefs.putUChar("chg_spd", (uint8_t)s_cfg.chargeSpeed);
+    prefs.putUChar("aod", s_cfg.aodMode);
+    prefs.putUShort("aod_idle", s_cfg.aodIdleSec);
+    prefs.putUChar("aod_night", s_cfg.aodNightCap);
     prefs.putString("mqtt_host", s_cfg.brokerHost);
     prefs.putUShort("mqtt_port", s_cfg.brokerPort);
     prefs.end();

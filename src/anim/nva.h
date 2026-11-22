@@ -23,6 +23,7 @@ NvaAnimKey nvaActiveState();
 bool nvaIsEnded();
 uint32_t nvaLoopCycles();
 void nvaTick(uint32_t nowMs);
+uint32_t nvaDecodeBusyUs();  // 累计解码耗时（us），供 UI 任务折算 decBusyPct
 int16_t nvaFrameWidth();
 int16_t nvaFrameHeight();
 

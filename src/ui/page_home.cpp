@@ -690,6 +690,91 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
   }
 }
 
+
+// ── AOD（熄屏显示）─────────────────────────────────────────────────────
+// 布局按 HTML 提案 A 版、字号 92 落地：时间块在 0..236 区域居中，宠物定格在
+// 242..418，底部一行状态。这里不跑动画：调用方在 AOD 期间跳过 nvaTick，
+// 所以 nvaDraw 画到的是最后一帧（SLEEP 的睡觉姿势）。
+void formatTokenShort(uint64_t v, char* out, size_t cap) {
+  if (v >= 100000000ull) {
+    snprintf(out, cap, "%.2f 亿", (double)v / 1e8);
+  } else if (v >= 10000ull) {
+    snprintf(out, cap, "%.0f 万", (double)v / 1e4);
+  } else {
+    snprintf(out, cap, "%llu", (unsigned long long)v);
+  }
+}
+
+// 时间行：DIN 92 只有数字，冒号必须矢量画；"--:--" 也走同一条路径，
+// 否则 ':' 会落到 20px 的 fallback 字体上，出现两个小点挤在大号破折号下面。
+void drawAodTimeLine(NovaCanvas& c, const char* hh, const char* mm, int16_t baseY, int16_t ox) {
+  ui::TextMetrics mh = ui::measureText(c, ui::fontNum92(), hh);
+  ui::TextMetrics mm2 = ui::measureText(c, ui::fontNum92(), mm);
+  const int16_t colonW = 26;
+  const int16_t totalW = (int16_t)(mh.w + colonW + mm2.w);
+  const int16_t x0 = (int16_t)((UI_W - totalW) / 2 + ox);
+  ui::drawText(c, ui::fontNum92(), x0, baseY, hh, ui::COL_TEXT, ui::COL_BG);
+  const int16_t colonX = (int16_t)(x0 + mh.w + colonW / 2);
+  ui::aaFillCircle(c, colonX, (int16_t)(baseY - 52), 5, ui::COL_TEXT);
+  ui::aaFillCircle(c, colonX, (int16_t)(baseY - 24), 5, ui::COL_TEXT);
+  ui::drawText(c, ui::fontNum92(), (int16_t)(x0 + mh.w + colonW), baseY, mm,
+               ui::COL_TEXT, ui::COL_BG);
+}
+
+void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
+  c.fillScreen(ui::COL_BG);
+
+  // 位移：30s 一次的 ±2px（沿用 burnInStep）+ 10 分钟一轮的 ±3px 慢漂移。
+  const int16_t ox = (int16_t)(ui::burnOffsetX(st.burnInStep) + aod::driftX(nowMs));
+  const int16_t oy = (int16_t)(ui::burnOffsetY(st.burnInStep) + aod::driftY(nowMs));
+
+  // 右上：电量 + 在线点（不画顶栏时钟、不画页面圆点）。
+  ui::drawBatteryIcon(c, (int16_t)(UI_SAFE_R - 4 + ox), (int16_t)(29 + oy),
+                      st.battPct, st.usbPresent, st.battStage);
+  const bool linked = (st.wifiConnected && st.mqttConnected);
+  const uint16_t dotCol = st.wifiApMode ? ui::COL_AMBER : (linked ? ui::COL_MINT : ui::COL_RED);
+  ui::aaFillCircle(c, (int16_t)(UI_SAFE_R - 64 + ox), (int16_t)(29 + oy), 3, dotCol);
+
+  if (!st.timeValid) {
+    // 没有 RTC 时不要用大号假数字（DIN 92 的 '-' 会像下划线，'--:--' 很难看）。
+    ui::drawTextCentered(c, ui::fontCjk16(), (int16_t)(UI_W / 2 + ox), (int16_t)(158 + oy),
+                         "时间未同步", ui::COL_DIM, ui::COL_BG);
+    ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(UI_W / 2 + ox), (int16_t)(194 + oy),
+                         "等待宿主校时", ui::COL_MUTED, ui::COL_BG);
+  } else {
+    char hh[3], mm[3];
+    snprintf(hh, sizeof(hh), "%02u", (unsigned)st.hour);
+    snprintf(mm, sizeof(mm), "%02u", (unsigned)st.minute);
+    drawAodTimeLine(c, hh, mm, (int16_t)(150 + oy), ox);
+
+    static const char* const kDow[7] = { "日", "一", "二", "三", "四", "五", "六" };
+    char dateBuf[40];
+    snprintf(dateBuf, sizeof(dateBuf), "%u月%u日 · 周%s",
+             (unsigned)st.month, (unsigned)st.day, kDow[st.dow % 7]);
+    ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(UI_W / 2 + ox), (int16_t)(194 + oy),
+                         dateBuf, ui::COL_DIM, ui::COL_BG);
+  }
+
+  // 宠物：定格睡觉帧
+  if (!nvaDraw(c, (int16_t)(UI_W / 2 + ox), (int16_t)(418 + oy), false, 1.0f)) {
+    ui::aaFillCircle(c, (int16_t)(UI_W / 2 + ox), (int16_t)(400 + oy), 34, rgb565(20, 32, 52));
+  }
+
+  // 底部状态：AOD 里 run 恒为 0，不写它。
+  char today[24] = "";
+  if (st.nTokenDays > 0) {
+    formatTokenShort(st.tokenDays[st.nTokenDays - 1].tokens, today, sizeof(today));
+  }
+  char statusBuf[64];
+  if (today[0]) {
+    snprintf(statusBuf, sizeof(statusBuf), "会话 %u · 今日 %s", (unsigned)st.sess, today);
+  } else {
+    snprintf(statusBuf, sizeof(statusBuf), "会话 %u · 待命中", (unsigned)st.sess);
+  }
+  ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(UI_W / 2 + ox), (int16_t)(438 + oy),
+                       statusBuf, ui::COL_MUTED, ui::COL_BG);
+}
+
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
   if (st.wifiApMode && !st.wifiConnected && apCancelPortalRect(st).contains(x, y)) {
     return UiAction{ UiAction::CANCEL_PORTAL, 0 };

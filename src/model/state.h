@@ -122,10 +122,24 @@ struct NovaState {
   uint8_t  hour;
   uint8_t  minute;
   uint8_t  second;
+  uint8_t  month;      // AOD 日期行
+  uint8_t  day;
+  uint8_t  dow;        // 0=周日
   bool     timeValid;
   uint32_t nowMs;
   uint16_t cpuMhz;
   uint8_t  burnInStep;
+
+  // v0.5.0 观测 / AOD
+  float    drawFps;      // 最近一次「有效绘制窗口」的帧率（静帧保持上次值）
+  uint32_t lastDrawMs;   // 最近一次推送的时间戳
+  uint32_t drawCount;    // 累计推送次数（探针算绘制/分钟）
+  uint8_t  pwrProfile;   // PowerProfile 快照
+  uint8_t  effBright;    // 当前生效亮度档 0..4
+  bool     lcdOff;       // 熄屏 / 暗屏
+  bool     aodActive;    // 正在显示 AOD
+  uint8_t  uiBusyPct;    // UI 任务忙时占比（1s 窗口）
+  uint8_t  decBusyPct;   // 解码任务忙时占比（1s 窗口）
 
   // LLM choreography loop
   char       choreoMood[32];

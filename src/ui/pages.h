@@ -28,6 +28,9 @@ struct UiAction {
     SET_BATSLEEP,
     SET_CHGLIMIT,
     SET_CHGSPEED,
+    SET_AOD_MODE,
+    SET_AOD_IDLE,
+    SET_AOD_NIGHT,
     SET_CHOREO,
     TEST_SOUND,
     SYNC_HOST,
@@ -50,6 +53,7 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
 void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame,
                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st);
+void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 int pageHomeDemoOverride();  // -1 = auto, >=0 = NvaAnimKey index
 void pageHomeSetDemoOverride(int idx);
 int pageHomeChoreoAnim();    // -1 = none, >=0 = NvaAnimKey index from LLM script

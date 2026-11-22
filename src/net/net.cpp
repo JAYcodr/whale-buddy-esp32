@@ -38,6 +38,7 @@ NetPsMode       s_appliedPs = NetPsMode::PERFORMANCE;
 bool            s_portalActive = false;
 
 char s_apName[24] = "Nova-0000";
+volatile uint16_t s_statIntervalMs = 30000;
 char s_clientId[24] = "nova-000000";
 char s_topicPrefix[24] = "nova/000000";
 
@@ -283,13 +284,13 @@ void netTaskFn(void*) {
           s_mqtt.publish(tx.topic, tx.payload, (int)strlen(tx.payload), tx.retained, tx.qos);
         }
 
-        // Periodic device telemetry every 30 s
-        if (now - lastStatMs >= 30000) {
+        // Periodic device telemetry (default 30 s; `{"cmd":"statrate"}` 可临时改密)
+        if (now - lastStatMs >= s_statIntervalMs) {
           lastStatMs = now;
           static NovaState s_statSt;
           novaStateRead(&s_statSt);
           char topic[48];
-          char payload[160];
+          char payload[320];
           snprintf(topic, sizeof(topic), "%s/up", s_topicPrefix);
           size_t n = protoBuildStat(payload, sizeof(payload), s_statSt);
           s_mqtt.publish(topic, payload, (int)n, false, 0);
@@ -327,6 +328,13 @@ void netRequestWifiConnect(const char* ssid, const char* pass) {
   s_wifiConnectReq = true;
 }
 void netSetPowerSave(NetPsMode mode) { s_desiredPs = mode; }
+
+void netSetStatIntervalMs(uint16_t ms) {
+  if (ms == 0) { s_statIntervalMs = 30000; return; }
+  if (ms < 5000) ms = 5000;
+  if (ms > 300000) ms = 300000;
+  s_statIntervalMs = ms;
+}
 
 void netPublishDecision(const char* approvalId, bool accept, bool toPc) {
   if (!s_txQ || !approvalId || !approvalId[0]) return;

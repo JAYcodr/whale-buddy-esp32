@@ -5,7 +5,7 @@
 
 namespace {
 
-uint8_t s_tab = 0;  // 0 = 基础偏好, 1 = 进阶策略
+uint8_t s_tab = 0;  // 0=基础 1=进阶 2=电源 3=显示
 bool s_reprovConfirm = false;
 uint32_t s_reprovAtMs = 0;
 
@@ -13,10 +13,11 @@ constexpr uint32_t REPROV_CONFIRM_TIMEOUT_MS = 3000u;
 
 constexpr ui::Rect HDR_BACK { 14,  12, 196, 36 };
 constexpr ui::Rect TAB_SEG  { 186, 13, 162, 34 };
-constexpr ui::Rect TAB_BASIC{ 186, 13, 54,  34 };
-constexpr ui::Rect TAB_ADV  { 240, 13, 54,  34 };
-constexpr ui::Rect TAB_PWR  { 294, 13, 54,  34 };
-constexpr const char* TAB_LABELS[3] = { "基础", "进阶", "电源" };
+constexpr ui::Rect TAB_BASIC{ 186, 13, 40,  34 };
+constexpr ui::Rect TAB_ADV  { 226, 13, 40,  34 };
+constexpr ui::Rect TAB_PWR  { 266, 13, 40,  34 };
+constexpr ui::Rect TAB_DISP { 306, 13, 42,  34 };
+constexpr const char* TAB_LABELS[4] = { "基础", "进阶", "电源", "显示" };
 
 // Tab 0: 基础偏好
 constexpr ui::Rect HOME_SEG{ 34, 84, 300, 34 };
@@ -98,6 +99,32 @@ constexpr const char* CHG_SPD_LABELS[3] = { "温和", "自动", "快速" };
 
 constexpr ui::Rect BTN_PWR_BACK{ 24, 386, 320, 44 };
 
+// Tab 3: AOD 显示
+constexpr ui::Rect AOD_SEG{ 34, 86, 300, 34 };
+constexpr ui::Rect AOD_BTNS[3] = {
+  { 34,  86, 100, 34 },
+  { 134, 86, 100, 34 },
+  { 234, 86, 100, 34 },
+};
+constexpr const char* AOD_LABELS[3] = { "关", "仅插电", "常开" };
+
+constexpr ui::Rect AOD_IDLE_SEG{ 34, 192, 300, 34 };
+constexpr ui::Rect AOD_IDLE_BTNS[3] = {
+  { 34,  192, 100, 34 },
+  { 134, 192, 100, 34 },
+  { 234, 192, 100, 34 },
+};
+constexpr const char* AOD_IDLE_LABELS[3] = { "1 分钟", "2 分钟", "5 分钟" };
+constexpr uint16_t AOD_IDLE_VALS[3] = { 60, 120, 300 };
+
+constexpr ui::Rect AOD_NIGHT_SEG{ 34, 298, 300, 34 };
+constexpr ui::Rect AOD_NIGHT_BTNS[3] = {
+  { 34,  298, 100, 34 },
+  { 134, 298, 100, 34 },
+  { 234, 298, 100, 34 },
+};
+constexpr const char* AOD_NIGHT_LABELS[3] = { "1 档", "2 档", "跟随" };
+
 int soundStepIndex(uint8_t pct) {
   if (pct == 0) return 0;
   if (pct <= 35) return 1;
@@ -137,7 +164,7 @@ void drawHeaderBackChevron(NovaCanvas& c) {
 }  // namespace
 
 void pageSettingsSetTab(uint8_t tab) {
-  s_tab = (tab <= 2) ? tab : 0;
+  s_tab = (tab <= 3) ? tab : 0;
   s_reprovConfirm = false;
 }
 
@@ -156,7 +183,7 @@ void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
   ui::drawText(c, ui::fontCjk16(), 38, 37, "系统与偏好设置", ui::COL_TEXT, ui::COL_BG);
 
   // Header tab segmented pill: 基础 / 进阶 / 电源
-  ui::drawSegmented(c, TAB_SEG, TAB_LABELS, 3, s_tab, ui::COL_ACCENT, ui::fontCjk14());
+  ui::drawSegmented(c, TAB_SEG, TAB_LABELS, 4, s_tab, ui::COL_ACCENT, ui::fontCjk14());
 
   if (s_tab == 0) {
     // Card 1: Default home page
@@ -238,7 +265,7 @@ void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
       ui::drawTextCenteredInRect(c, ui::fontCjk14(), BTN_REPROV, "重新配网 (AP)",
                                  ui::COL_AMBER, reprovBg);
     }
-  } else {
+  } else if (s_tab == 2) {
     // Card 1: charge limit (battery care)
     ui::drawCard(c, 20, 52, 328, 98, ui::COL_CARD, ui::COL_BORDER, 16);
     ui::drawSectionLabel(c, 34, 74, "充电上限（电池保养）");
@@ -288,6 +315,31 @@ void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
       snprintf(b3, sizeof(b3), "充电已暂停");
     }
     ui::drawText(c, ui::fontCjk14(), 34, 356, b3, ui::COL_MUTED, ui::COL_CARD);
+  } else {
+    // Tab 3: AOD 显示
+    ui::drawCard(c, 20, 52, 328, 100, ui::COL_CARD, ui::COL_BORDER, 16);
+    ui::drawSectionLabel(c, 34, 74, "AOD 熄屏显示");
+    int aodIdx = (int)cfg.aodMode;
+    if (aodIdx < 0 || aodIdx > 2) aodIdx = (int)aod::USB;
+    ui::drawSegmented(c, AOD_SEG, AOD_LABELS, 3, aodIdx, ui::COL_ACCENT, ui::fontCjk14());
+    const char* aodCap = (cfg.aodMode == aod::OFF) ? "关闭：闲置保持现有主屏"
+                       : (cfg.aodMode == aod::USB) ? "仅插电：电池仍按息屏时长熄屏"
+                                                   : "常开：电池也常亮，更费电";
+    ui::drawText(c, ui::fontCjk14(), 34, 140, aodCap, ui::COL_MUTED, ui::COL_CARD);
+
+    ui::drawCard(c, 20, 160, 328, 100, ui::COL_CARD, ui::COL_BORDER, 16);
+    ui::drawSectionLabel(c, 34, 182, "进入待机");
+    int idleIdx = (cfg.aodIdleSec <= 60) ? 0 : ((cfg.aodIdleSec <= 120) ? 1 : 2);
+    ui::drawSegmented(c, AOD_IDLE_SEG, AOD_IDLE_LABELS, 3, idleIdx, ui::COL_MINT, ui::fontCjk14());
+    ui::drawText(c, ui::fontCjk14(), 34, 248, "无任务、无交互多久后切到表盘",
+                 ui::COL_MUTED, ui::COL_CARD);
+
+    ui::drawCard(c, 20, 268, 328, 100, ui::COL_CARD, ui::COL_BORDER, 16);
+    ui::drawSectionLabel(c, 34, 290, "夜间亮度（23-07）");
+    int nightIdx = (cfg.aodNightCap <= 2) ? (int)cfg.aodNightCap : 1;
+    ui::drawSegmented(c, AOD_NIGHT_SEG, AOD_NIGHT_LABELS, 3, nightIdx, ui::COL_MINT, ui::fontCjk14());
+    ui::drawText(c, ui::fontCjk14(), 34, 356, "静态大数字有烧屏风险，已加位移与慢漂移",
+                 ui::COL_MUTED, ui::COL_CARD);
   }
 
   if (s_tab == 2) {
@@ -316,6 +368,11 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
     s_tab = 2;
     s_reprovConfirm = false;
     return UiAction{ UiAction::SETTINGS_REDRAW, 3 };
+  }
+  if (TAB_DISP.contains(x, y) && s_tab != 3) {
+    s_tab = 3;
+    s_reprovConfirm = false;
+    return UiAction{ UiAction::SETTINGS_REDRAW, 0 };
   }
 
   if (s_tab == 0) {
@@ -355,7 +412,7 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
       s_reprovConfirm = false;
       return UiAction{ UiAction::REPROVISION, 0 };
     }
-  } else {
+  } else if (s_tab == 2) {
     for (int i = 0; i < 3; i++) {
       if (CHG_LIM_BTNS[i].contains(x, y)) {
         return UiAction{ UiAction::SET_CHGLIMIT, (int)CHG_LIM_VALS[i] };
@@ -367,6 +424,12 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
     if (BTN_PWR_BACK.contains(x, y)) {
       s_reprovConfirm = false;
       return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
+    }
+  } else {
+    for (int i = 0; i < 3; i++) {
+      if (AOD_BTNS[i].contains(x, y)) return UiAction{ UiAction::SET_AOD_MODE, i };
+      if (AOD_IDLE_BTNS[i].contains(x, y)) return UiAction{ UiAction::SET_AOD_IDLE, (int)AOD_IDLE_VALS[i] };
+      if (AOD_NIGHT_BTNS[i].contains(x, y)) return UiAction{ UiAction::SET_AOD_NIGHT, i };
     }
   }
 
@@ -384,6 +447,7 @@ bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState&, const NovaSetti
   if (TAB_BASIC.contains(x, y)) { *out = TAB_BASIC; return true; }
   if (TAB_ADV.contains(x, y))   { *out = TAB_ADV;   return true; }
   if (TAB_PWR.contains(x, y))   { *out = TAB_PWR;   return true; }
+  if (TAB_DISP.contains(x, y))  { *out = TAB_DISP;  return true; }
   if (s_tab == 0) {
     for (int i = 0; i < 3; i++) {
       if (HOME_BTNS[i].contains(x, y)) { *out = HOME_BTNS[i]; return true; }
@@ -402,12 +466,18 @@ bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState&, const NovaSetti
       if (SLEEP_BTNS[i].contains(x, y)) { *out = SLEEP_BTNS[i]; return true; }
     }
     if (BTN_REPROV.contains(x, y)) { *out = BTN_REPROV; return true; }
-  } else {
+  } else if (s_tab == 2) {
     for (int i = 0; i < 3; i++) {
       if (CHG_LIM_BTNS[i].contains(x, y)) { *out = CHG_LIM_BTNS[i]; return true; }
       if (CHG_SPD_BTNS[i].contains(x, y)) { *out = CHG_SPD_BTNS[i]; return true; }
     }
     if (BTN_PWR_BACK.contains(x, y)) { *out = BTN_PWR_BACK; return true; }
+  } else {
+    for (int i = 0; i < 3; i++) {
+      if (AOD_BTNS[i].contains(x, y))       { *out = AOD_BTNS[i];       return true; }
+      if (AOD_IDLE_BTNS[i].contains(x, y))  { *out = AOD_IDLE_BTNS[i];  return true; }
+      if (AOD_NIGHT_BTNS[i].contains(x, y)) { *out = AOD_NIGHT_BTNS[i]; return true; }
+    }
   }
   if (BTN_BACK.contains(x, y)) { *out = BTN_BACK; return true; }
   return false;

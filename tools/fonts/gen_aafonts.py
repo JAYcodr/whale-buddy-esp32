@@ -127,6 +127,7 @@ def main() -> int:
         ("g_fontDin22", DIN_PATH,      0,              22, asc_cps, 0.88, "&g_fontPf20"),
         ("g_fontDin30", DIN_PATH,      0,              30, asc_cps, 0.90, "&g_fontPf20"),
         ("g_fontDin46", DIN_PATH,      0,              46, hero_cps, 0.90, "&g_fontPf20"),
+        ("g_fontDin92", DIN_PATH,      0,              92, hero_cps, 0.90, "&g_fontPf20"),
     ]
 
     blocks = [
@@ -139,6 +140,7 @@ def main() -> int:
         "extern const AaFont g_fontDin22;",
         "extern const AaFont g_fontDin30;",
         "extern const AaFont g_fontDin46;",
+        "extern const AaFont g_fontDin92;",
         "",
     ]
     grand_total = 0

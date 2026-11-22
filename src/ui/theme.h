@@ -15,6 +15,7 @@ const AaFont* fontAscii14();
 const AaFont* fontAscii18();
 const AaFont* fontNum24();
 const AaFont* fontNum46();
+const AaFont* fontNum92();   // AOD 大时钟（只有数字/符号，冒号用矢量画）
 
 // Pure OLED black & deep oceanic glass palette.
 constexpr uint16_t COL_BG       = rgb565(0, 0, 0);

@@ -14,3 +14,4 @@ void netPublishDecision(const char* approvalId, bool accept, bool toPc);
 void netPublishPrefs();
 void netPublishSync();
 void netSetPowerSave(NetPsMode mode);
+void netSetStatIntervalMs(uint16_t ms);   // 5..300s，0=回默认 30s

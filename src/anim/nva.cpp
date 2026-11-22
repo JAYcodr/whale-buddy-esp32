@@ -8,6 +8,7 @@
 #include <zlib.h>
 #else
 #include <Arduino.h>
+#include <esp_timer.h>
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
@@ -17,6 +18,18 @@
 #endif
 
 namespace {
+
+// 解码耗时累计（微秒）：UI 任务每秒取一次差值，折算 decBusyPct。
+// 只累计 inflate + XOR 这段真正吃 CPU 的工作，不把锁等待算进去。
+uint32_t s_decodeBusyUs = 0;
+
+inline uint32_t busyNowUs() {
+#ifndef NOVA_HOST_SIM
+  return (uint32_t)esp_timer_get_time();
+#else
+  return 0;
+#endif
+}
 
 constexpr const char* ANIM_NAMES[(int)NvaAnimKey::COUNT] = {
   "idle", "thinking", "working", "waiting", "success", "error", "click", "sleep", "quota"
@@ -271,6 +284,7 @@ bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx) {
     blobLen -= 1;
   }
 
+  const uint32_t busyT0 = busyNowUs();
   if (isDelta) {
     if (!s_xorScratch || !s_frontReady || s_lastPackGen != pk.genId || s_lastFrameIdx + 1 != frameIdx) {
       return false;
@@ -283,6 +297,7 @@ bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx) {
   } else {
     if (!inflateZlib(blobPtr, blobLen, dst, pixBytes)) return false;
   }
+  s_decodeBusyUs += busyNowUs() - busyT0;
 
 #ifndef NOVA_HOST_SIM
   xSemaphoreTake(s_mtx, portMAX_DELAY);
@@ -428,6 +443,7 @@ NvaAnimKey nvaCurrentState() { return s_desiredKey; }
 NvaAnimKey nvaActiveState() { return s_activeKey; }
 bool nvaIsEnded() { return s_clipEnded; }
 uint32_t nvaLoopCycles() { return s_loopCycles; }
+uint32_t nvaDecodeBusyUs() { return s_decodeBusyUs; }
 int16_t nvaFrameWidth()  { return (s_ready && s_frontReady) ? (int16_t)s_frontW : 144; }
 int16_t nvaFrameHeight() { return (s_ready && s_frontReady) ? (int16_t)s_frontH : 162; }
 

@@ -1,8 +1,9 @@
 #pragma once
 #include <stdint.h>
+#include "model/aod_policy.h"
 #include "model/battery_model.h"
 
-constexpr const char* NOVA_FW_VER = "0.4.0";
+constexpr const char* NOVA_FW_VER = "0.5.0";
 
 enum class HomePageKind : uint8_t {
   PET   = 0,
@@ -28,6 +29,10 @@ struct NovaSettings {
   uint16_t     batSleepSec   = 30;
   uint8_t      chargeLimitPct = 90;                  // 80 / 90 / 100
   ChargeSpeed  chargeSpeed    = ChargeSpeed::AUTO;   // 温和 / 自动 / 快速
+  // AOD（熄屏显示）—— 默认只在插电时出现，电池仍按 batSleepSec 熄屏。
+  uint8_t      aodMode       = aod::USB;             // 关 / 仅插电 / 常开
+  uint16_t     aodIdleSec    = 120;                  // 60 / 120 / 300
+  uint8_t      aodNightCap   = 1;                    // 0=一档 1=两档 2=跟随用户
   char         brokerHost[40] = "192.168.31.15";
   uint16_t     brokerPort    = 1883;
 };
