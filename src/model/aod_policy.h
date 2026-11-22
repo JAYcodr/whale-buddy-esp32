@@ -14,31 +14,35 @@ enum Mode : uint8_t {
 constexpr uint16_t kMinIdleSec  = 30;   // 进入待机的下限，防止设置写坏后秒进
 constexpr uint8_t  kLowBattPct  = 10;   // 电池常开时低于这个就退出并熄屏
 
+// 闲置时长只看端侧输入：触摸 / 按键。**不看宿主的运行会话**——
+// 一个跑五六个小时的任务不该让屏幕亮一整天，到点就该进表盘。
+inline uint32_t idleSince(uint32_t nowMs, uint32_t lastInputMs) {
+  return (nowMs > lastInputMs) ? (nowMs - lastInputMs) : 0;
+}
+
 inline uint32_t idleMsFor(uint16_t idleSec) {
   uint32_t s = (idleSec < kMinIdleSec) ? kMinIdleSec : idleSec;
   return s * 1000u;
 }
 
-// 进入：模式允许 + 供电条件满足 + 没有活 + 屏亮着 + 没翻扣 + 闲够久。
-// 阈值用毫秒传进来：电池常开时调用方会把它压到 batSleepSec，免得 30s 先熄屏。
-inline bool shouldEnter(uint8_t mode, bool usb, uint16_t run, uint16_t wait, bool approval,
-                        bool apMode, bool screenOff, bool dimmed, uint32_t idleMs,
-                        uint32_t thresholdMs) {
+// 进入：模式允许 + 供电条件满足 + 屏亮着 + 没翻扣 + 端侧没输入够久。
+// 审批 / 配网是例外（要人看）。**任务是否在跑不参与判定**：长任务照样进表盘。
+inline bool shouldEnter(uint8_t mode, bool usb, bool approval, bool apMode, bool screenOff,
+                        bool dimmed, uint32_t idleMs, uint32_t thresholdMs) {
   if (mode != USB && mode != ALWAYS) return false;
   if (mode == USB && !usb) return false;
   if (approval || apMode || screenOff || dimmed) return false;
-  if (run > 0 || wait > 0) return false;
   if (thresholdMs < (uint32_t)kMinIdleSec * 1000u) thresholdMs = (uint32_t)kMinIdleSec * 1000u;
   return idleMs >= thresholdMs;
 }
 
 // 退出：比进入宽。翻扣（dimmed）不算退出 —— 那是主动遮屏，保持 AOD 只把亮度压到 0。
-inline bool shouldExit(uint8_t mode, bool usb, uint16_t run, uint16_t wait, bool approval,
-                       bool apMode, bool screenOff, uint8_t pct) {
+// 任务开始/结束也不退出：表盘上的状态行会自己更新，屏幕不用整夜亮着。
+inline bool shouldExit(uint8_t mode, bool usb, bool approval, bool apMode, bool screenOff,
+                       uint8_t pct) {
   if (mode != USB && mode != ALWAYS) return true;
   if (mode == USB && !usb) return true;
   if (approval || apMode || screenOff) return true;
-  if (run > 0 || wait > 0) return true;
   if (!usb && pct <= kLowBattPct) return true;
   return false;
 }

@@ -765,8 +765,14 @@ void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
   if (st.nTokenDays > 0) {
     formatTokenShort(st.tokenDays[st.nTokenDays - 1].tokens, today, sizeof(today));
   }
-  char statusBuf[64];
-  if (today[0]) {
+  char statusBuf[72];
+  if (st.run > 0) {
+    // 长任务期间也进 AOD，所以「还在干活」必须留在表盘上，不能只剩一个钟。
+    if (today[0]) snprintf(statusBuf, sizeof(statusBuf), "运行 %u · 会话 %u · 今日 %s",
+                           (unsigned)st.run, (unsigned)st.sess, today);
+    else snprintf(statusBuf, sizeof(statusBuf), "运行 %u · 会话 %u",
+                  (unsigned)st.run, (unsigned)st.sess);
+  } else if (today[0]) {
     snprintf(statusBuf, sizeof(statusBuf), "会话 %u · 今日 %s", (unsigned)st.sess, today);
   } else {
     snprintf(statusBuf, sizeof(statusBuf), "会话 %u · 待命中", (unsigned)st.sess);

@@ -196,6 +196,7 @@ void uiTaskFn(void*) {
   bool     aodActive = false;
   bool     aodForced = false;       // 串口 aodforce 打开的验收模式
   uint32_t aodEnterMs = 0;
+  NvaAnimKey aodPoseApplied = NvaAnimKey::COUNT;
   bool     swallowTap = false;      // 唤醒 AOD 的那一击不派发
   uint8_t  lastAppliedBright = 255;
   uint32_t uiBusyUs = 0;
@@ -316,6 +317,8 @@ void uiTaskFn(void*) {
     novaStateRead(&st);
 
     // ── AOD（熄屏待机）状态机 ────────────────────────────────────────
+    // 闲置只看端侧输入（触摸/按键/PEK）。宿主的运行会话不参与判定：
+    // 一个跑五六个小时的任务也该在 N 分钟后进表盘，不能亮一整天。
     // 进入阈值：电池常开时压到 batSleepSec，否则「30 秒先熄屏、120 秒才想进 AOD」永远轮不到。
     uint32_t aodThresholdMs = aod::idleMsFor(cfg.aodIdleSec);
     if (cfg.aodMode == aod::ALWAYS && !snap.battery.usbPresent) {
@@ -331,31 +334,45 @@ void uiTaskFn(void*) {
         aodEnterMs = nowMs;
         lastAppliedBright = 255;
         needFull = true;
-        nvaSetState(NvaAnimKey::SLEEP, false);
       } else if (!aodForced && aodActive) {
         aodActive = false;
+        aodPoseApplied = NvaAnimKey::COUNT;
         lastAppliedBright = 255;
         needFull = true;
       }
     }
     if (aodActive) {
       const bool exitNow = !aodForced &&
-          (aod::shouldExit(cfg.aodMode, snap.battery.usbPresent, st.run, st.wait,
-                           st.approvalActive, st.wifiApMode, screenOff, st.battPct) ||
-           nav.currentPage() != UiPage::HOME);
+          aod::shouldExit(cfg.aodMode, snap.battery.usbPresent, st.approvalActive,
+                          st.wifiApMode, screenOff, st.battPct);
       if (exitNow) {
         aodActive = false;
+        aodPoseApplied = NvaAnimKey::COUNT;
         lastAppliedBright = 255;
         needFull = true;
       }
-    } else if (!aodForced && aod::shouldEnter(cfg.aodMode, snap.battery.usbPresent, st.run, st.wait,
-                                st.approvalActive, st.wifiApMode, screenOff, dimmedForNap,
-                                nowMs - lastInteractMs, aodThresholdMs)) {
+    } else if (!aodForced && aod::shouldEnter(cfg.aodMode, snap.battery.usbPresent,
+                                              st.approvalActive, st.wifiApMode, screenOff,
+                                              dimmedForNap,
+                                              aod::idleSince(nowMs, lastInteractMs),
+                                              aodThresholdMs)) {
       aodActive = true;
       aodEnterMs = nowMs;
       lastAppliedBright = 255;
       needFull = true;
-      nvaSetState(NvaAnimKey::SLEEP, false);
+    }
+
+    // AOD 定格姿势：有任务摆 WORKING、等审批摆 WAITING、其余 SLEEP。
+    // 换姿势时重开 0.9s 解码窗口，解出一帧后冻结。
+    if (aodActive) {
+      const NvaAnimKey want = (st.run > 0) ? NvaAnimKey::WORKING
+                            : (st.wait > 0 ? NvaAnimKey::WAITING : NvaAnimKey::SLEEP);
+      if (want != aodPoseApplied) {
+        aodPoseApplied = want;
+        aodEnterMs = nowMs;
+        nvaSetState(want, false);
+        needFull = true;
+      }
     }
 
     // 观测字段：探针从 stat 读这些，别让它们跟主状态错过一整轮。
@@ -697,6 +714,7 @@ void uiTaskFn(void*) {
         }
         if (aodActive) {
           aodActive = false;
+          aodPoseApplied = NvaAnimKey::COUNT;
           aodForced = false;
           lastAppliedBright = 255;
           needFull = true;
@@ -779,6 +797,7 @@ void uiTaskFn(void*) {
       } else if (ev.type == InputEvtType::KEY1_DOWN) {
         if (aodActive) {
           aodActive = false;
+          aodPoseApplied = NvaAnimKey::COUNT;
           aodForced = false;
           lastAppliedBright = 255;
           needFull = true;
@@ -955,8 +974,7 @@ void uiTaskFn(void*) {
       oneShotActive = false;
       nvaSetState(NvaAnimKey::WAITING, false);
     } else if (aodActive) {
-      // AOD 期间宠物定格，任何自动状态机都不许改它。
-      nvaSetState(NvaAnimKey::SLEEP, false);
+      // AOD 期间宠物定格：姿势由上面的 aodPose 逻辑统一设置，这里什么都不做。
     } else if (demoIdx >= 0 && demoIdx <= 8) {
       clickAnimActive = false;
       oneShotActive = false;

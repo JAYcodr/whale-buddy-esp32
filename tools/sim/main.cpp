@@ -344,6 +344,12 @@ static void mutateAodTime(NovaState& st, NovaSettings&) {
   st.hour = 23; st.minute = 41; st.second = 0;
 }
 
+static void mutateAodIdle(NovaState& st, NovaSettings& cfg) {
+  mutateAodTime(st, cfg);
+  st.run = 0;
+  st.wait = 0;
+}
+
 static void mutateAodNoTime(NovaState& st, NovaSettings& cfg) {
   mutateAodTime(st, cfg);
   st.timeValid = false;
@@ -400,6 +406,7 @@ int main(int argc, char** argv) {
     { "tokens_empty", UiPage::TOKENS, false, 0, 6500, mutateTokensEmpty, nullptr },
     { "settings_display", UiPage::SETTINGS, false, 3, 6500, nullptr, nullptr },
     { "aod", UiPage::HOME, false, 0, 6500, mutateAodTime, nullptr, true },
+    { "aod_idle", UiPage::HOME, false, 0, 6500, mutateAodIdle, nullptr, true },
     { "aod_nolock", UiPage::HOME, false, 0, 6500, mutateAodNoTime, nullptr, true },
   };
 
@@ -418,8 +425,10 @@ int main(int argc, char** argv) {
     pageSettingsSetTab(cs.settingsTab);
     nav.setPage(cs.page);
     if (cs.aod) {
-      // 真机在进入 AOD 时切 SLEEP 并解出一帧；模拟器同样先播三帧再定格。
-      nvaSetState(NvaAnimKey::SLEEP, false);
+      // 真机按 run/wait 选定格姿势；模拟器同样先播三帧再定格。
+      const NvaAnimKey pose = (st.run > 0) ? NvaAnimKey::WORKING
+                            : (st.wait > 0 ? NvaAnimKey::WAITING : NvaAnimKey::SLEEP);
+      nvaSetState(pose, false);
       for (int i = 0; i < 3; i++) nvaTick(cs.drawNowMs + (uint32_t)i * 120u);
       pageHomeDrawAod(canvas, st, cs.drawNowMs);
     } else {
