@@ -5,6 +5,7 @@ import mqtt from 'mqtt';
 import { fetchAllQuota, fetchModelDialRank, saveOpenDesignCookie } from '../lib/fetchers.js';
 import { generateChoreography, loadAiConfig, synthesizeSpeechAdpcm } from '../lib/ai.js';
 import { createTokenCollector } from '../lib/tokens.js';
+import { createPowerStore } from '../lib/power.js';
 
 const args = process.argv.slice(2);
 const brokerUrl = process.env.NOVA_MQTT_URL || 'mqtt://192.168.31.15:1883';
@@ -156,6 +157,114 @@ async function cmdTestPush() {
   console.log(`已推送到 nova/${devId}/*`);
 }
 
+function formatDrainRate(label, bucket) {
+  if (!bucket) return `${label}: 样本不足`;
+  return `${label}: ${bucket.pctPerHour}%/h（估算满电 ${bucket.estHours}h，基于 ${bucket.cycles} 个周期 ${bucket.totalHours}h）`;
+}
+
+async function cmdPower() {
+  const devId = argVal('--id', '');
+  const wantJson = args.includes('--json');
+  const watchRaw = argVal('--watch', '');
+  const watchSec = args.includes('--watch') ? Math.max(1, Number(watchRaw || 15)) : 0;
+
+  const store = createPowerStore({ log: (m) => console.log(m) });
+
+  if (watchSec > 0) {
+    const client = await connectMqtt();
+    const filterTopic = devId ? [`nova/${devId}/up`] : ['nova/+/up'];
+    client.subscribe(filterTopic, { qos: 1 });
+    console.log(`监听电源事件 ${watchSec}s (${filterTopic[0]})...`);
+    await new Promise((resolve) => {
+      const t = setTimeout(resolve, watchSec * 1000);
+      client.on('message', (topic, buf) => {
+        const parts = topic.split('/');
+        if (parts.length !== 3 || parts[0] !== 'nova' || parts[2] !== 'up') return;
+        let data;
+        try {
+          data = JSON.parse(buf.toString('utf8'));
+        } catch {
+          return;
+        }
+        if (data?.evt === 'pwr') {
+          store.recordPowerEvent(parts[1], data);
+          if (!wantJson) {
+            console.log(
+              `[${parts[1]}] pwr why=${data.why} seq=${data.seq} ${data.pct}% (${data.mv}mV st=${data.st} vb=${data.vb ?? 0} vs=${data.vs ?? 0})`,
+            );
+          }
+        } else if (data?.evt === 'stat') {
+          store.recordStat(parts[1], data);
+        }
+      });
+      process.once('SIGINT', () => {
+        clearTimeout(t);
+        resolve();
+      });
+    });
+    await store.flush();
+    client.end();
+  }
+
+  const report = store.getReport(devId || undefined);
+  if (!report) {
+    if (wantJson) {
+      console.log(JSON.stringify({ deviceId: devId || null, storage: store.storageStats() }));
+    } else {
+      const st = store.storageStats();
+      console.log(`暂无已记录的设备电源画像（数据目录: ${st.dataDir}）`);
+    }
+    return;
+  }
+
+  if (wantJson) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  const evt = report.lastEvent;
+  const st = report.lastStat;
+  console.log(`设备 ${report.deviceId} 电源分析报告`);
+  if (evt) {
+    console.log(
+      `最新关键帧 (${evt.why}): ${evt.pct}% | VBAT=${evt.mv}mV (comp=${evt.cmv}mV) | VBUS=${evt.vb}mV | VSYS=${evt.vs}mV | stage=${evt.stageName} | tmp=${evt.tmp}°C`,
+    );
+  }
+  if (st) {
+    console.log(
+      `最新状态帧: ${st.pct}% (${st.mv}mV ${st.stageName}) | lcd=${st.lcd ? 'on' : 'off'} aod=${st.aod ? 'on' : 'off'} mhz=${st.mhz} rssi=${st.rssi}`,
+    );
+  }
+  if (report.lastBoot) {
+    const b = report.lastBoot;
+    console.log(
+      `最近开机黑匣子: on=[${b.onTags.join(',') || b.onSrc}] off=[${b.offTags.join(',') || b.offSrc}] bootMv=${b.bootMv} seed=${b.seed} lost=${b.lost}`,
+    );
+  }
+  const cal = report.calibration;
+  console.log(
+    `校准参数: chgMohm=${cal.chgMohm ?? '-'} mΩ (累计变化 ${cal.mohmDelta >= 0 ? '+' : ''}${cal.mohmDelta} mΩ) | designMah=${cal.designMah ?? '-'} | probes=${cal.probeCount} | gauge偏差=${cal.avgGaugeBiasPct ?? '-'}%`,
+  );
+  console.log('续航消耗模型:');
+  console.log(`  ${formatDrainRate('综合', report.drainRates.overall)}`);
+  console.log(`  ${formatDrainRate('亮屏', report.drainRates.screenOn)}`);
+  console.log(`  ${formatDrainRate('AOD', report.drainRates.aod)}`);
+  console.log(`  ${formatDrainRate('息屏待机', report.drainRates.idle)}`);
+  if (report.chargeProfile) {
+    const cp = report.chargeProfile;
+    console.log(
+      `充电画像 (${cp.cycles} 周期 ${cp.totalHours}h): 均速=${cp.avgPctPerHour ?? '-'}%/h | VBUS最低=${cp.minVbusMv || '-'}mV | VSYS最低=${cp.minVsysMv || '-'}mV | 限流占比=${Math.round(cp.vbusLimRatio * 100)}% | 温控=${cp.thermalSec}s`,
+    );
+  }
+  if (report.alerts.length > 0) {
+    console.log(`预警: ${report.alerts.join('；')}`);
+  }
+  const disk = report.storage;
+  console.log(
+    `磁盘占用: ${(disk.totalBytes / 1024).toFixed(1)} KiB（日志上限 ${(disk.maxLogTotalBytes / 1024).toFixed(0)} KiB，目录 ${disk.dataDir}）`,
+  );
+}
+
 if (args[0] === 'auth' && args[1] === 'opendesign') {
   await cmdAuthOpenDesign();
 } else if (args[0] === 'test-push') {
@@ -164,10 +273,13 @@ if (args[0] === 'auth' && args[1] === 'opendesign') {
   await cmdTestChoreo();
 } else if (args[0] === 'test-tts') {
   await cmdTestTts();
+} else if (args[0] === 'power') {
+  await cmdPower();
 } else {
   console.log(
     '可用命令:\n' +
       '  nova-buddy auth opendesign --paste\n' +
+      '  nova-buddy power [--id D93468] [--watch 15] [--json]\n' +
       '  nova-buddy test-push [--id D93468] [--approval]\n' +
       '  nova-buddy test-choreo [--id D93468]\n' +
       '  nova-buddy test-tts [--id D93468] [--text "..."] [--voice 冰糖]',

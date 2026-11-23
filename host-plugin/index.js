@@ -31,6 +31,7 @@ export function apply(ctx, config = {}) {
     quietHours: config.quietHours,
     choreoIntervalMs: config.choreoIntervalMs,
     tokensEnabled: config.tokens !== false,
+    powerLogEnabled: config.powerLog !== false,
     log,
   });
 

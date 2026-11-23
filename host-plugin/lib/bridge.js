@@ -2,6 +2,7 @@ import mqtt from 'mqtt';
 import { fetchAllQuota, fetchModelDialRank } from './fetchers.js';
 import { generateChoreography, loadAiConfig, synthesizeSpeechAdpcm } from './ai.js';
 import { createTokenCollector } from './tokens.js';
+import { createPowerStore, stageNameOf } from './power.js';
 
 const TTS_CHUNK_BYTES = 1800;
 
@@ -131,6 +132,12 @@ export function createNovaBridge(options = {}) {
     log,
     enabled: options.tokensEnabled !== false,
     dshHome: options.dshHome,
+  });
+  const powerStore = createPowerStore({
+    log,
+    enabled: options.powerLogEnabled !== false,
+    dshHome: options.dshHome,
+    ...(options.powerStoreOptions || {}),
   });
 
   const devices = new Map(); // id -> { online, lastSeen, meta, prefs, stat }
@@ -423,6 +430,13 @@ export function createNovaBridge(options = {}) {
       }
     } else if (data?.evt === 'stat') {
       devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now(), stat: data });
+      powerStore.recordStat(id, data);
+    } else if (data?.evt === 'pwr') {
+      devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now(), pwr: data });
+      powerStore.recordPowerEvent(id, data);
+      log(
+        `device ${id} pwr ${data.why}: ${data.pct}% (${data.mv}mV ${stageNameOf(data.st)} vb=${data.vb ?? 0} vs=${data.vs ?? 0} mohm=${data.mohm ?? '-'})`,
+      );
     } else if (data?.evt === 'prefs') {
       const prev = devices.get(id) || {};
       const prefs = {
@@ -674,7 +688,7 @@ export function createNovaBridge(options = {}) {
   }
 
   function stop() {
-    if (closed) return;
+    if (closed) return powerStore.flush();
     closed = true;
     if (stateTimer) clearTimeout(stateTimer);
     if (quotaTimer) clearInterval(quotaTimer);
@@ -686,6 +700,7 @@ export function createNovaBridge(options = {}) {
       settleApproval(apId, { kind: 'abort' }, { notifyDeviceEnd: true });
     }
     client?.end?.(true);
+    return powerStore.flush();
   }
 
   return {
@@ -699,6 +714,9 @@ export function createNovaBridge(options = {}) {
     refreshRank,
     refreshChoreo,
     refreshTokens,
+    getPowerReport: (id) => powerStore.getReport(id),
+    flushPower: () => powerStore.flush(),
+    powerStore,
     publishTts,
     publishTo,
     onlineIds,
