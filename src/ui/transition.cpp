@@ -1,6 +1,7 @@
 #include "ui/transition.h"
 #include "ui/canvas.h"
 #include "ui/easing.h"
+#include "ui/theme.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +15,8 @@
 
 namespace {
 
-constexpr int16_t kSlideSplitY = 46;  // Keep top clock/status steady during horizontal slides.
+constexpr int16_t kSlideSplitY     = 46;  // Keep top clock/status steady during horizontal slides.
+constexpr int16_t kSlidePillSplitY = 60;  // 启用圆点插值时同时固定圆点带（46..59），只重绘圆点小矩形。
 constexpr int32_t kDimMinScale = 154; // round(0.6 * 256)
 constexpr int32_t kDimSpan     = 256 - kDimMinScale;
 // 模态弹窗位移量：小位移 + 淡变，比纯交叉淡化更有“落位”感，又不至于像整页滑动。
@@ -138,7 +140,7 @@ bool transBuffers(uint16_t** from, uint16_t** to) {
 }
 
 void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
-              TransKind kind, uint32_t ms) {
+              TransKind kind, uint32_t ms, const TransPillOpts* pills) {
   uint16_t* fb = canvas.getFramebuffer();
   const size_t pxCount = (size_t)UI_W * UI_H;
   const size_t fbBytes = pxCount * sizeof(uint16_t);
@@ -147,6 +149,7 @@ void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
   (void)from;
   (void)kind;
   (void)ms;
+  (void)pills;
   if (fb && to) memcpy(fb, to, fbBytes);
   return;
 #else
@@ -158,9 +161,13 @@ void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
     return;
   }
 
+  const bool usePillFollow = (pills && pills->fromDot >= 0 && pills->toDot >= 0 &&
+                              pills->totalDots > 0 &&
+                              (kind == TransKind::SLIDE_LEFT || kind == TransKind::SLIDE_RIGHT));
+  const int16_t slideSplitY = usePillFollow ? kSlidePillSplitY : kSlideSplitY;
   if (kind == TransKind::SLIDE_LEFT || kind == TransKind::SLIDE_RIGHT) {
     // Keep top status/clock band fixed from destination frame during horizontal slides.
-    memcpy(fb, to, (size_t)kSlideSplitY * UI_W * sizeof(uint16_t));
+    memcpy(fb, to, (size_t)slideSplitY * UI_W * sizeof(uint16_t));
   }
 
   const int64_t tStartUs = esp_timer_get_time();
@@ -183,7 +190,7 @@ void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
         if (offset > UI_W) offset = UI_W;
         int keepFrom = UI_W - offset;
         bool enterFromRight = (kind == TransKind::SLIDE_LEFT);
-        for (int y = kSlideSplitY; y < UI_H; y++) {
+        for (int y = slideSplitY; y < UI_H; y++) {
           uint16_t* dstRow = fb + (size_t)y * UI_W;
           const uint16_t* srcFrom = from + (size_t)y * UI_W;
           const uint16_t* srcTo   = to   + (size_t)y * UI_W;
@@ -202,6 +209,11 @@ void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
               memcpy(dstRow + offset, srcFrom, (size_t)keepFrom * sizeof(uint16_t));
             }
           }
+        }
+        if (usePillFollow) {
+          ui::drawPagePillsSlide(canvas, (int16_t)(UI_W / 2 + pills->ox),
+                                 (int16_t)(52 + pills->oy),
+                                 pills->fromDot, pills->toDot, pills->totalDots, u);
         }
         break;
       }

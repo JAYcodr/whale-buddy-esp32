@@ -623,7 +623,19 @@ void uiTaskFn(void*) {
       }
     };
 
-    auto playTransition = [&](TransKind kind, uint32_t ms) {
+    auto makeSlidePillOpts = [&](UiPage fromP, UiPage toP, TransPillOpts* out) -> const TransPillOpts* {
+      const int fromDot = uiPageRingIndex(fromP);
+      const int toDot   = uiPageRingIndex(toP);
+      if (fromDot < 0 || fromDot >= 5 || toDot < 0 || toDot >= 5 || fromDot == toDot) {
+        return nullptr;
+      }
+      *out = { (int8_t)fromDot, (int8_t)toDot, 5,
+               ui::burnOffsetX(st.burnInStep), ui::burnOffsetY(st.burnInStep) };
+      return out;
+    };
+
+    auto playTransition = [&](TransKind kind, uint32_t ms,
+                              const TransPillOpts* pills = nullptr) {
       uint16_t* from = nullptr;
       uint16_t* to   = nullptr;
       uint16_t* fb   = canvas ? canvas->getFramebuffer() : nullptr;
@@ -641,7 +653,7 @@ void uiTaskFn(void*) {
       nav.draw(*canvas, st, cfg, frame, nowMs);
       memcpy(to, fb, fbBytes);
       uiAnimating = true;
-      transRun(*canvas, from, to, kind, ms);
+      transRun(*canvas, from, to, kind, ms, pills);
       uiAnimating = false;
       needFull = false;
       frame++;
@@ -710,7 +722,9 @@ void uiTaskFn(void*) {
           } else if (prevPage == UiPage::SETTINGS && newPage != UiPage::SETTINGS) {
             playTransition(TransKind::SHEET_DOWN, 220);
           } else if (slideDir != 0) {
-            playTransition(slideDir > 0 ? TransKind::SLIDE_LEFT : TransKind::SLIDE_RIGHT, 180);
+            TransPillOpts pillOpts;
+            playTransition(slideDir > 0 ? TransKind::SLIDE_LEFT : TransKind::SLIDE_RIGHT,
+                           180, makeSlidePillOpts(prevPage, newPage, &pillOpts));
           }
           break;
         }
@@ -1050,7 +1064,8 @@ void uiTaskFn(void*) {
             TransKind kind = (uiPageRingIndex(next) > uiPageRingIndex(prev))
                                ? TransKind::SLIDE_LEFT
                                : TransKind::SLIDE_RIGHT;
-            playTransition(kind, 180);
+            TransPillOpts pillOpts;
+            playTransition(kind, 180, makeSlidePillOpts(prev, next, &pillOpts));
           }
         }
         key1DownAt = 0;

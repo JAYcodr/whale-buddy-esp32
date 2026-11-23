@@ -3,6 +3,8 @@
 #include "model/state.h"
 #include "ui/aafont.h"
 #include "ui/canvas.h"
+#include "ui/easing.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -289,14 +291,23 @@ inline void drawBatteryIcon(NovaCanvas& c, int16_t rightX, int16_t centerY,
   drawTextRight(c, fontAscii14(), bx - 6, centerY + 6, pctStr, col, COL_BG);
 }
 
+inline int16_t pagePillDotX(int16_t px0, int i, int activeDot) {
+  constexpr int16_t activeW = 18;
+  constexpr int16_t dotW    = 5;
+  constexpr int16_t gap     = 7;
+  int16_t x = (int16_t)(px0 + i * (dotW + gap));
+  if (i > activeDot) x = (int16_t)(x + (activeW - dotW));
+  return x;
+}
+
 inline void drawPagePills(NovaCanvas& c, int16_t centerX, int16_t centerY,
                           int activeDot, int totalDots) {
   if (totalDots <= 0) return;
-  const int16_t activeW = 18;
-  const int16_t dotW = 5;
-  const int16_t gap = 7;
-  int16_t totalW = (totalDots - 1) * (dotW + gap) + activeW;
-  int16_t px = centerX - totalW / 2;
+  constexpr int16_t activeW = 18;
+  constexpr int16_t dotW = 5;
+  constexpr int16_t gap = 7;
+  int16_t totalW = (int16_t)((totalDots - 1) * (dotW + gap) + activeW);
+  int16_t px = (int16_t)(centerX - totalW / 2);
   for (int i = 0; i < totalDots; i++) {
     bool act = (i == activeDot);
     int16_t w = act ? activeW : dotW;
@@ -304,6 +315,49 @@ inline void drawPagePills(NovaCanvas& c, int16_t centerX, int16_t centerY,
     aaFillRoundRect(c, px, centerY - 2, w, 4, 2, col, col);
     px += w + gap;
   }
+}
+
+// 滑屏期间仅重绘圆点小矩形：背景圆点按插值位移，高亮胶囊先拉长后收回（类 iOS 页面指示器）。
+inline void drawPagePillsSlide(NovaCanvas& c, int16_t centerX, int16_t centerY,
+                               int fromDot, int toDot, int totalDots, float u) {
+  if (totalDots <= 0) return;
+  if (fromDot < 0) fromDot = 0;
+  if (fromDot >= totalDots) fromDot = totalDots - 1;
+  if (toDot < 0) toDot = 0;
+  if (toDot >= totalDots) toDot = totalDots - 1;
+
+  constexpr int16_t activeW = 18;
+  constexpr int16_t dotW    = 5;
+  constexpr int16_t gap     = 7;
+  const int16_t totalW = (int16_t)((totalDots - 1) * (dotW + gap) + activeW);
+  const int16_t px0    = (int16_t)(centerX - totalW / 2);
+
+  c.fillRect((int16_t)(px0 - 2), (int16_t)(centerY - 3), (int16_t)(totalW + 4), 6, COL_BG);
+
+  const float moveE = ease::outCubic(u);
+  for (int i = 0; i < totalDots; i++) {
+    const float fx = (float)pagePillDotX(px0, i, fromDot);
+    const float tx = (float)pagePillDotX(px0, i, toDot);
+    const int16_t dx = (int16_t)lroundf(ease::lerp(fx, tx, moveE));
+    aaFillRoundRect(c, dx, (int16_t)(centerY - 2), dotW, 4, 2, COL_MUTED, COL_MUTED);
+  }
+
+  const float xFrom = (float)pagePillDotX(px0, fromDot, fromDot);
+  const float xTo   = (float)pagePillDotX(px0, toDot, toDot);
+  const float pLead  = ease::outQuart(u);
+  const float pTrail = ease::inOutCubic(u);
+  float xL, xR;
+  if (xTo >= xFrom) {
+    xL = ease::lerp(xFrom, xTo, pTrail);
+    xR = ease::lerp(xFrom + activeW, xTo + activeW, pLead);
+  } else {
+    xL = ease::lerp(xFrom, xTo, pLead);
+    xR = ease::lerp(xFrom + activeW, xTo + activeW, pTrail);
+  }
+  const int16_t ixL = (int16_t)lroundf(xL);
+  int16_t iw = (int16_t)lroundf(xR) - ixL;
+  if (iw < dotW) iw = dotW;
+  aaFillRoundRect(c, ixL, (int16_t)(centerY - 2), iw, 4, 2, COL_ACCENT, COL_ACCENT);
 }
 
 inline int16_t burnOffsetX(uint8_t step) {
