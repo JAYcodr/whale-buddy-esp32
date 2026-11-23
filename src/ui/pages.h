@@ -49,6 +49,9 @@ struct UiAction {
   int  value = 0;
 };
 
+// 设置类 UiAction → kSettings：命中则校准后写入并 settingsSave()。
+bool settingsApplyAction(UiAction::Kind kind, int value);
+
 void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame);
 void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame,
                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);

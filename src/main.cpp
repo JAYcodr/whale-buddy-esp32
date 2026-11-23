@@ -513,84 +513,6 @@ void uiTaskFn(void*) {
           }
           break;
         }
-        case UiAction::SET_HOME:
-          settingsMut().homePage = (HomePageKind)act.value;
-          settingsSave();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_POWER:
-          settingsMut().powerProfile = (PowerProfile)act.value;
-          settingsSave();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_SOUND:
-          settingsMut().soundPct = (uint8_t)((act.value < 0) ? 0 : (act.value > 100 ? 100 : act.value));
-          settingsSave();
-          netPublishPrefs();
-          if (settingsGet().soundPct > 0) sfxPlay(SfxKind::NAV_CHIRP, settingsGet().soundPct);
-          break;
-        case UiAction::SET_BRIGHT:
-          settingsMut().brightLevel = (uint8_t)act.value;
-          settingsSave();
-          bright.invalidate();   // 交给统一亮度逻辑落地
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_TTS:
-          settingsMut().ttsEnabled = (act.value != 0);
-          settingsSave();
-          netPublishPrefs();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_QUIET:
-          settingsMut().quietHours = (act.value != 0);
-          settingsSave();
-          netPublishPrefs();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_BATSLEEP:
-          settingsMut().batSleepSec = (uint16_t)(act.value >= 10 ? act.value : 30);
-          settingsSave();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_CHGLIMIT:
-          settingsMut().chargeLimitPct =
-              (uint8_t)((act.value == 80 || act.value == 90 || act.value == 100) ? act.value : 90);
-          settingsSave();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_AOD_MODE:
-          settingsMut().aodMode =
-              (uint8_t)((act.value >= 0 && act.value <= 2) ? act.value : (int)aod::USB);
-          settingsSave();
-          bright.invalidate();
-          needFull = true;
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_AOD_IDLE:
-          settingsMut().aodIdleSec =
-              (uint16_t)((act.value == 60 || act.value == 120 || act.value == 300) ? act.value : 120);
-          settingsSave();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_AOD_NIGHT:
-          settingsMut().aodNightCap =
-              (uint8_t)((act.value >= 0 && act.value <= 2) ? act.value : 1);
-          settingsSave();
-          bright.invalidate();
-          needFull = true;
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_CHGSPEED:
-          settingsMut().chargeSpeed = (ChargeSpeed)((act.value >= 0 && act.value <= 2) ? act.value : 1);
-          settingsSave();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
-        case UiAction::SET_CHOREO:
-          settingsMut().choreoEnabled = (act.value != 0);
-          settingsSave();
-          netPublishPrefs();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          break;
         case UiAction::TEST_SOUND:
           if (!sfxSpeakFile("/audio/tap0.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
             sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
@@ -692,7 +614,37 @@ void uiTaskFn(void*) {
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           needFull = true;
           break;
-        default: break;
+        default:
+          if (settingsApplyAction(act.kind, act.value)) {
+            switch (act.kind) {
+              case UiAction::SET_SOUND:
+                netPublishPrefs();
+                if (settingsGet().soundPct > 0) {
+                  sfxPlay(SfxKind::NAV_CHIRP, settingsGet().soundPct);
+                }
+                break;
+              case UiAction::SET_TTS:
+              case UiAction::SET_QUIET:
+              case UiAction::SET_CHOREO:
+                netPublishPrefs();
+                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+                break;
+              case UiAction::SET_BRIGHT:
+                bright.invalidate();   // 交给统一亮度逻辑落地
+                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+                break;
+              case UiAction::SET_AOD_MODE:
+              case UiAction::SET_AOD_NIGHT:
+                bright.invalidate();
+                needFull = true;
+                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+                break;
+              default:
+                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+                break;
+            }
+          }
+          break;
       }
     };
 

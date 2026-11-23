@@ -35,6 +35,7 @@ void settingsFieldSet(NovaSettings& cfg, const SettingDef& d, uint16_t v) {
 }
 
 uint16_t settingsSanitize(const SettingDef& d, uint16_t v) {
+  if (d.kind == SettingKind::BOOL) return (v != 0) ? 1 : 0;
   if (d.choices && d.nChoices) {
     for (uint8_t i = 0; i < d.nChoices; i++) {
       if (d.choices[i] == v) return v;
