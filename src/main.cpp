@@ -483,7 +483,7 @@ void uiTaskFn(void*) {
         if (!wasApprovalActive) {
           wasApprovalActive = true;
           if (!screenOff && !dimmedForNap && !snap.faceDown) {
-            playTransition(TransKind::FADE, 150);
+            playTransition(TransKind::POP_IN, 200);
           } else {
             needFull = true;
           }
@@ -492,7 +492,7 @@ void uiTaskFn(void*) {
         }
       } else if (wasApprovalActive) {
         wasApprovalActive = false;
-        playTransition(TransKind::FADE, 150);
+        playTransition(TransKind::POP_OUT, 170);
       } else {
         needFull = true;
       }
@@ -584,7 +584,7 @@ void uiTaskFn(void*) {
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::ACCEPT, cfg.soundPct);
-          playTransition(TransKind::FADE, 150);
+          playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::DENY:
           netPublishDecision(st.apId, false, false);
@@ -597,7 +597,7 @@ void uiTaskFn(void*) {
           oneShotSafetyEndMs = nowMs + 8500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::DENY, cfg.soundPct);
-          playTransition(TransKind::FADE, 150);
+          playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::TO_PC:
           netPublishDecision(st.apId, false, true);
@@ -610,7 +610,7 @@ void uiTaskFn(void*) {
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          playTransition(TransKind::FADE, 150);
+          playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::RANK_REDRAW:
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);

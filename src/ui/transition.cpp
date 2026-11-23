@@ -1,5 +1,6 @@
 #include "ui/transition.h"
 #include "ui/canvas.h"
+#include "ui/easing.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,9 @@ namespace {
 constexpr int16_t kSlideSplitY = 46;  // Keep top clock/status steady during horizontal slides.
 constexpr int32_t kDimMinScale = 154; // round(0.6 * 256)
 constexpr int32_t kDimSpan     = 256 - kDimMinScale;
+// 模态弹窗位移量：小位移 + 淡变，比纯交叉淡化更有“落位”感，又不至于像整页滑动。
+constexpr int kPopRisePx = 22;
+constexpr int kPopSinkPx = 14;
 
 uint16_t* s_transFrom = nullptr;
 uint16_t* s_transTo   = nullptr;
@@ -168,8 +172,8 @@ void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
     if (elapsedUs < 0) elapsedUs = 0;
 
     float u = (float)elapsedUs / (float)durUs;
-    float inv = 1.0f - u;
-    float ease = 1.0f - inv * inv * inv;
+    // 进入类模态用 outQuart（收尾更柔），其余保持原 outCubic 手感不变。
+    float ease = (kind == TransKind::POP_IN) ? ease::outQuart(u) : ease::outCubic(u);
 
     switch (kind) {
       case TransKind::SLIDE_LEFT:
@@ -235,6 +239,30 @@ void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
         if (alpha5 < 0) alpha5 = 0;
         if (alpha5 > 32) alpha5 = 32;
         blendFrame(fb, from, to, pxCount, (uint32_t)alpha5);
+        break;
+      }
+      case TransKind::POP_IN:
+      case TransKind::POP_OUT: {
+        int alpha5 = (int)(ease * 32.0f + 0.5f);
+        if (alpha5 < 0) alpha5 = 0;
+        if (alpha5 > 32) alpha5 = 32;
+        const bool popIn = (kind == TransKind::POP_IN);
+        // POP_IN：目标帧整体下移 off 行后逐渐归位；POP_OUT：源帧逐渐下沉 off 行。
+        // 逐行取偏移后的源行再做与 FADE 相同的 alpha 混合，开销与 FADE 持平。
+        const int off = popIn ? (int)((1.0f - ease) * kPopRisePx + 0.5f)
+                              : (int)(ease * kPopSinkPx + 0.5f);
+        for (int y = 0; y < UI_H; y++) {
+          int fy = y, ty = y;
+          if (popIn) {
+            ty = y - off;          // 目标帧内容出现在下方 off 行处
+            if (ty < 0) ty = 0;    // 顶部空出的行复用第 0 行（纯背景）
+          } else {
+            fy = y - off;
+            if (fy < 0) fy = 0;
+          }
+          blendFrame(fb + (size_t)y * UI_W, from + (size_t)fy * UI_W,
+                     to + (size_t)ty * UI_W, UI_W, (uint32_t)alpha5);
+        }
         break;
       }
     }
