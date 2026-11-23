@@ -1,7 +1,9 @@
 #!/bin/bash
+# 模拟器出图。必须在仓库根运行：sim 用相对路径加载 assets/pets/nova。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
 OUT_DIR="$ROOT/tools/sim/out"
 BUILD_DIR="$ROOT/tools/sim/build"
 mkdir -p "$OUT_DIR" "$BUILD_DIR"
