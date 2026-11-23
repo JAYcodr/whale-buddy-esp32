@@ -34,10 +34,7 @@ void settingsFieldSet(NovaSettings& cfg, const SettingDef& d, uint16_t v) {
   }
 }
 
-namespace {
-
-#ifndef NOVA_HOST_SIM
-uint16_t settingSanitize(const SettingDef& d, uint16_t v) {
+uint16_t settingsSanitize(const SettingDef& d, uint16_t v) {
   if (d.choices && d.nChoices) {
     for (uint8_t i = 0; i < d.nChoices; i++) {
       if (d.choices[i] == v) return v;
@@ -48,9 +45,6 @@ uint16_t settingSanitize(const SettingDef& d, uint16_t v) {
   if (v > d.maxV) return d.clampMax ? d.maxV : d.def;
   return v;
 }
-#endif
-
-}  // namespace
 
 void settingsLoad() {
 #ifndef NOVA_HOST_SIM
@@ -70,7 +64,7 @@ void settingsLoad() {
           raw = prefs.getUChar(d.key, (uint8_t)d.def);
           break;
       }
-      settingsFieldSet(s_cfg, d, settingSanitize(d, raw));
+      settingsFieldSet(s_cfg, d, settingsSanitize(d, raw));
     }
     String host = prefs.getString("mqtt_host", "192.168.31.15");
     strncpy(s_cfg.brokerHost, host.c_str(), sizeof(s_cfg.brokerHost) - 1);

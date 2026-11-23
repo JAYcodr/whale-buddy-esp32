@@ -84,6 +84,7 @@ constexpr SettingDef kSettings[] = {
 
 uint16_t settingsFieldGet(const NovaSettings& cfg, const SettingDef& d);
 void     settingsFieldSet(NovaSettings& cfg, const SettingDef& d, uint16_t v);
+uint16_t settingsSanitize(const SettingDef& d, uint16_t v);
 
 void settingsLoad();
 void settingsSave();
