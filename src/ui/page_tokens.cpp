@@ -1,4 +1,5 @@
 #include "ui/pages.h"
+#include "ui/easing.h"
 #include "ui/theme.h"
 #include <math.h>
 #include <stdio.h>
@@ -137,8 +138,7 @@ WhaleGeom computeWhaleGeom(const NovaState& st, uint8_t i, uint64_t maxV,
       alpha = 0.0f;
     } else {
       float u = (float)(swimElapsed - delay) / (float)kSwimItemDurMs;
-      float inv = 1.0f - u;
-      float ease = 1.0f - inv * inv * inv;  // easeOutCubic
+      float ease = ease::outCubic(u);
       cx -= (1.0f - ease) * 140.0f;
       float sc = 0.55f + 0.45f * ease;
       w *= sc;

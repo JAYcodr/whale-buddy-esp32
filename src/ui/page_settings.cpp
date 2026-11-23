@@ -1,4 +1,5 @@
 #include "ui/pages.h"
+#include "ui/easing.h"
 #include "ui/theme.h"
 #include <Arduino.h>
 #include <math.h>
@@ -186,13 +187,6 @@ int8_t findRowById(uint8_t id) {
     if (kRows[i].id == id) return (int8_t)i;
   }
   return -1;
-}
-
-float easeOutCubic(float u) {
-  if (u <= 0.0f) return 0.0f;
-  if (u >= 1.0f) return 1.0f;
-  float inv = 1.0f - u;
-  return 1.0f - inv * inv * inv;
 }
 
 // ---------- 取值 / 回写 ----------
@@ -776,7 +770,7 @@ bool pageSettingsTick(uint32_t nowMs) {
       }
       clampScroll();
     } else {
-      const float e = easeOutCubic((float)elapsed / (float)EXPAND_ANIM_MS);
+      const float e = ease::outCubic((float)elapsed / (float)EXPAND_ANIM_MS);
       if (s_openRow >= 0) {
         s_openFrac = s_openFrom + (1.0f - s_openFrom) * e;
       }
@@ -800,7 +794,7 @@ bool pageSettingsTick(uint32_t nowMs) {
         s_scrollY = s_bounceTo;
         s_bouncing = false;
       } else {
-        const float e = easeOutCubic((float)elapsed / (float)BOUNCE_MS);
+        const float e = ease::outCubic((float)elapsed / (float)BOUNCE_MS);
         s_scrollY = s_bounceFrom + (s_bounceTo - s_bounceFrom) * e;
       }
       dirty = true;
