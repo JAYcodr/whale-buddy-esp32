@@ -60,6 +60,15 @@ static bool saveRgb565Png(const char* path, const uint16_t* fb, int w, int h) {
   return true;
 }
 
+static uint32_t fnv1a32(const uint8_t* data, size_t len) {
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < len; i++) {
+    h ^= data[i];
+    h *= 16777619u;
+  }
+  return h;
+}
+
 static void populateSample(NovaState& st) {
   std::memset(&st, 0, sizeof(st));
   std::strcpy(st.deviceId, "D93468");
@@ -362,6 +371,12 @@ int main(int argc, char** argv) {
   canvas.setUTF8Print(true);
   nvaInit("assets/pets/nova");
 
+  FILE* manifest = std::fopen((outDir + "/manifest.txt").c_str(), "w");
+  if (!manifest) {
+    std::printf("cannot write %s/manifest.txt\n", outDir.c_str());
+    return 1;
+  }
+
   UiNav nav;
 
   struct Case {
@@ -413,8 +428,7 @@ int main(int argc, char** argv) {
   for (const auto& cs : cases) {
     // Isolate each case on fresh sample state/settings so mutations never leak across cases.
     NovaState st;
-    populateSample(st);
-    NovaSettings cfg;
+    populateSample(st);    NovaSettings cfg;
     st.approvalActive = cs.approval;
     std::strcpy(st.apId, "ap_7f3");
     std::strcpy(st.apTool, "Bash");
@@ -437,7 +451,59 @@ int main(int argc, char** argv) {
     if (cs.afterDraw) cs.afterDraw();
     std::string path = outDir + "/page_" + cs.name + ".png";
     if (!saveRgb565Png(path.c_str(), canvas.getFramebuffer(), UI_W, UI_H)) return 1;
+    const uint32_t h = fnv1a32(reinterpret_cast<const uint8_t*>(canvas.getFramebuffer()),
+                               (size_t)UI_W * UI_H * sizeof(uint16_t));
+    std::fprintf(manifest, "page_%s %08x\n", cs.name, h);
     std::printf("wrote %s\n", path.c_str());
   }
+
+  // page_tokens_local：局部重绘契约 —— pageTokensDrawStage() 不许碰
+  // pageTokensStageRect() 之外的像素。做法：整屏填哨兵，再局部重绘；
+  // rect 外必须还是哨兵，rect 内必须真的被写过。哈希行固定为 "page_tokens_local ok"。
+  {
+    NovaState st;
+    populateSample(st);
+    NovaSettings cfg;
+    nav.setPage(UiPage::TOKENS);
+    pageTokensOnEnter(6500);
+
+    constexpr uint16_t kSentinel = 0xA55A;
+    uint16_t* fb = canvas.getFramebuffer();
+    for (size_t i = 0; i < (size_t)UI_W * UI_H; i++) fb[i] = kSentinel;
+
+    pageTokensDrawStage(canvas, st, cfg, 7000);
+
+    const ui::Rect r = pageTokensStageRect();
+    size_t outside = 0, inside = 0;
+    int firstX = -1, firstY = -1;
+    for (int y = 0; y < UI_H; y++) {
+      for (int x = 0; x < UI_W; x++) {
+        const bool in = (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+        const size_t idx = (size_t)y * UI_W + x;
+        if (in) {
+          if (fb[idx] != kSentinel) inside++;
+        } else if (fb[idx] != kSentinel) {
+          if (outside == 0) { firstX = x; firstY = y; }
+          outside++;
+        }
+      }
+    }
+    if (outside != 0) {
+      std::printf("page_tokens_local: %zu pixels written outside stage rect "
+                  "(first at %d,%d; rect=%d,%d %dx%d)\n",
+                  outside, firstX, firstY, r.x, r.y, r.w, r.h);
+      std::fclose(manifest);
+      return 1;
+    }
+    if (inside == 0) {
+      std::printf("page_tokens_local: stage drew nothing (rect=%d,%d %dx%d)\n",
+                  r.x, r.y, r.w, r.h);
+      std::fclose(manifest);
+      return 1;
+    }
+    std::fprintf(manifest, "page_tokens_local ok\n");
+  }
+
+  std::fclose(manifest);
   return 0;
 }
