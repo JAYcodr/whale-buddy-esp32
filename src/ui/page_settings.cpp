@@ -75,8 +75,7 @@ constexpr const char* SLEEP_LABELS[4] = { "15s", "30s", "60s", "2m" };
 constexpr ui::Rect BTN_CHOREO_TOGGLE{ 28, 251, 312, 44 };
 constexpr ui::Rect SW_CHOREO_VISUAL { 282, 258, 52, 30 };
 
-constexpr ui::Rect BTN_TEST_SND{ 24,  386, 162, 44 };
-constexpr ui::Rect BTN_REPROV  { 24,  386, 162, 44 };
+constexpr ui::Rect BTN_BOTTOM_LEFT{ 24, 386, 162, 44 };  // 基础页=试听；进阶页=重新配网
 constexpr ui::Rect BTN_BACK    { 198, 386, 146, 44 };
 
 // Tab 2: power / charge policy
@@ -124,6 +123,106 @@ constexpr ui::Rect AOD_NIGHT_BTNS[3] = {
   { 234, 298, 100, 34 },
 };
 constexpr const char* AOD_NIGHT_LABELS[3] = { "1 档", "2 档", "跟随" };
+
+// SETTINGS_REDRAW 的 value 只被 main.cpp 用来决定要不要 FADE（0/1 播）。
+// 历史取值保留：基础/显示=0，进阶=1，电源页=3（不播），配网二次确认=2（不播）。
+constexpr int kRedrawTabBasic = 0;
+constexpr int kRedrawTabAdv   = 1;
+constexpr int kRedrawTabPwr   = 3;
+constexpr int kRedrawTabDisp  = 0;
+constexpr int kRedrawReprovConfirm = 2;
+constexpr int kToggleValue = -1;   // tap 时按 cfg 当前值取反
+
+// tap 与 hitRect 共用同一张表：前者产出 UiAction，后者产出按压高亮矩形。
+struct SettingRow {
+  ui::Rect rect;
+  UiAction::Kind act;
+  int value;
+};
+
+struct TabRow {
+  ui::Rect rect;
+  uint8_t tab;
+  int redrawValue;
+};
+
+constexpr TabRow ROWS_TABS[] = {
+  { TAB_BASIC, 0, kRedrawTabBasic },
+  { TAB_ADV,   1, kRedrawTabAdv },
+  { TAB_PWR,   2, kRedrawTabPwr },
+  { TAB_DISP,  3, kRedrawTabDisp },
+};
+
+constexpr SettingRow ROWS_BASIC[] = {
+  { HOME_BTNS[0], UiAction::SET_HOME, 0 },
+  { HOME_BTNS[1], UiAction::SET_HOME, 1 },
+  { HOME_BTNS[2], UiAction::SET_HOME, 2 },
+  { PWR_BTNS[0],  UiAction::SET_POWER, 0 },
+  { PWR_BTNS[1],  UiAction::SET_POWER, 1 },
+  { PWR_BTNS[2],  UiAction::SET_POWER, 2 },
+  { SND_STEPS[0], UiAction::SET_SOUND, SND_VALUES[0] },
+  { SND_STEPS[1], UiAction::SET_SOUND, SND_VALUES[1] },
+  { SND_STEPS[2], UiAction::SET_SOUND, SND_VALUES[2] },
+  { SND_STEPS[3], UiAction::SET_SOUND, SND_VALUES[3] },
+  { SND_STEPS[4], UiAction::SET_SOUND, SND_VALUES[4] },
+  { BRT_STEPS[0], UiAction::SET_BRIGHT, 0 },
+  { BRT_STEPS[1], UiAction::SET_BRIGHT, 1 },
+  { BRT_STEPS[2], UiAction::SET_BRIGHT, 2 },
+  { BRT_STEPS[3], UiAction::SET_BRIGHT, 3 },
+  { BRT_STEPS[4], UiAction::SET_BRIGHT, 4 },
+  { BTN_BOTTOM_LEFT, UiAction::TEST_SOUND, 0 },
+  { BTN_BACK,        UiAction::GO_PAGE, (int)UiPage::DETAIL },
+};
+
+constexpr SettingRow ROWS_ADV[] = {
+  { BTN_TTS_TOGGLE,    UiAction::SET_TTS, kToggleValue },
+  { BTN_QUIET_TOGGLE,  UiAction::SET_QUIET, kToggleValue },
+  { BTN_CHOREO_TOGGLE, UiAction::SET_CHOREO, kToggleValue },
+  { SLEEP_BTNS[0], UiAction::SET_BATSLEEP, SLEEP_SECS[0] },
+  { SLEEP_BTNS[1], UiAction::SET_BATSLEEP, SLEEP_SECS[1] },
+  { SLEEP_BTNS[2], UiAction::SET_BATSLEEP, SLEEP_SECS[2] },
+  { SLEEP_BTNS[3], UiAction::SET_BATSLEEP, SLEEP_SECS[3] },
+  { BTN_BOTTOM_LEFT, UiAction::REPROVISION, 0 },
+  { BTN_BACK,        UiAction::GO_PAGE, (int)UiPage::DETAIL },
+};
+
+constexpr SettingRow ROWS_PWR[] = {
+  { CHG_LIM_BTNS[0], UiAction::SET_CHGLIMIT, CHG_LIM_VALS[0] },
+  { CHG_LIM_BTNS[1], UiAction::SET_CHGLIMIT, CHG_LIM_VALS[1] },
+  { CHG_LIM_BTNS[2], UiAction::SET_CHGLIMIT, CHG_LIM_VALS[2] },
+  { CHG_SPD_BTNS[0], UiAction::SET_CHGSPEED, 0 },
+  { CHG_SPD_BTNS[1], UiAction::SET_CHGSPEED, 1 },
+  { CHG_SPD_BTNS[2], UiAction::SET_CHGSPEED, 2 },
+  { BTN_PWR_BACK,    UiAction::GO_PAGE, (int)UiPage::DETAIL },
+};
+
+constexpr SettingRow ROWS_DISP[] = {
+  { AOD_BTNS[0], UiAction::SET_AOD_MODE, 0 },
+  { AOD_BTNS[1], UiAction::SET_AOD_MODE, 1 },
+  { AOD_BTNS[2], UiAction::SET_AOD_MODE, 2 },
+  { AOD_IDLE_BTNS[0], UiAction::SET_AOD_IDLE, AOD_IDLE_VALS[0] },
+  { AOD_IDLE_BTNS[1], UiAction::SET_AOD_IDLE, AOD_IDLE_VALS[1] },
+  { AOD_IDLE_BTNS[2], UiAction::SET_AOD_IDLE, AOD_IDLE_VALS[2] },
+  { AOD_NIGHT_BTNS[0], UiAction::SET_AOD_NIGHT, 0 },
+  { AOD_NIGHT_BTNS[1], UiAction::SET_AOD_NIGHT, 1 },
+  { AOD_NIGHT_BTNS[2], UiAction::SET_AOD_NIGHT, 2 },
+  { BTN_BACK, UiAction::GO_PAGE, (int)UiPage::DETAIL },
+};
+
+struct RowSpan {
+  const SettingRow* rows;
+  size_t n;
+};
+
+RowSpan rowsForTab(uint8_t tab) {
+  switch (tab) {
+    case 1:  return { ROWS_ADV,  sizeof(ROWS_ADV)  / sizeof(ROWS_ADV[0]) };
+    case 2:  return { ROWS_PWR,  sizeof(ROWS_PWR)  / sizeof(ROWS_PWR[0]) };
+    case 3:  return { ROWS_DISP, sizeof(ROWS_DISP) / sizeof(ROWS_DISP[0]) };
+    default: return { ROWS_BASIC, sizeof(ROWS_BASIC) / sizeof(ROWS_BASIC[0]) };
+  }
+}
+
 
 int soundStepIndex(uint8_t pct) {
   if (pct == 0) return 0;
@@ -217,7 +316,7 @@ void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
                       ui::COL_AMBER, ui::COL_CARD);
     ui::drawLevelBar(c, BRT_BAR, 5, brtIdx, ui::COL_AMBER, false);
 
-    ui::drawButton(c, BTN_TEST_SND, "试听语音", false, ui::COL_MINT, ui::fontCjk14());
+    ui::drawButton(c, BTN_BOTTOM_LEFT, "试听语音", false, ui::COL_MINT, ui::fontCjk14());
   } else if (s_tab == 1) {
     // Card 1: Voice & Quiet Hours
     ui::drawCard(c, 20, 52, 328, 104, ui::COL_CARD, ui::COL_BORDER, 16);
@@ -254,15 +353,15 @@ void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
     ui::drawText(c, ui::fontAscii14(), 34, 360, brokerBuf, ui::COL_ACCENT, ui::COL_CARD);
 
     if (s_reprovConfirm) {
-      ui::aaFillRoundRect(c, BTN_REPROV.x, BTN_REPROV.y, BTN_REPROV.w, BTN_REPROV.h,
+      ui::aaFillRoundRect(c, BTN_BOTTOM_LEFT.x, BTN_BOTTOM_LEFT.y, BTN_BOTTOM_LEFT.w, BTN_BOTTOM_LEFT.h,
                           12, ui::COL_RED, ui::COL_RED);
-      ui::drawTextCenteredInRect(c, ui::fontCjk14(), BTN_REPROV, "再点一次确认",
+      ui::drawTextCenteredInRect(c, ui::fontCjk14(), BTN_BOTTOM_LEFT, "再点一次确认",
                                  ui::COL_BG, ui::COL_RED);
     } else {
       const uint16_t reprovBg = rgb565(40, 28, 12);
-      ui::aaFillRoundRect(c, BTN_REPROV.x, BTN_REPROV.y, BTN_REPROV.w, BTN_REPROV.h,
+      ui::aaFillRoundRect(c, BTN_BOTTOM_LEFT.x, BTN_BOTTOM_LEFT.y, BTN_BOTTOM_LEFT.w, BTN_BOTTOM_LEFT.h,
                           12, reprovBg, ui::COL_AMBER);
-      ui::drawTextCenteredInRect(c, ui::fontCjk14(), BTN_REPROV, "重新配网 (AP)",
+      ui::drawTextCenteredInRect(c, ui::fontCjk14(), BTN_BOTTOM_LEFT, "重新配网 (AP)",
                                  ui::COL_AMBER, reprovBg);
     }
   } else if (s_tab == 2) {
@@ -354,88 +453,34 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
     s_reprovConfirm = false;
     return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
   }
-  if (TAB_BASIC.contains(x, y) && s_tab != 0) {
-    s_tab = 0;
+  for (const TabRow& t : ROWS_TABS) {
+    if (!t.rect.contains(x, y) || s_tab == t.tab) continue;
+    s_tab = t.tab;
     s_reprovConfirm = false;
-    return UiAction{ UiAction::SETTINGS_REDRAW, 0 };
-  }
-  if (TAB_ADV.contains(x, y) && s_tab != 1) {
-    s_tab = 1;
-    s_reprovConfirm = false;
-    return UiAction{ UiAction::SETTINGS_REDRAW, 1 };
-  }
-  if (TAB_PWR.contains(x, y) && s_tab != 2) {
-    s_tab = 2;
-    s_reprovConfirm = false;
-    return UiAction{ UiAction::SETTINGS_REDRAW, 3 };
-  }
-  if (TAB_DISP.contains(x, y) && s_tab != 3) {
-    s_tab = 3;
-    s_reprovConfirm = false;
-    return UiAction{ UiAction::SETTINGS_REDRAW, 0 };
+    return UiAction{ UiAction::SETTINGS_REDRAW, t.redrawValue };
   }
 
-  if (s_tab == 0) {
-    for (int i = 0; i < 3; i++) {
-      if (HOME_BTNS[i].contains(x, y)) return UiAction{ UiAction::SET_HOME, i };
-      if (PWR_BTNS[i].contains(x, y))  return UiAction{ UiAction::SET_POWER, i };
-    }
-    for (int i = 0; i < 5; i++) {
-      if (SND_STEPS[i].contains(x, y)) {
-        return UiAction{ UiAction::SET_SOUND, (int)SND_VALUES[i] };
-      }
-      if (BRT_STEPS[i].contains(x, y)) return UiAction{ UiAction::SET_BRIGHT, i };
-    }
-    if (BTN_TEST_SND.contains(x, y)) return UiAction{ UiAction::TEST_SOUND, 0 };
-  } else if (s_tab == 1) {
-    if (BTN_TTS_TOGGLE.contains(x, y)) {
-      return UiAction{ UiAction::SET_TTS, cfg.ttsEnabled ? 0 : 1 };
-    }
-    if (BTN_QUIET_TOGGLE.contains(x, y)) {
-      return UiAction{ UiAction::SET_QUIET, cfg.quietHours ? 0 : 1 };
-    }
-    if (BTN_CHOREO_TOGGLE.contains(x, y)) {
-      return UiAction{ UiAction::SET_CHOREO, cfg.choreoEnabled ? 0 : 1 };
-    }
-    for (int i = 0; i < 4; i++) {
-      if (SLEEP_BTNS[i].contains(x, y)) {
-        return UiAction{ UiAction::SET_BATSLEEP, (int)SLEEP_SECS[i] };
-      }
-    }
-    if (BTN_REPROV.contains(x, y)) {
+  const RowSpan span = rowsForTab(s_tab);
+  for (size_t i = 0; i < span.n; i++) {
+    const SettingRow& row = span.rows[i];
+    if (!row.rect.contains(x, y)) continue;
+    if (row.act == UiAction::REPROVISION) {
       uint32_t nowMs = millis();
       if (!s_reprovConfirm || (nowMs - s_reprovAtMs >= REPROV_CONFIRM_TIMEOUT_MS)) {
         s_reprovConfirm = true;
         s_reprovAtMs = nowMs;
-        return UiAction{ UiAction::SETTINGS_REDRAW, 2 };
+        return UiAction{ UiAction::SETTINGS_REDRAW, kRedrawReprovConfirm };
       }
       s_reprovConfirm = false;
       return UiAction{ UiAction::REPROVISION, 0 };
     }
-  } else if (s_tab == 2) {
-    for (int i = 0; i < 3; i++) {
-      if (CHG_LIM_BTNS[i].contains(x, y)) {
-        return UiAction{ UiAction::SET_CHGLIMIT, (int)CHG_LIM_VALS[i] };
-      }
-      if (CHG_SPD_BTNS[i].contains(x, y)) {
-        return UiAction{ UiAction::SET_CHGSPEED, i };
-      }
+    if (row.act == UiAction::GO_PAGE) s_reprovConfirm = false;
+    switch (row.act) {
+      case UiAction::SET_TTS:    return UiAction{ row.act, cfg.ttsEnabled ? 0 : 1 };
+      case UiAction::SET_QUIET:  return UiAction{ row.act, cfg.quietHours ? 0 : 1 };
+      case UiAction::SET_CHOREO: return UiAction{ row.act, cfg.choreoEnabled ? 0 : 1 };
+      default:                   return UiAction{ row.act, row.value };
     }
-    if (BTN_PWR_BACK.contains(x, y)) {
-      s_reprovConfirm = false;
-      return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
-    }
-  } else {
-    for (int i = 0; i < 3; i++) {
-      if (AOD_BTNS[i].contains(x, y)) return UiAction{ UiAction::SET_AOD_MODE, i };
-      if (AOD_IDLE_BTNS[i].contains(x, y)) return UiAction{ UiAction::SET_AOD_IDLE, (int)AOD_IDLE_VALS[i] };
-      if (AOD_NIGHT_BTNS[i].contains(x, y)) return UiAction{ UiAction::SET_AOD_NIGHT, i };
-    }
-  }
-
-  if (BTN_BACK.contains(x, y)) {
-    s_reprovConfirm = false;
-    return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
   }
   return UiAction{};
 }
@@ -443,42 +488,13 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
 bool pageSettingsHitRect(int16_t x, int16_t y, const NovaState&, const NovaSettings&,
                          ui::Rect* out) {
   if (!out) return false;
-  if (HDR_BACK.contains(x, y))  { *out = HDR_BACK;  return true; }
-  if (TAB_BASIC.contains(x, y)) { *out = TAB_BASIC; return true; }
-  if (TAB_ADV.contains(x, y))   { *out = TAB_ADV;   return true; }
-  if (TAB_PWR.contains(x, y))   { *out = TAB_PWR;   return true; }
-  if (TAB_DISP.contains(x, y))  { *out = TAB_DISP;  return true; }
-  if (s_tab == 0) {
-    for (int i = 0; i < 3; i++) {
-      if (HOME_BTNS[i].contains(x, y)) { *out = HOME_BTNS[i]; return true; }
-      if (PWR_BTNS[i].contains(x, y))  { *out = PWR_BTNS[i];  return true; }
-    }
-    for (int i = 0; i < 5; i++) {
-      if (SND_STEPS[i].contains(x, y)) { *out = SND_STEPS[i]; return true; }
-      if (BRT_STEPS[i].contains(x, y)) { *out = BRT_STEPS[i]; return true; }
-    }
-    if (BTN_TEST_SND.contains(x, y)) { *out = BTN_TEST_SND; return true; }
-  } else if (s_tab == 1) {
-    if (BTN_TTS_TOGGLE.contains(x, y))    { *out = BTN_TTS_TOGGLE;    return true; }
-    if (BTN_QUIET_TOGGLE.contains(x, y))  { *out = BTN_QUIET_TOGGLE;  return true; }
-    if (BTN_CHOREO_TOGGLE.contains(x, y)) { *out = BTN_CHOREO_TOGGLE; return true; }
-    for (int i = 0; i < 4; i++) {
-      if (SLEEP_BTNS[i].contains(x, y)) { *out = SLEEP_BTNS[i]; return true; }
-    }
-    if (BTN_REPROV.contains(x, y)) { *out = BTN_REPROV; return true; }
-  } else if (s_tab == 2) {
-    for (int i = 0; i < 3; i++) {
-      if (CHG_LIM_BTNS[i].contains(x, y)) { *out = CHG_LIM_BTNS[i]; return true; }
-      if (CHG_SPD_BTNS[i].contains(x, y)) { *out = CHG_SPD_BTNS[i]; return true; }
-    }
-    if (BTN_PWR_BACK.contains(x, y)) { *out = BTN_PWR_BACK; return true; }
-  } else {
-    for (int i = 0; i < 3; i++) {
-      if (AOD_BTNS[i].contains(x, y))       { *out = AOD_BTNS[i];       return true; }
-      if (AOD_IDLE_BTNS[i].contains(x, y))  { *out = AOD_IDLE_BTNS[i];  return true; }
-      if (AOD_NIGHT_BTNS[i].contains(x, y)) { *out = AOD_NIGHT_BTNS[i]; return true; }
-    }
+  if (HDR_BACK.contains(x, y)) { *out = HDR_BACK; return true; }
+  for (const TabRow& t : ROWS_TABS) {
+    if (t.rect.contains(x, y)) { *out = t.rect; return true; }
   }
-  if (BTN_BACK.contains(x, y)) { *out = BTN_BACK; return true; }
+  const RowSpan span = rowsForTab(s_tab);
+  for (size_t i = 0; i < span.n; i++) {
+    if (span.rows[i].rect.contains(x, y)) { *out = span.rows[i].rect; return true; }
+  }
   return false;
 }
