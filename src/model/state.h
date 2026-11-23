@@ -117,6 +117,7 @@ struct NovaState {
   int8_t   battTempC;       // AXP2101 die temperature
   uint16_t chgMa;           // charge current requested by the governor
   bool     chargeLimited;   // paused by limit / temperature
+  bool     chargeTempCapped;// paused specifically due to die temperature
   int8_t   gaugePct;        // AXP2101 gauge SOC, -1 when unavailable
   bool     faceDown;
   uint8_t  hour;

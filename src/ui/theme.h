@@ -282,11 +282,48 @@ inline void drawBatteryIcon(NovaCanvas& c, int16_t rightX, int16_t centerY,
   // dim bolt = plugged but not charging; full pack = no bolt at all.
   const bool drawBolt = charging || paused || (usbPresent && !full);
   if (drawBolt) {
-    const uint16_t boltCol = (charging || paused) ? COL_BG : COL_DIM;
-    int16_t mx = bx + bw / 2;
-    c.drawLine(mx + 1, by + 2, mx - 2, centerY, boltCol);
-    c.drawLine(mx - 2, centerY, mx + 2, centerY, boltCol);
-    c.drawLine(mx + 2, centerY, mx - 1, by + bh - 3, boltCol);
+    const int16_t mx = bx + bw / 2;
+    const int16_t fillEndX = bx + 2 + fillW;
+    auto drawBoltSolid = [&](uint16_t bCol) {
+      c.drawLine(mx + 1, by + 2, mx - 2, centerY, bCol);
+      c.drawLine(mx - 2, centerY, mx + 2, centerY, bCol);
+      c.drawLine(mx + 2, centerY, mx - 1, by + bh - 3, bCol);
+    };
+    if (!(charging || paused)) {
+      drawBoltSolid(COL_DIM);
+    } else if (fillEndX > mx + 2) {
+      drawBoltSolid(COL_BG);
+    } else if (fillEndX <= mx - 2) {
+      // Low battery charging: center of the icon is unfilled (COL_BG), so draw
+      // the bolt in bright fill color instead of dark COL_BG on COL_BG.
+      drawBoltSolid(col);
+    } else {
+      // Mid-charge (~42..57%): per-pixel contrast across the fill edge.
+      uint16_t* fb = c.getFramebuffer();
+      if (fb) {
+        auto boltLine = [&](int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+          int16_t dx = x1 > x0 ? (x1 - x0) : (x0 - x1);
+          int16_t sx = x0 < x1 ? 1 : -1;
+          int16_t dy = -(y1 > y0 ? (y1 - y0) : (y0 - y1));
+          int16_t sy = y0 < y1 ? 1 : -1;
+          int16_t err = dx + dy;
+          for (;;) {
+            if (x0 >= 0 && x0 < UI_W && y0 >= 0 && y0 < UI_H) {
+              fb[(size_t)y0 * UI_W + x0] = (x0 < fillEndX) ? COL_BG : col;
+            }
+            if (x0 == x1 && y0 == y1) break;
+            int16_t e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+          }
+        };
+        boltLine(mx + 1, by + 2, mx - 2, centerY);
+        boltLine(mx - 2, centerY, mx + 2, centerY);
+        boltLine(mx + 2, centerY, mx - 1, by + bh - 3);
+      } else {
+        drawBoltSolid((fillEndX <= mx) ? col : COL_BG);
+      }
+    }
   }
   drawTextRight(c, fontAscii14(), bx - 6, centerY + 6, pctStr, col, COL_BG);
 }

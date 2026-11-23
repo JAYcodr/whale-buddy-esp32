@@ -52,10 +52,16 @@ void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
   char chgLabel[24];
   switch (bs) {
     case BattStage::PRE:      pwrLabel = "预充中"; break;
-    case BattStage::CC:
-    case BattStage::CV:       snprintf(chgLabel, sizeof(chgLabel), "充电%umA", (unsigned)st.chgMa); pwrLabel = chgLabel; break;
+    case BattStage::CC:       snprintf(chgLabel, sizeof(chgLabel), "充电%umA", (unsigned)st.chgMa); pwrLabel = chgLabel; break;
+    case BattStage::CV:       pwrLabel = "恒压充电"; break;
     case BattStage::DONE:     pwrLabel = "已充满"; break;
-    case BattStage::LIMITED:  pwrLabel = (st.battPct + 1 >= cfg.chargeLimitPct) ? "保养停充" : "高温停充"; break;
+    case BattStage::LIMITED: {
+      const bool capPause = !st.chargeTempCapped &&
+                            (cfg.chargeLimitPct < 100) &&
+                            (st.battPct + 1 >= cfg.chargeLimitPct);
+      pwrLabel = capPause ? "保养停充" : "高温停充";
+      break;
+    }
     case BattStage::USB_IDLE: pwrLabel = "USB供电"; break;
     case BattStage::DISCHARGE:pwrLabel = "电池"; break;
     default:                  pwrLabel = "未接电池"; break;

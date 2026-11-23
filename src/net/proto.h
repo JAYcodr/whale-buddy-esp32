@@ -9,7 +9,9 @@
 bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint32_t nowMs);
 
 // Outbound payload builders
+struct PowerEvent;
 size_t protoBuildHello(char* buf, size_t cap, const NovaState& st, const NovaSettings& cfg, bool online);
 size_t protoBuildDecision(char* buf, size_t cap, const char* id, bool accept, bool toPc);
 size_t protoBuildStat(char* buf, size_t cap, const NovaState& st);
 size_t protoBuildPrefs(char* buf, size_t cap, const NovaSettings& cfg);
+size_t protoBuildPowerEvent(char* buf, size_t cap, const PowerEvent& ev);

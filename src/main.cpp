@@ -111,12 +111,52 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
           } else if (strcmp(cmd, "bat") == 0) {
             // Machine-readable power dump for the real-hardware acceptance run.
             HwBattery b = hwBattery();
+            BatteryCal cal = hwBatteryCal();
+            PowerWatermark wm = hwPowerWatermark();
+            const unsigned long durSec = (wm.durMs + 500u) / 1000u;
             Serial.printf("{\"bat\":{\"pct\":%d,\"mv\":%d,\"stage\":%u,\"chg\":%u,"
-                          "\"limited\":%s,\"usb\":%s,\"tmp\":%d,\"gauge\":%d}}\n",
+                          "\"limited\":%s,\"tempCap\":%s,\"usb\":%s,\"vbusLim\":%s,"
+                          "\"tmp\":%d,\"gauge\":%d,\"raw\":%u,\"compMv\":%u,"
+                          "\"effMa\":%u,\"bootMv\":%u,\"seed\":%d,\"pwrLost\":%s,"
+                          "\"mohm\":%u,\"mah\":%u,\"vbusMv\":%u,\"vsysMv\":%u,"
+                          "\"thermReg\":%s,\"onSrc\":%u,\"offSrc\":%u,"
+                          "\"wm\":{\"dur\":%lu,\"sp\":%u,\"vmin\":%u,\"vmax\":%u,"
+                          "\"vsmin\":%u,\"vbmin\":%u,\"tmax\":%d,\"vlimS\":%u,"
+                          "\"tregS\":%u,\"tcapS\":%u,\"scrS\":%u,\"aodS\":%u}}}\n",
                           b.pct, b.mV, (unsigned)b.stage, (unsigned)b.chgMa,
                           b.chargeLimited ? "true" : "false",
+                          b.chargeTempCapped ? "true" : "false",
                           b.usbPresent ? "true" : "false",
-                          b.tempC, (int)b.gaugePct);
+                          b.vbusLimited ? "true" : "false",
+                          b.tempC, (int)b.gaugePct,
+                          (unsigned)b.rawPct, (unsigned)b.compMv,
+                          (unsigned)b.effMa, (unsigned)b.bootMv,
+                          (int)b.seedPct, b.seedPowerLost ? "true" : "false",
+                          (unsigned)cal.chgMohm, (unsigned)cal.designMah,
+                          (unsigned)b.vbusMv, (unsigned)b.vsysMv,
+                          b.thermReg ? "true" : "false",
+                          (unsigned)b.pwrOnSrc, (unsigned)b.pwrOffSrc,
+                          durSec, (unsigned)wm.startPct,
+                          (unsigned)wm.vbatMinMv, (unsigned)wm.vbatMaxMv,
+                          (unsigned)wm.vsysMinMv, (unsigned)wm.vbusMinMv,
+                          (int)wm.tmpMaxC,
+                          (unsigned)powerMsToClampedSec(wm.vbusLimMs),
+                          (unsigned)powerMsToClampedSec(wm.thermRegMs),
+                          (unsigned)powerMsToClampedSec(wm.tempCapMs),
+                          (unsigned)powerMsToClampedSec(wm.screenOnMs),
+                          (unsigned)powerMsToClampedSec(wm.aodMs));
+          } else if (strcmp(cmd, "batcal") == 0) {
+            if ((doc["reset"] | 0) != 0) hwPowerResetCal();
+            BatteryCal cal = hwBatteryCal();
+            Serial.printf("{\"batcal\":{\"chgMohm\":%u,\"designMah\":%u,\"cvTauMs\":%lu,"
+                          "\"fullRestMv\":%u,\"lowAnchorMv\":%u,\"limitPct\":%u,"
+                          "\"rSamples\":%u,\"capSamples\":%u,\"cvSamples\":%u}}\n",
+                          (unsigned)cal.chgMohm, (unsigned)cal.designMah,
+                          (unsigned long)cal.cvTauMs,
+                          (unsigned)cal.fullRestMv, (unsigned)cal.lowAnchorMv,
+                          (unsigned)settingsGet().chargeLimitPct,
+                          (unsigned)cal.rSamples, (unsigned)cal.capSamples,
+                          (unsigned)cal.cvSamples);
           } else if (strcmp(cmd, "reprov") == 0) {
             netRequestReprovision();
           } else if (strcmp(cmd, "wifi") == 0) {
@@ -282,6 +322,12 @@ void uiTaskFn(void*) {
   uint32_t lastUrgentBreathMs = 0;
   uint8_t  lastBattPct = 255;
   uint32_t lastBattDrawMs = 0;
+  bool     lastUsbPresent = false;
+  uint8_t  lastBattStage = 255;
+  uint16_t lastDetailMv = 0;
+  uint16_t lastDetailChgMa = 0;
+  bool     lastDetailTempCap = false;
+  uint32_t lastDetailDrawMs = 0;
   uint8_t  lastBurnStep = 0;
   bool     lastSleepState = false;
   uint32_t curCpuMhz = getCpuFrequencyMhz();
@@ -432,11 +478,12 @@ void uiTaskFn(void*) {
       s.battPct    = snap.battery.pct;
       s.usbPresent = snap.battery.usbPresent;
       s.charging   = snap.battery.charging;
-      s.battStage      = snap.battery.stage;
-      s.battTempC      = (int8_t)snap.battery.tempC;
-      s.chgMa          = snap.battery.chgMa;
-      s.chargeLimited  = snap.battery.chargeLimited;
-      s.gaugePct       = snap.battery.gaugePct;
+      s.battStage        = snap.battery.stage;
+      s.battTempC        = (int8_t)snap.battery.tempC;
+      s.chgMa            = snap.battery.chgMa;
+      s.chargeLimited    = snap.battery.chargeLimited;
+      s.chargeTempCapped = snap.battery.chargeTempCapped;
+      s.gaugePct         = snap.battery.gaugePct;
       s.faceDown   = snap.faceDown;
       s.hour       = snap.time.H;
       s.minute     = snap.time.M;
@@ -593,6 +640,23 @@ void uiTaskFn(void*) {
       s.drawCount = drawCount;
       s.txPower = netTxPowerApplied();
     });
+
+    hwPowerSetAodActive(aodActive);
+    if (st.mqttConnected) {
+      static uint32_t lastPwrDrainMs = 0;
+      if ((uint32_t)(nowMs - lastPwrDrainMs) >= 100u) {
+        PowerEvent pe;
+        if (hwPowerPeekEvent(&pe) && netPublishPowerEvent(pe)) {
+          hwPowerAckEvent();
+          lastPwrDrainMs = nowMs;
+          Serial.printf("[pwr] evt=%s seq=%lu pct=%u mv=%u vb=%u vs=%u mohm=%u\n",
+                        battPwrEvtReasonStr(pe.reason), (unsigned long)pe.seq,
+                        (unsigned)pe.pct, (unsigned)pe.mv,
+                        (unsigned)pe.vbusMv, (unsigned)pe.vsysMv,
+                        (unsigned)pe.chgMohm);
+        }
+      }
+    }
 
     // CPU Dynamic Frequency Scaling (DFS via PLL 240/160/80 MHz, keeping APB >= 80 MHz).
     bool activeDemand = st.approvalActive || st.run > 0 || st.wait > 0 ||
@@ -1176,18 +1240,30 @@ void uiTaskFn(void*) {
                              : 0u;
     bool curSleepState = (nvaActiveState() == NvaAnimKey::SLEEP);
 
-    // Battery percentage is smoothed by the estimator, but a 1% change still
-    // costs a full-screen push. Redraw immediately on a 5% bucket change,
-    // otherwise at most every 15 s.
-    bool battChanged = (st.battPct != lastBattPct) &&
-                       ((st.battPct / 5u) != (lastBattPct / 5u) ||
-                        (nowMs - lastBattDrawMs) >= 15000u);
+    // Battery percentage is smoothed and slewed by the estimator, so 1% moves
+    // take >=10-25s; keep a 10s rate limit unless crossing color thresholds or
+    // 5% buckets, and redraw immediately when USB/stage changes so icons never lag.
+    const bool powerStateChanged = (st.usbPresent != lastUsbPresent) ||
+                                   (st.battStage != lastBattStage);
+    const bool battColorCrossed = ((st.battPct <= 10) != (lastBattPct <= 10)) ||
+                                  ((st.battPct <= 20) != (lastBattPct <= 20));
+    const bool battChanged = (st.battPct != lastBattPct) &&
+                             (battColorCrossed ||
+                              (st.battPct / 5u) != (lastBattPct / 5u) ||
+                              (nowMs - lastBattDrawMs) >= 10000u);
+    const int mvDelta = (st.battMv > lastDetailMv) ? (int)(st.battMv - lastDetailMv)
+                                                   : (int)(lastDetailMv - st.battMv);
+    const bool detailPowerChanged = (!aodActive && nav.currentPage() == UiPage::DETAIL) &&
+                                    ((nowMs - lastDetailDrawMs) >= 2000u) &&
+                                    (mvDelta >= 15 || st.chgMa != lastDetailChgMa ||
+                                     st.chargeTempCapped != lastDetailTempCap);
 
     // Detect state / heartbeat / burn-in pixel shift changes requiring a full redraw.
     if (st.stateGen != lastStateGen || st.quotaGen != lastQuotaGen || st.rankGen != lastRankGen ||
         st.choreoGen != lastChoreoGen || st.tokenGen != lastTokenGen ||
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
-        st.mqttConnected != lastMqttUp || st.minute != lastMinute || battChanged ||
+        st.mqttConnected != lastMqttUp || st.minute != lastMinute ||
+        battChanged || powerStateChanged || detailPowerChanged ||
         (!aodActive && st.lastMqttRxMs != lastMqttRxSeen) || isStale != lastStaleFlag ||
         staleBucket != lastStaleShownSec || quotaBucket != lastQuotaBucket ||
         burnStep != lastBurnStep || curSleepState != lastSleepState) {
@@ -1206,6 +1282,12 @@ void uiTaskFn(void*) {
       lastMinute        = st.minute;
       lastBattPct       = st.battPct;
       lastBattDrawMs    = nowMs;
+      lastUsbPresent    = st.usbPresent;
+      lastBattStage     = st.battStage;
+      lastDetailMv      = st.battMv;
+      lastDetailChgMa   = st.chgMa;
+      lastDetailTempCap = st.chargeTempCapped;
+      lastDetailDrawMs  = nowMs;
       lastBurnStep      = burnStep;
       lastSleepState    = curSleepState;
       needFull          = true;
@@ -1527,6 +1609,7 @@ void uiTaskFn(void*) {
 void setup() {
   hwInit();
   settingsLoad();
+  hwPowerTick(millis());
   hwDisplayBrightness(settingsGet().brightPct);
 
   uint8_t mac[6] = {0};

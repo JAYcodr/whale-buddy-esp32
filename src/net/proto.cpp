@@ -1,5 +1,6 @@
 #include "net/proto.h"
 #include "model/aod_policy.h"
+#include "model/battery_model.h"
 #include <ArduinoJson.h>
 #include <stdio.h>
 #include <string.h>
@@ -426,6 +427,56 @@ size_t protoBuildStat(char* buf, size_t cap, const NovaState& st) {
   JsonObject cpu = doc["cpu"].to<JsonObject>();
   cpu["ui"]  = st.uiBusyPct;
   cpu["dec"] = st.decBusyPct;
+  return finishJson(doc, buf, cap);
+}
+
+size_t protoBuildPowerEvent(char* buf, size_t cap, const PowerEvent& ev) {
+  JsonDocument doc;
+  doc["evt"]   = "pwr";
+  doc["seq"]   = ev.seq;
+  doc["why"]   = battPwrEvtReasonStr(ev.reason);
+  doc["pct"]   = ev.pct;
+  doc["raw"]   = ev.rawPct;
+  doc["gauge"] = ev.gaugePct;
+  doc["st"]    = ev.stage;
+  if (ev.prevStage != ev.stage) doc["pst"] = ev.prevStage;
+  doc["mv"]    = ev.mv;
+  doc["cmv"]   = ev.compMv;
+  if (ev.restMv > 0) doc["rmv"] = ev.restMv;
+  doc["vb"]    = ev.vbusMv;
+  doc["vs"]    = ev.vsysMv;
+  doc["ma"]    = ev.chgMa;
+  doc["ema"]   = ev.effMa;
+  doc["tmp"]   = ev.tempC;
+  doc["usb"]   = ev.usbPresent ? 1 : 0;
+  doc["chg"]   = ev.charging ? 1 : 0;
+  if (ev.limited)     doc["lim"]  = 1;
+  if (ev.tempCapped)  doc["tcap"] = 1;
+  if (ev.thermReg)    doc["treg"] = 1;
+  if (ev.vbusLimited) doc["vlim"] = 1;
+  doc["mohm"]  = ev.chgMohm;
+  doc["mah"]   = ev.designMah;
+  if (ev.reason == BattPwrEvtReason::BOOT) {
+    doc["onSrc"]  = ev.pwrOnSrc;
+    doc["offSrc"] = ev.pwrOffSrc;
+    doc["seed"]   = ev.seedPct;
+    doc["lost"]   = ev.seedPowerLost ? 1 : 0;
+  }
+  if (ev.hasWatermark) {
+    JsonObject wm = doc["wm"].to<JsonObject>();
+    wm["dur"]   = ev.durSec;
+    wm["sp"]    = ev.startPct;
+    wm["vmin"]  = ev.vbatMinMv;
+    wm["vmax"]  = ev.vbatMaxMv;
+    wm["vsmin"] = ev.vsysMinMv;
+    if (ev.vbusMinMv > 0)   wm["vbmin"] = ev.vbusMinMv;
+    if (ev.tmpMaxC > -40)   wm["tmax"]  = ev.tmpMaxC;
+    if (ev.vbusLimSec > 0)  wm["vlimS"] = ev.vbusLimSec;
+    if (ev.thermRegSec > 0) wm["tregS"] = ev.thermRegSec;
+    if (ev.tempCapSec > 0)  wm["tcapS"] = ev.tempCapSec;
+    if (ev.screenOnSec > 0) wm["scrS"]  = ev.screenOnSec;
+    if (ev.aodSec > 0)      wm["aodS"]  = ev.aodSec;
+  }
   return finishJson(doc, buf, cap);
 }
 
