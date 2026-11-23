@@ -446,8 +446,8 @@ void drawSectionLabel(NovaCanvas& c, int16_t x, int16_t baseY, const char* s) {
   drawText(c, fontCjk14(), x, baseY, s, COL_DIM, COL_CARD);
 }
 
-void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius) {
-  if (r.w <= 0 || r.h <= 0) return;
+void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius, uint8_t alpha) {
+  if (r.w <= 0 || r.h <= 0 || alpha == 0) return;
   uint16_t* fb = c.getFramebuffer();
   if (!fb) return;
 
@@ -480,7 +480,7 @@ void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius) {
         else if (lx >= r.w - rad) dx = lx - (r.w - rad);
         if (dx > 0 && (int32_t)dx * dx + (int32_t)dy * dy > rMaxSq) continue;
       }
-      row[px] = blend565(row[px], 0xFFFF, 46);  // +18% brightness feedback
+      row[px] = blend565(row[px], 0xFFFF, alpha);  // +18% brightness feedback at alpha=46
     }
   }
 }

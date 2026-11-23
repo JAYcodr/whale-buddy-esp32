@@ -104,7 +104,7 @@ void drawSegmented(NovaCanvas& c, Rect r, const char* const* labels, int n, int 
 void drawLevelBar(NovaCanvas& c, Rect r, int levels, int cur, uint16_t accent,
                   bool firstIsMute);
 void drawSectionLabel(NovaCanvas& c, int16_t x, int16_t baseY, const char* s);
-void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius);
+void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius, uint8_t alpha = 46);
 
 inline void drawButton(NovaCanvas& c, Rect r, const char* label, bool active,
                        uint16_t accent = COL_ACCENT, const AaFont* font = nullptr) {

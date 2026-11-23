@@ -6,6 +6,8 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "anim/nva.h"
@@ -16,6 +18,7 @@
 #include "model/state.h"
 #include "net/net.h"
 #include "ui/canvas.h"
+#include "ui/easing.h"
 #include "ui/nav.h"
 #include "ui/pages.h"
 #include "ui/theme.h"
@@ -225,8 +228,18 @@ void uiTaskFn(void*) {
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
   bool    settingsGrab = false;   // 设置页里按下的那个滑块
-  bool    hasPressedRect = false;
-  ui::Rect pressedRect{ 0, 0, 0, 0 };
+  enum class PressPhase : uint8_t { NONE, FADE_IN, HELD, FADE_OUT };
+  constexpr uint32_t kPressInMs     = 60u;
+  constexpr uint32_t kPressOutMs    = 120u;
+  constexpr uint8_t  kPressMaxAlpha = 46u;  // +18% 亮度反馈
+  PressPhase pressPhase     = PressPhase::NONE;
+  uint32_t   pressStartMs   = 0;
+  uint8_t    pressAlpha     = 0;
+  uint8_t    pressFadeFrom  = 0;
+  bool       pressNeedsPush = false;
+  ui::Rect   pressedRect{ 0, 0, 0, 0 };
+  uint16_t*  pressCleanBuf  = nullptr;
+  size_t     pressCleanCap  = 0;
   uint32_t key1DownAt = 0;
   bool     key1LongFired = false;
   uint32_t lastInteractMs = millis();
@@ -285,6 +298,107 @@ void uiTaskFn(void*) {
     if (pct == bright.applied) return;
     bright.applied = pct;
     hwDisplayBrightness(pct);
+  };
+
+  auto clipToScreen = [](const ui::Rect& r) -> ui::Rect {
+    int16_t x0 = r.x < 0 ? 0 : r.x;
+    int16_t y0 = r.y < 0 ? 0 : r.y;
+    int16_t x1 = (r.x + r.w) > UI_W ? UI_W : (int16_t)(r.x + r.w);
+    int16_t y1 = (r.y + r.h) > UI_H ? UI_H : (int16_t)(r.y + r.h);
+    return { x0, y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0) };
+  };
+
+  auto rectsOverlap = [](const ui::Rect& a, const ui::Rect& b) -> bool {
+    return a.w > 0 && a.h > 0 && b.w > 0 && b.h > 0 &&
+           a.x < (b.x + b.w) && (a.x + a.w) > b.x &&
+           a.y < (b.y + b.h) && (a.y + a.h) > b.y;
+  };
+
+  auto capturePressClean = [&](const ui::Rect& r) -> bool {
+    if (!canvas || r.w <= 0 || r.h <= 0) return false;
+    uint16_t* fb = canvas->getFramebuffer();
+    if (!fb) return false;
+    const size_t needPx = (size_t)r.w * (size_t)r.h;
+    if (needPx > pressCleanCap) {
+      free(pressCleanBuf);
+      pressCleanBuf = (uint16_t*)heap_caps_malloc(needPx * sizeof(uint16_t),
+                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!pressCleanBuf) pressCleanBuf = (uint16_t*)malloc(needPx * sizeof(uint16_t));
+      pressCleanCap = pressCleanBuf ? needPx : 0;
+    }
+    if (!pressCleanBuf) return false;
+    for (int16_t row = 0; row < r.h; row++) {
+      memcpy(pressCleanBuf + (size_t)row * r.w,
+             fb + (size_t)(r.y + row) * UI_W + r.x,
+             (size_t)r.w * sizeof(uint16_t));
+    }
+    return true;
+  };
+
+  auto restorePressClean = [&](const ui::Rect& r) {
+    if (!canvas || !pressCleanBuf || r.w <= 0 || r.h <= 0) return;
+    uint16_t* fb = canvas->getFramebuffer();
+    if (!fb) return;
+    for (int16_t row = 0; row < r.h; row++) {
+      memcpy(fb + (size_t)(r.y + row) * UI_W + r.x,
+             pressCleanBuf + (size_t)row * r.w,
+             (size_t)r.w * sizeof(uint16_t));
+    }
+  };
+
+  auto cancelPress = [&]() {
+    pressPhase = PressPhase::NONE;
+    pressAlpha = 0;
+    pressFadeFrom = 0;
+    pressNeedsPush = false;
+  };
+
+  auto startPressIn = [&](const ui::Rect& rawRect, uint32_t ms) {
+    ui::Rect r = clipToScreen(rawRect);
+    if (r.w <= 0 || r.h <= 0) return;
+    // 若上一块按下高亮还在回落，先恢复其干净区域并推屏，避免残影被新快照吃进底色。
+    if (pressPhase == PressPhase::FADE_OUT && pressAlpha > 0) {
+      restorePressClean(pressedRect);
+      hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
+    }
+    if (!capturePressClean(r)) {
+      cancelPress();
+      return;
+    }
+    pressedRect = r;
+    pressPhase = PressPhase::FADE_IN;
+    pressStartMs = ms;
+    pressAlpha = 0;
+    pressFadeFrom = 0;
+    pressNeedsPush = false;
+  };
+
+  auto startPressOut = [&](uint32_t ms) {
+    if (pressPhase != PressPhase::FADE_IN && pressPhase != PressPhase::HELD) return;
+    if (pressPhase == PressPhase::FADE_IN) {
+      float p = ease::outCubic(ease::progress(ms, pressStartMs, kPressInMs));
+      pressAlpha = (uint8_t)lroundf((float)kPressMaxAlpha * p);
+    }
+    if (pressAlpha == 0) {
+      cancelPress();
+      return;
+    }
+    pressPhase = PressPhase::FADE_OUT;
+    pressFadeFrom = pressAlpha;
+    pressStartMs = ms;
+    pressNeedsPush = false;
+  };
+
+  auto syncPressAfterDraw = [&](const ui::Rect& drawnRect) {
+    if (!rectsOverlap(pressedRect, drawnRect)) return;
+    if (pressPhase == PressPhase::NONE) {
+      pressNeedsPush = false;
+      return;
+    }
+    if (capturePressClean(pressedRect) && pressAlpha > 0) {
+      ui::drawPressedOverlay(*canvas, pressedRect, 12, pressAlpha);
+    }
+    pressNeedsPush = false;
   };
 
   for (;;) {
@@ -451,6 +565,7 @@ void uiTaskFn(void*) {
       }
       const size_t fbBytes = (size_t)UI_W * UI_H * sizeof(uint16_t);
       memcpy(from, fb, fbBytes);
+      cancelPress();
       applyCpuMhz(240);
       nav.draw(*canvas, st, cfg, frame, nowMs);
       memcpy(to, fb, fbBytes);
@@ -465,7 +580,7 @@ void uiTaskFn(void*) {
     // Handle approval arrival / dismissal transitions (placed after playTransition).
     if (st.apGen != lastApGen) {
       lastApGen = st.apGen;
-      hasPressedRect = false;
+      cancelPress();
       if (settingsGrab) {
         settingsGrab = false;
         pageSettingsCancelDrag();
@@ -529,6 +644,7 @@ void uiTaskFn(void*) {
           break;
         }
         case UiAction::TEST_SOUND:
+          needFull = false;
           if (!sfxSpeakFile("/audio/tap0.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
             sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
           }
@@ -734,21 +850,20 @@ void uiTaskFn(void*) {
           settingsGrab = pageSettingsTouchDown(ev.x, ev.y, ev.tsMs);
           if (settingsGrab) needFull = true;
         }
+        ui::Rect hitRect{ 0, 0, 0, 0 };
         if (!swallowTap && !dimmedForNap && canvas &&
-            nav.pressedRect(ev.x, ev.y, st, cfg, &pressedRect)) {
-          ui::drawPressedOverlay(*canvas, pressedRect, 12);
-          hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
-          hasPressedRect = true;
-        } else {
-          hasPressedRect = false;
+            nav.pressedRect(ev.x, ev.y, st, cfg, &hitRect)) {
+          startPressIn(hitRect, nowMs);
+        } else if (pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::HELD) {
+          cancelPress();
         }
       } else if (ev.type == InputEvtType::TOUCH_MOVE && tpActive) {
         wakeScreen();
         int16_t adx = ev.x > tpStartX ? (ev.x - tpStartX) : (tpStartX - ev.x);
         int16_t ady = ev.y > tpStartY ? (ev.y - tpStartY) : (tpStartY - ev.y);
-        if (hasPressedRect && (adx >= 12 || ady >= 12)) {
-          hasPressedRect = false;
-          needFull = true;
+        if ((pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::HELD) &&
+            (adx >= 12 || ady >= 12)) {
+          startPressOut(nowMs);
         }
         if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
           if (!tpDraggedV && ady >= 12 && ady > adx) {
@@ -766,8 +881,8 @@ void uiTaskFn(void*) {
           } else {
             if (!tpDraggedV && ady >= 8 && ady > adx) {
               tpDraggedV = true;
-              if (hasPressedRect) {
-                hasPressedRect = false;
+              if (pressPhase != PressPhase::NONE) {
+                cancelPress();
                 needSettingsList = true;
               }
             }
@@ -780,13 +895,11 @@ void uiTaskFn(void*) {
         wakeScreen();
         if (swallowTap) {
           swallowTap = false;
+          cancelPress();
           continue;
         }
-        if (hasPressedRect) {
-          hasPressedRect = false;
-          needFull = true;
-        }
         if (settingsGrab) {
+          cancelPress();
           settingsGrab = false;
           if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
             UiAction up = pageSettingsTouchUp(ev.tsMs);
@@ -800,10 +913,13 @@ void uiTaskFn(void*) {
         if (tpDraggedV) {
           tpDraggedV = false;
           if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+            cancelPress();
             pageSettingsScrollTouchUp(ev.tsMs);
             if (!pageSettingsIsAnimating()) {
               needSettingsList = true;
             }
+          } else {
+            startPressOut(nowMs);
           }
           if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
             pageRankTouchUp(ev.tsMs, st.nRows);
@@ -830,12 +946,17 @@ void uiTaskFn(void*) {
                            ? 0
                            : (dx < 0 ? 1 : -1);
           handleAction(act, slideDir, (int)prevPage);
+          if (needFull) cancelPress();
         } else if (!(prevPage == UiPage::SETTINGS && (adx >= 16 || ady >= 16))) {
           act = nav.onTap(ev.x, ev.y, st, cfg);
-          if (act.kind == UiAction::NONE && nav.currentPage() == UiPage::SETTINGS) {
-            needFull = true;   // 展开 / 收起只改本地 UI 状态
-          }
           handleAction(act);
+          if (needFull || (nav.currentPage() == UiPage::SETTINGS && pageSettingsIsScrolling())) {
+            cancelPress();
+          } else {
+            startPressOut(nowMs);
+          }
+        } else {
+          startPressOut(nowMs);
         }
       } else if (ev.type == InputEvtType::KEY1_DOWN) {
         if (aodActive) {
@@ -1124,7 +1245,36 @@ void uiTaskFn(void*) {
     }
     wasTokensAnim = tokensAnim;
 
-    bool interactive = tpActive || pageRankIsFlinging() || pageSettingsIsAnimating() || uiAnimating;
+    if (screenOff || dimmedForNap || aodActive) {
+      cancelPress();
+    } else if (pressPhase == PressPhase::FADE_IN) {
+      float p = ease::outCubic(ease::progress(nowMs, pressStartMs, kPressInMs));
+      uint8_t nextA = (uint8_t)lroundf((float)kPressMaxAlpha * p);
+      if (nextA != pressAlpha) {
+        pressAlpha = nextA;
+        pressNeedsPush = true;
+      }
+      if ((uint32_t)(nowMs - pressStartMs) >= kPressInMs) {
+        pressAlpha = kPressMaxAlpha;
+        pressPhase = PressPhase::HELD;
+      }
+    } else if (pressPhase == PressPhase::FADE_OUT) {
+      float p = ease::outCubic(ease::progress(nowMs, pressStartMs, kPressOutMs));
+      uint8_t nextA = (uint8_t)lroundf((float)pressFadeFrom * (1.0f - p));
+      if (nextA != pressAlpha) {
+        pressAlpha = nextA;
+        pressNeedsPush = true;
+      }
+      if ((uint32_t)(nowMs - pressStartMs) >= kPressOutMs) {
+        pressAlpha = 0;
+        pressNeedsPush = true;
+        pressPhase = PressPhase::NONE;
+      }
+    }
+
+    bool pressAnimating = (pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::FADE_OUT);
+    bool interactive = tpActive || pageRankIsFlinging() || pageSettingsIsAnimating() ||
+                       pressAnimating || uiAnimating;
     // TOKENS 页一帧要搬 63 KB（368×88）@ 实测 2.7 MB/s ≈ 23 ms，喂不到 60；
     // 鱼又是 ±2.6px / 4s 的慢速微动，30 fps 和 60 fps 肉眼没差别，锁 30 换稳定。
     const uint8_t baseFps = settingsEffectiveFps(snap.battery.usbPresent);
@@ -1144,8 +1294,14 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         if (aodActive) {
           pageHomeDrawAod(*canvas, st, nowMs);
+          cancelPress();
         } else {
           nav.draw(*canvas, st, cfg, frame, nowMs);
+          if (pressPhase == PressPhase::FADE_OUT || pressPhase == PressPhase::NONE) {
+            cancelPress();
+          } else {
+            syncPressAfterDraw({ 0, 0, UI_W, UI_H });
+          }
         }
         hwDisplayPush();
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
@@ -1159,6 +1315,8 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         pageSettingsDrawList(*canvas, st, cfg);
         const ui::Rect sr = pageSettingsListRect();
+        if (pageSettingsIsScrolling()) cancelPress();
+        else syncPressAfterDraw(sr);
         hwDisplayPushRect(sr.x, sr.y, sr.w, sr.h);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needSettingsList = false;
@@ -1168,6 +1326,7 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         pageRankDrawList(*canvas, st);
         const ui::Rect rr = pageRankListRect();
+        syncPressAfterDraw(rr);
         hwDisplayPushRect(rr.x, rr.y, rr.w, rr.h);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needRankList = false;
@@ -1177,6 +1336,7 @@ void uiTaskFn(void*) {
         int16_t dx = 0, dy = 0, dw = 0, dh = 0;
         int64_t t0 = esp_timer_get_time();
         pageHomeDrawStage(*canvas, st, cfg, frame, &dx, &dy, &dw, &dh);
+        syncPressAfterDraw({ dx, dy, dw, dh });
         hwDisplayPushRect(dx, dy, dw, dh);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         frame++;
@@ -1185,6 +1345,7 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         pageTokensDrawStage(*canvas, st, cfg, nowMs);
         const ui::Rect tr = pageTokensStageRect();
+        syncPressAfterDraw(tr);
         hwDisplayPushRect(tr.x, tr.y, tr.w, tr.h);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needTokensSettle = false;
@@ -1194,10 +1355,25 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         pageApprovalDrawBar(*canvas, st, nowMs);
         const ui::Rect ar = pageApprovalBarRect();
+        syncPressAfterDraw(ar);
         hwDisplayPushRect(ar.x, ar.y, ar.w, ar.h);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         frame++;
         fpsFrames++;
+      }
+      if (pressNeedsPush) {
+        int64_t t0 = esp_timer_get_time();
+        restorePressClean(pressedRect);
+        if (pressAlpha > 0) {
+          ui::drawPressedOverlay(*canvas, pressedRect, 12, pressAlpha);
+        }
+        hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        pressNeedsPush = false;
+        if (fpsFrames == framesBefore) {
+          frame++;
+          fpsFrames++;
+        }
       }
     }
     if (fpsFrames != framesBefore) {

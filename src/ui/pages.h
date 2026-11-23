@@ -90,6 +90,7 @@ void pageSettingsOnEnter();
 void pageSettingsCancelDrag();
 bool pageSettingsTick(uint32_t nowMs);
 bool pageSettingsIsAnimating();
+bool pageSettingsIsScrolling();
 ui::Rect pageSettingsListRect();
 #ifdef NOVA_HOST_SIM
 void pageSettingsDebugOpen(uint8_t id);

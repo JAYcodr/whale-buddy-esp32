@@ -758,6 +758,10 @@ bool pageSettingsIsAnimating() {
   return false;
 }
 
+bool pageSettingsIsScrolling() {
+  return s_flinging || s_bouncing || s_scrollTween;
+}
+
 ui::Rect pageSettingsListRect() {
   return { 0, LIST_TOP, UI_W, VIEW_H };
 }
