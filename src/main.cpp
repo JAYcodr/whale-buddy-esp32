@@ -142,7 +142,7 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             needFull = true;
           } else if (strcmp(cmd, "statrate") == 0) {
             // 采数用：临时把 stat 上行从 30s 改密（5..300s，0=默认）
-            netSetStatIntervalMs((uint16_t)(doc["ms"] | 0));
+            netSetStatIntervalMs((uint32_t)(doc["ms"] | 0));
           } else if (strcmp(cmd, "pwr") == 0) {
             int pr = doc["profile"] | 0;
             if (pr < 0 || pr > 2) pr = 0;

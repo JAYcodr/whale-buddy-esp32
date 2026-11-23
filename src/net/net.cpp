@@ -43,7 +43,7 @@ bool            s_portalActive = false;
 uint32_t        s_pubDrops = 0;
 
 char s_apName[24] = "Nova-0000";
-volatile uint16_t s_statIntervalMs = 30000;
+volatile uint32_t s_statIntervalMs = 30000;
 volatile bool    s_usbPresent = true;
 int8_t           s_txPowerApplied = -1;   // 0.25dBm 单位；80=20dBm，52=13dBm
 
@@ -374,10 +374,10 @@ void netRequestWifiConnect(const char* ssid, const char* pass) {
 }
 void netSetPowerSave(NetPsMode mode) { s_desiredPs = mode; }
 
-void netSetStatIntervalMs(uint16_t ms) {
+void netSetStatIntervalMs(uint32_t ms) {
   if (ms == 0) { s_statIntervalMs = 30000; return; }
   if (ms < 5000) ms = 5000;
-  if (ms > 300000) ms = 300000;
+  if (ms > 300000) ms = 300000;   // 上限 300s
   s_statIntervalMs = ms;
 }
 

@@ -48,6 +48,7 @@ enum class SettingKind : uint8_t { BOOL, U8, U16, CHOICE };
 
 struct SettingDef {
   const char*     key;        // NVS key —— 必须与历史版本逐字相同
+                              // toHost 项同时用它作 MQTT prefs 的 JSON 键，改名等于两处一起改
   SettingKind     kind;
   uint16_t        def;
   uint16_t        minV, maxV; // choices 非空时忽略
