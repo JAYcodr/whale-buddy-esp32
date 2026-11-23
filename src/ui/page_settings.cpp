@@ -4,7 +4,11 @@
 #include <Arduino.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#ifndef NOVA_HOST_SIM
+#include <esp_heap_caps.h>
+#endif
 
 // 设置页：分组卡片式一页清单（针对 1.8" 368×448 穿戴屏幕降低密度、放大触控热区）。
 //
@@ -495,21 +499,26 @@ void drawChevronRight(NovaCanvas& c, int16_t tipX, int16_t cy, uint16_t col) {
   c.drawLine(tipX - 2, cy, tipX - 7, cy + 5, col);
 }
 
-void drawChoiceRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const RowDef& r) {
+void drawChoiceRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg,
+                   const RowDef& r, uint8_t alpha = 255) {
   const ChoiceSet& cs = kSets[r.set];
   const uint16_t cur = rowValue(cfg, r.id);
   for (uint8_t i = 0; i < cs.n; i++) {
     const ui::Rect pr = choicePillRect(top, r.set, i);
     const bool on = (cs.values[i] == cur);
-    const uint16_t bg = on ? ui::COL_ACCENT : ui::COL_CARD_HI;
-    const uint16_t bd = on ? ui::COL_ACCENT : ui::COL_BORDER;
-    const uint16_t fg = on ? ui::COL_BG : ui::COL_TEXT;
+    const uint16_t targetBg = on ? ui::COL_ACCENT : ui::COL_CARD_HI;
+    const uint16_t targetBd = on ? ui::COL_ACCENT : ui::COL_BORDER;
+    const uint16_t targetFg = on ? ui::COL_BG : ui::COL_TEXT;
+    const uint16_t bg = ui::blend565(ui::COL_CARD, targetBg, alpha);
+    const uint16_t bd = ui::blend565(ui::COL_CARD, targetBd, alpha);
+    const uint16_t fg = ui::blend565(ui::COL_CARD, targetFg, alpha);
     ui::aaFillRoundRect(c, pr.x, pr.y, pr.w, pr.h, 11, bg, bd);
     ui::drawTextCenteredInRect(c, ui::fontCjk14(), pr, cs.labels[i], fg, bg);
   }
 }
 
-void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const RowDef& r) {
+void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg,
+                   const RowDef& r, uint8_t alpha = 255) {
   const bool bright = (r.id == R_BRIGHT);
   const uint16_t lo = bright ? 20 : 0;
   const uint16_t hi = 100;
@@ -522,8 +531,13 @@ void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const Ro
   const int16_t cy = (int16_t)(top + ROW_H + SLIDER_H / 2);
   const int16_t trackH = 8;
 
+  const uint16_t trackCol  = ui::blend565(ui::COL_CARD, ui::COL_TRACK, alpha);
+  const uint16_t accentCol = ui::blend565(ui::COL_CARD, ui::COL_ACCENT, alpha);
+  const uint16_t ringCol   = ui::blend565(ui::COL_CARD, rgb565(30, 56, 86), alpha);
+  const uint16_t knobCol   = ui::blend565(ui::COL_CARD, ui::COL_TEXT, alpha);
+
   ui::aaFillRoundRect(c, x0, (int16_t)(cy - trackH / 2), (int16_t)(x1 - x0), trackH,
-                      trackH / 2, ui::COL_TRACK, ui::COL_TRACK);
+                      trackH / 2, trackCol, trackCol);
   const int16_t span = (int16_t)(x1 - x0);
   float dispV = (float)v;
   if (s_sliderAnimRow >= 0 && kRows[s_sliderAnimRow].id == r.id) {
@@ -537,15 +551,74 @@ void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const Ro
     int16_t fw = (int16_t)(knobX - x0);
     if (fw < trackH) fw = trackH;
     ui::aaFillRoundRect(c, x0, (int16_t)(cy - trackH / 2), fw, trackH,
-                        trackH / 2, ui::COL_ACCENT, ui::COL_ACCENT);
+                        trackH / 2, accentCol, accentCol);
   }
   const float scale = (s_knobRow >= 0 && kRows[s_knobRow].id == r.id) ? s_knobScale : 1.0f;
   const int16_t ringR = (int16_t)lroundf(15.0f * scale);
   const int16_t knobR = (int16_t)lroundf(12.0f * scale);
   const int16_t dotR  = (int16_t)lroundf(4.0f * scale);
-  ui::aaDrawCircle(c, knobX, cy, ringR, rgb565(30, 56, 86));
-  ui::aaFillCircle(c, knobX, cy, knobR, ui::COL_TEXT);
-  ui::aaFillCircle(c, knobX, cy, dotR, ui::COL_ACCENT);
+  ui::aaDrawCircle(c, knobX, cy, ringR, ringCol);
+  ui::aaFillCircle(c, knobX, cy, knobR, knobCol);
+  ui::aaFillCircle(c, knobX, cy, dotR, accentCol);
+}
+
+void drawExpandedClipped(NovaCanvas& c, int16_t top, const NovaSettings& cfg,
+                         uint8_t idx, bool lastInGroup, float frac) {
+  const RowDef& r = kRows[idx];
+  const float fade = ease::clamp01((frac - 0.55f) / 0.45f);
+  const uint8_t alpha = (uint8_t)lroundf(fade * 255.0f);
+  const int16_t yOff = (int16_t)lroundf((1.0f - fade) * 6.0f);
+  const int16_t drawTop = (int16_t)(top + yOff);
+
+  if (frac >= 1.0f) {
+    if (r.kind == RK_SLIDER) drawSliderRow(c, drawTop, cfg, r, 255);
+    else if (r.kind == RK_CHOICE) drawChoiceRow(c, drawTop, cfg, r, 255);
+    return;
+  }
+
+  // 展开过程从 frac>=0.55 开始淡入上移；保存行底边下方区域并在绘制后恢复，避免无裁剪画布下越界。
+  uint16_t* fb = c.getFramebuffer();
+  const int16_t clipY = (int16_t)(top + rowH(idx) - (lastInGroup ? 2 : 1));
+  const int16_t maxDrawY = (int16_t)(drawTop + ROW_H + fullExtraH(idx) + 8);
+  int16_t y0 = clipY < 0 ? 0 : clipY;
+  int16_t y1 = maxDrawY > UI_H ? UI_H : maxDrawY;
+  static uint16_t* s_clipBuf = nullptr;
+  static size_t s_clipCap = 0;
+  int16_t saveRows = (fb && y1 > y0) ? (int16_t)(y1 - y0) : 0;
+  if (saveRows > 0) {
+    const size_t needPx = (size_t)saveRows * CARD_W;
+    if (needPx > s_clipCap) {
+      free(s_clipBuf);
+#ifndef NOVA_HOST_SIM
+      s_clipBuf = (uint16_t*)heap_caps_malloc(needPx * sizeof(uint16_t),
+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!s_clipBuf) s_clipBuf = (uint16_t*)malloc(needPx * sizeof(uint16_t));
+#else
+      s_clipBuf = (uint16_t*)malloc(needPx * sizeof(uint16_t));
+#endif
+      s_clipCap = s_clipBuf ? needPx : 0;
+    }
+    if (s_clipBuf) {
+      for (int16_t row = 0; row < saveRows; row++) {
+        memcpy(s_clipBuf + (size_t)row * CARD_W,
+               fb + (size_t)(y0 + row) * UI_W + CARD_X,
+               (size_t)CARD_W * sizeof(uint16_t));
+      }
+    } else {
+      saveRows = 0;
+    }
+  }
+
+  if (r.kind == RK_SLIDER) drawSliderRow(c, drawTop, cfg, r, alpha);
+  else if (r.kind == RK_CHOICE) drawChoiceRow(c, drawTop, cfg, r, alpha);
+
+  if (saveRows > 0 && s_clipBuf) {
+    for (int16_t row = 0; row < saveRows; row++) {
+      memcpy(fb + (size_t)(y0 + row) * UI_W + CARD_X,
+             s_clipBuf + (size_t)row * CARD_W,
+             (size_t)CARD_W * sizeof(uint16_t));
+    }
+  }
 }
 
 void drawItemRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, uint8_t idx, bool lastInGroup) {
@@ -593,13 +666,9 @@ void drawItemRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, uint8_t id
       break;
   }
 
-  // 展开区内容仅在抽屉接近到位时绘制，防止无裁剪画布下越出卡片底边。
-  if (rowExpandFrac(idx) >= 0.90f) {
-    if (r.kind == RK_SLIDER) {
-      drawSliderRow(c, top, cfg, r);
-    } else if (r.kind == RK_CHOICE) {
-      drawChoiceRow(c, top, cfg, r);
-    }
+  const float frac = rowExpandFrac(idx);
+  if (frac >= 0.55f && (r.kind == RK_SLIDER || r.kind == RK_CHOICE)) {
+    drawExpandedClipped(c, top, cfg, idx, lastInGroup, frac);
   }
 
   if (!lastInGroup) {
