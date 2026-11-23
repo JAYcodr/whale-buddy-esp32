@@ -24,6 +24,8 @@ constexpr float   kPi          = 3.14159265f;
 constexpr uint32_t kSwimStaggerMs  = 55u;
 constexpr uint32_t kSwimItemDurMs  = 750u;
 constexpr uint32_t kPowerSaveBobMs = 5000u;
+constexpr uint32_t kSelColDurMs    = 160u;
+constexpr uint32_t kSelScaleDurMs  = 220u;
 
 constexpr uint16_t kColToday = rgb565(99, 212, 255);
 constexpr uint16_t kColPeak  = rgb565(62, 134, 196);
@@ -33,6 +35,12 @@ constexpr uint16_t kColEye   = rgb565(7, 12, 18);
 int      s_selIdx       = -1;
 uint32_t s_enterMs      = 0;
 uint32_t s_animAnchorMs = 0;
+bool     s_colActive[MAX_TOKEN_DAYS]  = {};
+uint32_t s_colStartMs[MAX_TOKEN_DAYS] = {};
+float    s_colFrom[MAX_TOKEN_DAYS]    = {};
+int      s_pulseIdx     = -1;
+bool     s_pulseActive  = false;
+uint32_t s_pulseStartMs = 0;
 
 struct WhaleGeom {
   float cx;
@@ -156,26 +164,47 @@ WhaleGeom computeWhaleGeom(const NovaState& st, uint8_t i, uint64_t maxV,
   return WhaleGeom{ cx, cy, w, h, alpha };
 }
 
+float whaleSelT(uint8_t idx, uint32_t nowMs) {
+  const float target = ((int)idx == s_selIdx) ? 1.0f : 0.0f;
+  if (!s_colActive[idx]) return target;
+  const uint32_t elapsed = (nowMs >= s_colStartMs[idx]) ? (nowMs - s_colStartMs[idx]) : 0u;
+  if (elapsed >= kSelColDurMs) return target;
+  const float p = ease::outCubic((float)elapsed / (float)kSelColDurMs);
+  return ease::lerp(s_colFrom[idx], target, p);
+}
+
+float whalePulseScale(uint8_t idx, uint32_t nowMs) {
+  if (!s_pulseActive || (int)idx != s_pulseIdx) return 1.0f;
+  const uint32_t elapsed = (nowMs >= s_pulseStartMs) ? (nowMs - s_pulseStartMs) : 0u;
+  if (elapsed >= kSelScaleDurMs) return 1.0f;
+  const float u = (float)elapsed / (float)kSelScaleDurMs;
+  constexpr float kRiseSplit = 0.35f;
+  constexpr float kPeakScale = 1.08f;
+  if (u < kRiseSplit) {
+    return ease::lerp(1.0f, kPeakScale, ease::outCubic(u / kRiseSplit));
+  }
+  return ease::lerp(kPeakScale, 1.0f, ease::outBack((u - kRiseSplit) / (1.0f - kRiseSplit)));
+}
+
 void drawWhale(NovaCanvas& c, const WhaleGeom& g, uint16_t col,
-               bool isToday, bool isPeak, bool isSelected) {
+               bool isToday, bool isPeak, float selT) {
   if (g.alpha <= 0.01f || g.w < 4.0f || g.h < 3.0f) return;
   uint16_t* fb = c.getFramebuffer();
   if (!fb) return;
 
   const int16_t W = (int16_t)c.width();
-  const int16_t H = (int16_t)c.height();
   const float x0 = g.cx - g.w * 0.5f;
   const float y0 = g.cy - g.h * 0.5f;
-  const float glowPad = isSelected ? 10.0f : (isToday ? 8.0f : (isPeak ? 4.0f : 1.0f));
+  const float glowPad = (selT > 0.01f) ? 10.0f : (isToday ? 8.0f : (isPeak ? 4.0f : 1.0f));
 
   int16_t px0 = (int16_t)floorf(x0 - glowPad);
   int16_t py0 = (int16_t)floorf(y0 - glowPad);
   int16_t px1 = (int16_t)ceilf(x0 + g.w + glowPad);
   int16_t py1 = (int16_t)ceilf(y0 + g.h + glowPad);
   if (px0 < 0) px0 = 0;
-  if (py0 < kStageTop) py0 = kStageTop;
+  if (py0 < kPushTop) py0 = kPushTop;
   if (px1 >= W) px1 = W - 1;
-  if (py1 >= kStageTop + kStageH) py1 = kStageTop + kStageH - 1;
+  if (py1 >= kPushTop + kPushH) py1 = kPushTop + kPushH - 1;
 
   // Body ellipse parameters matching whale-school.html silhouette.
   const float bodyCx = x0 + g.w * 0.455f;
@@ -207,7 +236,8 @@ void drawWhale(NovaCanvas& c, const WhaleGeom& g, uint16_t col,
   const float fx1 = x0 + g.w * 0.42f, fy1 = y0 + g.h * 0.01f;
   const float fx2 = x0 + g.w * 0.46f, fy2 = y0 + g.h * 0.16f;
 
-  const float maxGlowStrength = isSelected ? 0.55f : (isToday ? 0.42f : (isPeak ? 0.16f : 0.0f));
+  const float baseGlow = isToday ? 0.42f : (isPeak ? 0.16f : 0.0f);
+  const float maxGlowStrength = ease::lerp(baseGlow, 0.55f, selT);
 
   for (int16_t py = py0; py <= py1; py++) {
     uint16_t* row = fb + (int32_t)py * W;
@@ -353,70 +383,23 @@ void drawWhaleSchool(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg
   for (uint8_t i = 0; i < n; i++) {
     bool isToday = (i == n - 1);
     bool isPeak  = (st.tokenDays[i].tokens == maxV);
-    bool isSel   = ((int)i == s_selIdx);
-    uint16_t col = isSel ? ui::COL_ACCENT : (isToday ? kColToday : (isPeak ? kColPeak : kColFish));
+    float selT   = whaleSelT(i, nowMs);
+    uint16_t baseCol = isToday ? kColToday : (isPeak ? kColPeak : kColFish);
+    uint16_t col = ui::blend565(baseCol, ui::COL_ACCENT, (uint8_t)lroundf(selT * 255.0f));
     WhaleGeom g = computeWhaleGeom(st, i, maxV, nowMs, bobScale);
-    drawWhale(c, g, col, isToday, isPeak, isSel);
+    float sc = whalePulseScale(i, nowMs);
+    g.w *= sc;
+    g.h *= sc;
+    drawWhale(c, g, col, isToday, isPeak, selT);
   }
 }
 
-int hitTestWhale(int16_t x, int16_t y, const NovaState& st, uint32_t nowMs) {
-  if (st.nTokenDays == 0 || y < kStageTop || y >= kStageTop + kStageH) return -1;
-  const uint64_t maxV = findMaxDayTokens(st);
-  const uint8_t n = (st.nTokenDays > MAX_TOKEN_DAYS) ? MAX_TOKEN_DAYS : st.nTokenDays;
-  int best = -1;
-  float bestD2 = 1e9f;
-  for (uint8_t i = 0; i < n; i++) {
-    WhaleGeom g = computeWhaleGeom(st, i, maxV, nowMs, 0.0f);
-    float rx = g.w * 0.65f + 8.0f;
-    float ry = g.h * 0.70f + 14.0f;
-    float dx = (float)x - g.cx;
-    float dy = (float)y - g.cy;
-    float norm2 = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
-    if (norm2 <= 1.0f && norm2 < bestD2) {
-      bestD2 = norm2;
-      best = (int)i;
-    }
+void drawSelectionHud(NovaCanvas& c, const NovaState& st, bool clearFirst) {
+  if (clearFirst) {
+    c.fillRect(0, 62, UI_W, 92, ui::COL_BG);
+    c.fillRect(0, 414, UI_W, UI_H - 414, ui::COL_BG);
   }
-  return best;
-}
-
-}  // namespace
-
-void pageTokensOnEnter(uint32_t nowMs) {
-  s_enterMs = nowMs;
-  s_animAnchorMs = nowMs;
-  s_selIdx = -1;
-}
-
-bool pageTokensIsAnimating(const NovaState& st, const NovaSettings& cfg, uint32_t nowMs) {
-  if (st.nTokenDays == 0) return false;
-  uint32_t swimEnd = totalSwimDuration(st.nTokenDays);
-  uint32_t sinceEnter = (nowMs >= s_enterMs) ? (nowMs - s_enterMs) : 0u;
-  if (sinceEnter < swimEnd) return true;
-  if (shouldBobContinually(cfg, st.usbPresent)) return true;
-  uint32_t totalBobWindow = (kPowerSaveBobMs > swimEnd) ? kPowerSaveBobMs : (swimEnd + 1500u);
-  uint32_t sinceAnchor = (nowMs >= s_animAnchorMs) ? (nowMs - s_animAnchorMs) : 0u;
-  return sinceAnchor < totalBobWindow;
-}
-
-void pageTokensDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
-                         uint32_t nowMs) {
-  drawWhaleSchool(c, st, cfg, nowMs);
-}
-
-void pageTokensDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
-  c.fillScreen(ui::COL_BG);
-  ui::drawTopBar(c, st, 0);
-
-  if (st.nTokenDays == 0) {
-    ui::drawCard(c, 24, 128, 320, 140, ui::COL_CARD, ui::COL_BORDER, 18);
-    ui::drawTextCentered(c, ui::fontCjk16(), UI_W / 2, 188,
-                         "暂未收到 Token 统计", ui::COL_TEXT, ui::COL_CARD);
-    ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 222,
-                         "等待宿主端推送每日鲸群用量", ui::COL_DIM, ui::COL_CARD);
-    return;
-  }
+  if (st.nTokenDays == 0) return;
 
   const uint8_t n = (st.nTokenDays > MAX_TOKEN_DAYS) ? MAX_TOKEN_DAYS : st.nTokenDays;
   if (s_selIdx >= (int)n) s_selIdx = -1;
@@ -468,6 +451,97 @@ void pageTokensDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
     ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 145, subBuf, ui::COL_MUTED, ui::COL_BG);
   }
 
+  char footBuf[64];
+  if (s_selIdx >= 0) {
+    snprintf(footBuf, sizeof(footBuf), "已选 %s · 再点或点上方恢复今日",
+             focusDay.date[0] ? focusDay.date : "--");
+  } else {
+    snprintf(footBuf, sizeof(footBuf), "%u 条鲸一起游 · 点鲸鱼看当日用量", (unsigned)n);
+  }
+  ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 432, footBuf, ui::COL_MUTED, ui::COL_BG);
+}
+
+int hitTestWhale(int16_t x, int16_t y, const NovaState& st, uint32_t nowMs) {
+  if (st.nTokenDays == 0 || y < kStageTop || y >= kStageTop + kStageH) return -1;
+  const uint64_t maxV = findMaxDayTokens(st);
+  const uint8_t n = (st.nTokenDays > MAX_TOKEN_DAYS) ? MAX_TOKEN_DAYS : st.nTokenDays;
+  int best = -1;
+  float bestD2 = 1e9f;
+  for (uint8_t i = 0; i < n; i++) {
+    WhaleGeom g = computeWhaleGeom(st, i, maxV, nowMs, 0.0f);
+    float rx = g.w * 0.65f + 8.0f;
+    float ry = g.h * 0.70f + 14.0f;
+    float dx = (float)x - g.cx;
+    float dy = (float)y - g.cy;
+    float norm2 = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+    if (norm2 <= 1.0f && norm2 < bestD2) {
+      bestD2 = norm2;
+      best = (int)i;
+    }
+  }
+  return best;
+}
+
+}  // namespace
+
+void pageTokensOnEnter(uint32_t nowMs) {
+  s_enterMs = nowMs;
+  s_animAnchorMs = nowMs;
+  s_selIdx = -1;
+  s_pulseIdx = -1;
+  s_pulseActive = false;
+  for (int i = 0; i < MAX_TOKEN_DAYS; i++) {
+    s_colActive[i] = false;
+    s_colFrom[i] = 0.0f;
+  }
+}
+
+bool pageTokensIsAnimating(const NovaState& st, const NovaSettings& cfg, uint32_t nowMs) {
+  if (st.nTokenDays == 0) return false;
+  if (s_pulseActive && nowMs >= s_pulseStartMs && (nowMs - s_pulseStartMs) < kSelScaleDurMs) {
+    return true;
+  }
+  for (int i = 0; i < MAX_TOKEN_DAYS; i++) {
+    if (s_colActive[i] && nowMs >= s_colStartMs[i] && (nowMs - s_colStartMs[i]) < kSelColDurMs) {
+      return true;
+    }
+  }
+  uint32_t swimEnd = totalSwimDuration(st.nTokenDays);
+  uint32_t sinceEnter = (nowMs >= s_enterMs) ? (nowMs - s_enterMs) : 0u;
+  if (sinceEnter < swimEnd) return true;
+  if (shouldBobContinually(cfg, st.usbPresent)) return true;
+  uint32_t totalBobWindow = (kPowerSaveBobMs > swimEnd) ? kPowerSaveBobMs : (swimEnd + 1500u);
+  uint32_t sinceAnchor = (nowMs >= s_animAnchorMs) ? (nowMs - s_animAnchorMs) : 0u;
+  return sinceAnchor < totalBobWindow;
+}
+
+void pageTokensDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
+                         uint32_t nowMs) {
+  drawWhaleSchool(c, st, cfg, nowMs);
+}
+
+void pageTokensDrawHud(NovaCanvas& c, const NovaState& st) {
+  drawSelectionHud(c, st, true);
+}
+
+void pageTokensDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
+  c.fillScreen(ui::COL_BG);
+  ui::drawTopBar(c, st, 0);
+
+  if (st.nTokenDays == 0) {
+    ui::drawCard(c, 24, 128, 320, 140, ui::COL_CARD, ui::COL_BORDER, 18);
+    ui::drawTextCentered(c, ui::fontCjk16(), UI_W / 2, 188,
+                         "暂未收到 Token 统计", ui::COL_TEXT, ui::COL_CARD);
+    ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 222,
+                         "等待宿主端推送每日鲸群用量", ui::COL_DIM, ui::COL_CARD);
+    return;
+  }
+
+  const uint8_t n = (st.nTokenDays > MAX_TOKEN_DAYS) ? MAX_TOKEN_DAYS : st.nTokenDays;
+  if (s_selIdx >= (int)n) s_selIdx = -1;
+
+  drawSelectionHud(c, st, false);
+
   // Whale school wave.
   drawWhaleSchool(c, st, settingsGet(), nowMs);
 
@@ -490,31 +564,35 @@ void pageTokensDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
   drawStatCell(c, { 20,  352, 104, 58 }, "最肥的一天", peakStr, peakUnit, ui::COL_TEXT);
   drawStatCell(c, { 132, 352, 104, 58 }, "日均", avgStr, avgUnit, ui::COL_TEXT);
   drawStatCell(c, { 244, 352, 104, 58 }, "缓存命中", cacheStr, "%", ui::COL_ACCENT);
-
-  char footBuf[64];
-  if (s_selIdx >= 0) {
-    snprintf(footBuf, sizeof(footBuf), "已选 %s · 再点或点上方恢复今日",
-             focusDay.date[0] ? focusDay.date : "--");
-  } else {
-    snprintf(footBuf, sizeof(footBuf), "%u 条鲸一起游 · 点鲸鱼看当日用量", (unsigned)n);
-  }
-  ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 432, footBuf, ui::COL_MUTED, ui::COL_BG);
 }
 
 UiAction pageTokensTap(int16_t x, int16_t y, const NovaState& st, uint32_t nowMs) {
   if (st.nTokenDays == 0 || y < 60) return UiAction{};
   int hit = hitTestWhale(x, y, st, nowMs);
-  if (hit >= 0) {
-    s_selIdx = (s_selIdx == hit) ? -1 : hit;
-    s_animAnchorMs = nowMs;
-    return UiAction{ UiAction::TOKENS_REDRAW, s_selIdx };
+  int nextSel = (hit >= 0) ? ((s_selIdx == hit) ? -1 : hit) : -1;
+  if (hit < 0 && s_selIdx < 0) return UiAction{};
+  if (nextSel == s_selIdx) return UiAction{};
+
+  const int prevSel = s_selIdx;
+  if (prevSel >= 0 && prevSel < MAX_TOKEN_DAYS) {
+    s_colFrom[prevSel] = whaleSelT((uint8_t)prevSel, nowMs);
+    s_colStartMs[prevSel] = nowMs;
+    s_colActive[prevSel] = true;
   }
-  if (s_selIdx >= 0) {
-    s_selIdx = -1;
-    s_animAnchorMs = nowMs;
-    return UiAction{ UiAction::TOKENS_REDRAW, -1 };
+  if (nextSel >= 0 && nextSel < MAX_TOKEN_DAYS) {
+    s_colFrom[nextSel] = whaleSelT((uint8_t)nextSel, nowMs);
+    s_colStartMs[nextSel] = nowMs;
+    s_colActive[nextSel] = true;
+    s_pulseIdx = nextSel;
+    s_pulseStartMs = nowMs;
+    s_pulseActive = true;
+  } else {
+    s_pulseActive = false;
+    s_pulseIdx = -1;
   }
-  return UiAction{};
+  s_selIdx = nextSel;
+  s_animAnchorMs = nowMs;
+  return UiAction{ UiAction::TOKENS_REDRAW, s_selIdx };
 }
 
 bool pageTokensHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings&,

@@ -204,6 +204,7 @@ void uiTaskFn(void*) {
   bool wasApprovalActive = false;
   bool wasTokensAnim = false;
   bool needTokensSettle = false;
+  bool needTokensHud = false;
 
   // v0.5.0：AOD + 观测
   bool     aodActive = false;
@@ -749,6 +750,9 @@ void uiTaskFn(void*) {
           }
           break;
         case UiAction::TOKENS_REDRAW:
+          needFull = false;
+          needTokensHud = true;
+          needTokensSettle = true;
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::DOCK_TOGGLE:
@@ -1313,6 +1317,7 @@ void uiTaskFn(void*) {
         needRankList = false;
         needSettingsList = false;
         needTokensSettle = false;
+        needTokensHud = false;
         frame++;
         fpsFrames++;
       } else if (needSettingsList && !aodActive && !st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
@@ -1347,6 +1352,12 @@ void uiTaskFn(void*) {
         fpsFrames++;
       } else if (tokensAnim || (tokensPage && needTokensSettle)) {
         int64_t t0 = esp_timer_get_time();
+        if (needTokensHud) {
+          pageTokensDrawHud(*canvas, st);
+          hwDisplayPushRect(0, 62, UI_W, 92);
+          hwDisplayPushRect(0, 414, UI_W, UI_H - 414);
+          needTokensHud = false;
+        }
         pageTokensDrawStage(*canvas, st, cfg, nowMs);
         const ui::Rect tr = pageTokensStageRect();
         syncPressAfterDraw(tr);
