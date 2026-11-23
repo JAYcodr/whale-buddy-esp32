@@ -32,8 +32,8 @@ nova-buddy/
 │   ├── hw/                    bus / display / input / audio / power / rtc / imu / expander / border
 │   ├── model/                 settings（NVS）+ state（互斥锁全局状态）
 │   ├── net/                   net.cpp（WiFiManager + MQTT 任务）+ proto.cpp（JSON 编解码）
-│   ├── ui/                    canvas / theme / pages / nav / transition / aafont_data（6.9MB 字体）
-│   └── [未接入] character.* / buddies/ / ble_bridge* / data.h / xfer.h / stats.h / ui/p0_demo.cpp
+│   └── ui/                    canvas / theme / pages / nav / transition / aafont_data（6.9MB 字体）
+├── attic/                     p0_demo.{cpp,h}：硬件点屏验证页，不参与编译
 ├── host-plugin/               DSH 插件
 │   ├── index.js               cordis 入口：inject tokenMeter，注册 3 个 global 监听
 │   ├── lib/bridge.js          会话聚合、审批仲裁、MQTT 发布与定时器
@@ -56,7 +56,7 @@ nova-buddy/
 └── docs/                      设计书、架构（本文）、previews 截图
 ```
 
-> **未接入 ≠ 已删除**：`character.cpp`（GIF 通道）、`buddy.cpp`、`src/buddies/*`（18 个 ASCII 宠物）、`ble_bridge*`（旧 BLE 链路）、`data.h`/`stats.h`/`xfer.h`（旧 BLE 载荷与统计）都还在仓库里，但已无调用方。S3 环境用 `build_src_filter` 剔掉了 `buddies/`、`buddy.cpp`、`ble_bridge*`、`xfer.h`、`ui/p0_demo.cpp`；`character.cpp` 仍被 `+<*>` 收进编译 —— 它是当前唯一的编译负担（固件 2.6 MB / 8 MB，余量充足，暂不动）。
+> **上游残留已清理**：GIF 角色通道、18 个 ASCII 宠物、旧 BLE 桥接与旧 BLE 载荷/统计头文件、`main.cpp.m5stick.bak` 已在 `66f2255` 删除（需要时从 git 历史取回）；`ui/p0_demo.*` 已移到 `attic/`，不参与编译。`build_src_filter` 现在是显式白名单，新目录默认不进编译。
 
 ---
 

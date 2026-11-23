@@ -172,6 +172,9 @@ Broker：`mqtt://192.168.31.15:1883`
 ```bash
 cd "/Volumes/hamelin-ssd/gemini工作区/nova-buddy"
 
+# 一条命令跑完全部（约 15s）
+bash tools/check_all.sh
+
 # 插件单测（14 个）—— 注意 npm test 会报 Missing script
 node --test host-plugin/test/bridge.test.mjs host-plugin/test/tokens.test.mjs
 

@@ -4,4 +4,4 @@
 
 当前实现已改为 WiFi + MQTT，协议见 [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) §4「数据传递」。
 
-`REFERENCE.md` 描述的 BLE 协议对应 `8ac960d` 提交里的 `src/ble_bridge*`。这些文件在后续清理中已移出编译（`build_src_filter` 剔除，仓库内仍保留但无调用方），当前固件不走 BLE 链路。
+`REFERENCE.md` 描述的 BLE 协议对应 `8ac960d` 提交里的 `src/ble_bridge*`。这些文件已在 `66f2255` 中删除，需要时从 git 历史取回，当前固件不走 BLE 链路。
