@@ -212,10 +212,18 @@ void uiTaskFn(void*) {
   uint32_t aodEnterMs = 0;
   NvaAnimKey aodPoseApplied = NvaAnimKey::COUNT;
   bool     swallowTap = false;      // 唤醒 AOD 的那一击不派发
+  enum class AodFade : uint8_t { NONE, ENTER_DIM, ENTER_RISE, EXIT_DIM, EXIT_RISE };
+  constexpr uint32_t kAodDimMs       = 250u;
+  constexpr uint32_t kAodEnterRiseMs = 250u;
+  constexpr uint32_t kAodExitRiseMs  = 180u;
+  AodFade  aodFade        = AodFade::NONE;
+  uint32_t aodFadeStartMs = 0;
+  uint8_t  aodFadeFromRaw = 0;
 
   struct BrightCache {
-    uint8_t applied = 255;
-    void invalidate() { applied = 255; }   // 语义：下次 apply 必须写 I2C
+    uint8_t  applied    = 255;
+    uint16_t appliedRaw = 256;
+    void invalidate() { applied = 255; appliedRaw = 256; }
   } bright;
   uint32_t uiBusyUs = 0;
   uint32_t decBusyUs = 0;
@@ -292,13 +300,13 @@ void uiTaskFn(void*) {
     }
   };
 
-  // 亮度去重：只有有效百分比变化才写 I2C（AOD 降档 + 翻扣降暗会频繁调用）。
-  auto applyBright = [&](uint8_t pct) {
-    if (pct < 20) pct = 20;
-    if (pct > 100) pct = 100;
-    if (pct == bright.applied) return;
-    bright.applied = pct;
-    hwDisplayBrightness(pct);
+  // 亮度去重：只有有效寄存值变化才写 QSPI。
+  auto applyBrightRaw = [&](uint8_t raw, uint8_t effPct) {
+    if (raw != bright.appliedRaw) {
+      bright.appliedRaw = raw;
+      hwDisplayBrightnessRaw(raw);
+    }
+    bright.applied = effPct;
   };
 
   auto clipToScreen = [](const ui::Rect& r) -> ui::Rect {
@@ -458,19 +466,54 @@ void uiTaskFn(void*) {
           (uint32_t)(cfg.batSleepSec >= 10 ? cfg.batSleepSec : 30) * 1000u;
       if (sleepMs < aodThresholdMs) aodThresholdMs = sleepMs;
     }
+    auto currentBrightRaw = [&]() -> uint8_t {
+      return (bright.appliedRaw <= 255u) ? (uint8_t)bright.appliedRaw
+                                         : hwDisplayPctToRaw(cfg.brightPct);
+    };
+    auto beginAodEnter = [&]() {
+      if (screenOff || dimmedForNap) {
+        aodActive = true;
+        aodEnterMs = nowMs;
+        aodFade = AodFade::NONE;
+        bright.invalidate();
+        needFull = true;
+      } else if (!aodActive && aodFade != AodFade::ENTER_DIM) {
+        aodFade = AodFade::ENTER_DIM;
+        aodFadeStartMs = nowMs;
+        aodFadeFromRaw = currentBrightRaw();
+      }
+    };
+    auto beginAodExit = [&](bool clearForced, bool urgent) {
+      if (clearForced) aodForced = false;
+      if (aodActive) {
+        if (urgent || screenOff || dimmedForNap) {
+          aodActive = false;
+          aodPoseApplied = NvaAnimKey::COUNT;
+          needFull = true;
+          aodFade = (screenOff || dimmedForNap) ? AodFade::NONE : AodFade::EXIT_RISE;
+          aodFadeStartMs = nowMs;
+          aodFadeFromRaw = currentBrightRaw();
+          if (aodFade == AodFade::NONE) bright.invalidate();
+        } else if (aodFade != AodFade::EXIT_DIM) {
+          aodFade = AodFade::EXIT_DIM;
+          aodFadeStartMs = nowMs;
+          aodFadeFromRaw = currentBrightRaw();
+        }
+      } else if (aodFade == AodFade::ENTER_DIM) {
+        aodFade = (screenOff || dimmedForNap) ? AodFade::NONE : AodFade::EXIT_RISE;
+        aodFadeStartMs = nowMs;
+        aodFadeFromRaw = currentBrightRaw();
+      }
+    };
+
     if (s_aodForceReq >= 0) {
       aodForced = (s_aodForceReq == 1);
       s_aodForceReq = -1;
-      if (aodForced && !aodActive) {
-        aodActive = true;
-        aodEnterMs = nowMs;
-        bright.invalidate();
-        needFull = true;
-      } else if (!aodForced && aodActive) {
-        aodActive = false;
-        aodPoseApplied = NvaAnimKey::COUNT;
-        bright.invalidate();
-        needFull = true;
+      if (aodForced) {
+        beginAodEnter();
+      } else {
+        lastInteractMs = nowMs;
+        beginAodExit(true, false);
       }
     }
     if (aodActive) {
@@ -478,20 +521,47 @@ void uiTaskFn(void*) {
           aod::shouldExit(cfg.aodMode, snap.battery.usbPresent, st.approvalActive,
                           st.wifiApMode, screenOff, st.battPct);
       if (exitNow) {
-        aodActive = false;
-        aodPoseApplied = NvaAnimKey::COUNT;
-        bright.invalidate();
-        needFull = true;
+        const bool urgent = st.approvalActive || st.wifiApMode || screenOff;
+        beginAodExit(false, urgent);
       }
     } else if (!aodForced && aod::shouldEnter(cfg.aodMode, snap.battery.usbPresent,
                                               st.approvalActive, st.wifiApMode, screenOff,
                                               dimmedForNap,
                                               aod::idleSince(nowMs, lastInteractMs),
                                               aodThresholdMs)) {
-      aodActive = true;
-      aodEnterMs = nowMs;
-      bright.invalidate();
-      needFull = true;
+      beginAodEnter();
+    }
+    if (aodFade == AodFade::ENTER_DIM && (st.approvalActive || st.wifiApMode)) {
+      beginAodExit(false, true);
+    }
+    if (aodFade == AodFade::ENTER_DIM || aodFade == AodFade::EXIT_DIM) {
+      if (screenOff || dimmedForNap) {
+        if (aodFade == AodFade::ENTER_DIM) {
+          aodActive = true;
+          aodEnterMs = nowMs;
+          needFull = true;
+        } else {
+          aodActive = false;
+          aodPoseApplied = NvaAnimKey::COUNT;
+          needFull = true;
+        }
+        aodFade = AodFade::NONE;
+        bright.invalidate();
+      } else if ((uint32_t)(nowMs - aodFadeStartMs) >= kAodDimMs) {
+        applyBrightRaw(0, 0);
+        if (aodFade == AodFade::ENTER_DIM) {
+          aodActive = true;
+          aodEnterMs = nowMs;
+          aodFade = AodFade::ENTER_RISE;
+        } else {
+          aodActive = false;
+          aodPoseApplied = NvaAnimKey::COUNT;
+          aodFade = AodFade::EXIT_RISE;
+        }
+        aodFadeStartMs = nowMs;
+        aodFadeFromRaw = 0;
+        needFull = true;
+      }
     }
 
     // AOD 定格姿势：有任务摆 WORKING、等审批摆 WAITING、其余 SLEEP。
@@ -813,11 +883,8 @@ void uiTaskFn(void*) {
       // 注入的点击也算一次交互：不刷新的话退出 AOD 后下一轮就立刻又判进去，
       // 串口调页面时屏幕会一直停在表盘上。
       lastInteractMs = nowMs;
-      if (aodActive) {
-        aodActive = false;
-        aodForced = false;
-        bright.invalidate();
-        needFull = true;
+      if (aodActive || aodFade == AodFade::ENTER_DIM) {
+        beginAodExit(true, false);
       } else {
         UiAction act = nav.onTap(tx, ty, st, cfg);
         if (act.kind != UiAction::NONE) {
@@ -836,12 +903,8 @@ void uiTaskFn(void*) {
           tpActive = false;
           continue;
         }
-        if (aodActive) {
-          aodActive = false;
-          aodPoseApplied = NvaAnimKey::COUNT;
-          aodForced = false;
-          bright.invalidate();
-          needFull = true;
+        if (aodActive || aodFade == AodFade::ENTER_DIM) {
+          beginAodExit(true, false);
           swallowTap = true;
         }
         wakeScreen();
@@ -967,12 +1030,8 @@ void uiTaskFn(void*) {
           startPressOut(nowMs);
         }
       } else if (ev.type == InputEvtType::KEY1_DOWN) {
-        if (aodActive) {
-          aodActive = false;
-          aodPoseApplied = NvaAnimKey::COUNT;
-          aodForced = false;
-          bright.invalidate();
-          needFull = true;
+        if (aodActive || aodFade == AodFade::ENTER_DIM) {
+          beginAodExit(true, false);
         }
         wakeScreen();
         key1DownAt = nowMs;
@@ -996,16 +1055,14 @@ void uiTaskFn(void*) {
         }
         key1DownAt = 0;
       } else if (ev.type == InputEvtType::AXP_SHORT) {
-        if (aodActive) {
-          aodActive = false;
-          aodForced = false;
-          bright.invalidate();
-          needFull = true;
+        if (aodActive || aodFade == AodFade::ENTER_DIM) {
+          beginAodExit(true, false);
         } else if (screenOff) {
           wakeScreen();
         } else {
           hwDisplaySleep(true);
           screenOff = true;
+          aodFade = AodFade::NONE;
         }
       }
     }
@@ -1034,15 +1091,34 @@ void uiTaskFn(void*) {
       }
     }
 
-    // 统一亮度：暗屏 0 / AOD 降档 / 平时用户档；只在有效值变化时写 I2C。
+    // 统一亮度：暗屏 0 / AOD 降档 / 平时用户档 + AOD 进出背光渐变；只在有效值变化时写 QSPI。
     if (!screenOff) {
-      uint8_t wantBright = cfg.brightPct;
+      uint8_t wantPct = cfg.brightPct;
       if (dimmedForNap) {
-        wantBright = 20;   // 老固件的 0 档 = 20%；翻扣时压到最暗而不是全黑
+        wantPct = 20;   // 老固件的 0 档 = 20%；翻扣时压到最暗而不是全黑
+        aodFade = AodFade::NONE;
       } else if (aodActive) {
-        wantBright = aod::brightnessPct(cfg.brightPct, cfg.aodNightCap, aod::isNight(st.hour));
+        wantPct = aod::brightnessPct(cfg.brightPct, cfg.aodNightCap, aod::isNight(st.hour));
       }
-      applyBright(wantBright);
+      const uint8_t targetRaw = hwDisplayPctToRaw(wantPct);
+      if (aodFade == AodFade::ENTER_DIM || aodFade == AodFade::EXIT_DIM) {
+        const float p = ease::outCubic(ease::progress(nowMs, aodFadeStartMs, kAodDimMs));
+        const uint8_t raw = (uint8_t)lroundf(ease::lerp((float)aodFadeFromRaw, 0.0f, p));
+        applyBrightRaw(raw, (uint8_t)((uint16_t)raw * 100u / 255u));
+      } else if (aodFade == AodFade::ENTER_RISE || aodFade == AodFade::EXIT_RISE) {
+        const uint32_t dur = (aodFade == AodFade::ENTER_RISE) ? kAodEnterRiseMs : kAodExitRiseMs;
+        const uint32_t el = (uint32_t)(nowMs - aodFadeStartMs);
+        if (el >= dur) {
+          aodFade = AodFade::NONE;
+          applyBrightRaw(targetRaw, wantPct);
+        } else {
+          const float p = ease::outCubic((float)el / (float)dur);
+          const uint8_t raw = (uint8_t)lroundf(ease::lerp((float)aodFadeFromRaw, (float)targetRaw, p));
+          applyBrightRaw(raw, (uint8_t)((uint16_t)raw * 100u / 255u));
+        }
+      } else {
+        applyBrightRaw(targetRaw, wantPct);
+      }
     }
 
     // Battery idle screen-off (USB never turns off)。
@@ -1056,6 +1132,7 @@ void uiTaskFn(void*) {
       if (nowMs - lastInteractMs > batOffMs) {
         hwDisplaySleep(true);
         screenOff = true;
+        aodFade = AodFade::NONE;
       }
     }
 
@@ -1282,7 +1359,7 @@ void uiTaskFn(void*) {
 
     bool pressAnimating = (pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::FADE_OUT);
     bool interactive = tpActive || pageRankIsFlinging() || pageSettingsIsAnimating() ||
-                       pressAnimating || uiAnimating;
+                       pressAnimating || (aodFade != AodFade::NONE) || uiAnimating;
     // TOKENS 页一帧要搬 63 KB（368×88）@ 实测 2.7 MB/s ≈ 23 ms，喂不到 60；
     // 鱼又是 ±2.6px / 4s 的慢速微动，30 fps 和 60 fps 肉眼没差别，锁 30 换稳定。
     const uint8_t baseFps = settingsEffectiveFps(snap.battery.usbPresent);
@@ -1292,7 +1369,7 @@ void uiTaskFn(void*) {
                           : (tokensAnim ? tokensFps
                                         : (interactive ? 60 : (st.approvalActive ? 30 : 10)));
     if (screenOff || dimmedForNap) targetFps = 5;
-    else if (aodActive) targetFps = 4;   // 只在分钟/位移/状态变化时真画
+    else if (aodActive && aodFade == AodFade::NONE) targetFps = 4;   // 只在分钟/位移/状态变化时真画
     int64_t frameUs = 1000000LL / targetFps;
 
     const int64_t drawStartUs = esp_timer_get_time();

@@ -102,11 +102,19 @@ bool hwDisplayInit() {
 
 Arduino_Canvas* hwCanvas() { return s_canvas; }
 
-void hwDisplayBrightness(uint8_t pct) {
+uint8_t hwDisplayPctToRaw(uint8_t pct) {
   // 20..100 → 50..255：20% 对齐老固件最暗档（50/255），往上是连续的 205 级。
   if (pct < 20) pct = 20;
   if (pct > 100) pct = 100;
-  s_gfx->setBrightness((uint8_t)(50u + (uint16_t)(pct - 20u) * 205u / 80u));
+  return (uint8_t)(50u + (uint16_t)(pct - 20u) * 205u / 80u);
+}
+
+void hwDisplayBrightnessRaw(uint8_t raw) {
+  if (s_gfx) s_gfx->setBrightness(raw);
+}
+
+void hwDisplayBrightness(uint8_t pct) {
+  hwDisplayBrightnessRaw(hwDisplayPctToRaw(pct));
 }
 
 void hwDisplaySleep(bool off) {
