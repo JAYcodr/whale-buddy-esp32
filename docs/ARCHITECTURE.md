@@ -1,7 +1,6 @@
 # Nova Buddy — 架构参考
 
-> **状态**: ✅ 与代码同步
-> **上次同步提交**: `a787b49`（分支 `feature/whale-tokens`）
+> **最后核对**: 见 `git log -1 -- docs/ARCHITECTURE.md`
 > **生成日期**: 2026-11-22
 > **生成方式**: architect-mermaid skill（读码 + mmdc 语法校验）
 > **图目录**: [docs/diagrams/](diagrams/)（13 张图的 PNG 导出，`-w 1500 -b white`，与本文 mermaid 源码一一对应）
@@ -43,7 +42,7 @@ nova-buddy/
 │   ├── lib/ai.js              LLM 动作剧本 + MiMo TTS → NVAD ADPCM
 │   ├── lib/adpcm.js           WAV → NVAD 4bit ADPCM
 │   ├── bin/nova-buddy.js      CLI：auth / test-push / test-choreo / test-tts
-│   └── test/                  14 个单测（bridge + tokens）
+│   └── test/                  见 package.json 的 test 脚本
 ├── tools/
 │   ├── sim/                   Mac 主机 PNG 模拟器（共用同一套 ui/ 源码，-DNOVA_HOST_SIM）
 │   ├── assets/convert_pet.py  GIF/视频 → .nva
@@ -617,7 +616,7 @@ flowchart TD
 | §6 渲染管线 | 手动 | `needFull` 分支或 `pushRect` 参数变化 |
 | §7/§8 表格 | 每次改动顺手补 | — |
 
-**同步纪律**：改完任何一个 §7 高亮点，回来把 `上次同步提交` 改成新的 HEAD；如果图里出现代码里已经不存在的名字，先删图里的节点，再删代码 —— 顺序反了就会留下幻影连接。
+**同步纪律**：改完任何一个 §7 高亮点，回来核对本文与代码仍然一致（头部「最后核对」的时间戳以 `git log -1 -- docs/ARCHITECTURE.md` 为准）；如果图里出现代码里已经不存在的名字，先删图里的节点，再删代码 —— 顺序反了就会留下幻影连接。
 
 **验证手法**（本次已跑）：
 

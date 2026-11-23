@@ -44,8 +44,11 @@
 │   ├── pio.sh             # PlatformIO 构建封装脚本
 │   ├── prep_data.sh       # LittleFS .nva 资产打包脚本
 │   └── usb_shot.py        # 通过 USB CDC (NVSH) 抓取开发板实时屏幕截图
+├── HANDOFF.md             # 交接
 └── docs/
-    └── NOVA-BUDDY-PLAN.md # 完整架构设计方案与协议文档
+    ├── ARCHITECTURE.md    # 架构参考
+    ├── NOVA-BUDDY-PLAN.md # 完整架构设计方案与协议文档
+    └── upstream/          # fork 前基线文档（已废弃）
 ```
 
 ## 快速开始

@@ -13,7 +13,8 @@ CORE="${PIO_CORE_DIR:-}"
 if [ -z "$CORE" ]; then
   for cand in \
     "/Volumes/hamelin-ssd/devtools/.platformio" \
-    "/Volumes/hamelin-ssd/01-项目工程/devtools/.platformio"
+    "/Volumes/hamelin-ssd/01-项目工程/devtools/.platformio" \
+    "${HOME}/.platformio"
   do
     if [ -d "$cand" ]; then
       CORE="$cand"
@@ -22,16 +23,18 @@ if [ -z "$CORE" ]; then
   done
 fi
 
-if [ -z "$CORE" ] || [ ! -d "$CORE" ]; then
-  echo "错误：未找到 PlatformIO 核心目录（已检查 devtools/.platformio 与 01-项目工程/devtools/.platformio）" >&2
-  echo "如已移到别处，用 PIO_CORE_DIR=/新路径 覆盖。" >&2
-  exit 1
-fi
-
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
 
-export PLATFORMIO_CORE_DIR="$CORE"
-export PYTHONPATH="$CORE/penv/lib/python3.11/site-packages${PYTHONPATH:+:$PYTHONPATH}"
+if [ -n "$CORE" ] && [ -d "$CORE" ]; then
+  export PLATFORMIO_CORE_DIR="$CORE"
+  export PYTHONPATH="$CORE/penv/lib/python3.11/site-packages${PYTHONPATH:+:$PYTHONPATH}"
+  exec "$CORE/python3/bin/python3" -m platformio "$@"
+fi
 
-exec "$CORE/python3/bin/python3" -m platformio "$@"
+if PIO_BIN="$(command -v pio)"; then
+  exec "$PIO_BIN" "$@"
+fi
+
+echo "未找到 PlatformIO 核心目录；请设置 PIO_CORE_DIR=/你的/.platformio" >&2
+exit 1

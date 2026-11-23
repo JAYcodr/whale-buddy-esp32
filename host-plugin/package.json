@@ -3,6 +3,12 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
   "description": "Nova Buddy 的 DSH 宿主侧桥接：把会话状态、订阅额度、ModelDial 榜单与工具审批推送到 ESP32-S3 AMOLED 副屏（MQTT）。",
   "bin": {
     "nova-buddy": "./bin/nova-buddy.js"
