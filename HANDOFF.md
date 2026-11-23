@@ -104,6 +104,24 @@ Broker：`mqtt://192.168.31.15:1883`
 
 ---
 
+## 动效参数表（`feature/motion-polish`）
+
+统一缓动头文件 `src/ui/easing.h`（`outCubic / outQuart / inOutCubic / outBack / lerp / progress / approachFactor`），所有补间均按 `millis()` 耗时插值；动画结束后恢复静态 `10 fps`（AOD `4 fps`），AOD / 熄屏 / `dimmedForNap` 期间不播新动画。
+
+| 动效 | 时长 | 曲线 | 刷新区域 |
+|---|---|---|---|
+| 审批弹窗进入（`POP_IN`） | 200 ms | `ease::outQuart`（下方 22 px 升起 + 淡入） | 全屏转场 `(0, 0, 368, 448)` |
+| 审批弹窗离开（`POP_OUT`） | 170 ms | `ease::outCubic`（下沉 14 px + 淡出） | 全屏转场 `(0, 0, 368, 448)` |
+| 水平滑屏 + 圆点跟随（`SLIDE_*`） | 默认 180 ms（`NOVA_SLIDE_EASE_QUART` 宏切至 200 ms） | 页面 `outCubic`（宏切 `outQuart`）；圆点位移 `outCubic`、胶囊前沿 `outQuart` / 后沿 `inOutCubic` | 全屏滑屏 + 仅重绘圆点小矩形 `(centerX-35, centerY-3, 70, 6)` |
+| 设置开关切换（`drawSwitch`） | 140 ms | `ease::outCubic`（旋钮位移 + `blend565` 轨道/圆钮渐变） | `pageSettingsListRect()` `(0, 61, 368, 387)`（60 fps） |
+| 按下高亮淡入 / 回落（`drawPressedOverlay`） | 淡入 60 ms / 回落 120 ms | `ease::outCubic`（`alpha` 0 ↔ 46，仅位移取消或不改页抬起时回落） | 仅命中矩形 `pressedRect`（60 fps） |
+| 滑块抓取缩放 & 位置跟随 | 放大 100 ms / 恢复 120 ms | 放大 `ease::outBack`（1.0 → 1.25×）、恢复 `outCubic`；位置 `approachFactor(dt, 35ms)` | `pageSettingsListRect()` `(0, 61, 368, 387)`（60 fps） |
+| 设置行展开/收起内容渐显 | 抽屉 150 ms 内 `frac >= 0.55` 段 | `(frac - 0.55) / 0.45` `blend565` 从 `COL_CARD` 渐变 + 下方 6 px 上移（底边裁剪） | `pageSettingsListRect()` `(0, 61, 368, 387)`（60 fps） |
+| Token 鲸鱼选中补间 | 颜色 160 ms / 缩放 220 ms | 颜色 `ease::outCubic`（→ `COL_ACCENT` / 前选中反向退回）；缩放 `outCubic` 1→1.08 + `outBack` 1.08→1 | HUD 一次刷新 `(0, 62, 368, 92)` + `(0, 414, 368, 34)`；舞台 `(0, 194, 368, 88)`（30 fps） |
+| AOD 进出背光渐变 | 进 250+250 ms / 退 250+180 ms | `ease::outCubic` 纯 QSPI 背光（`hwDisplayBrightnessRaw` 降至 0 → 切画面 → 升至目标；紧急打断跳过降暗） | 无画布重绘开销，仅调背光（60 fps 渐变后回落 4 / 10 fps） |
+
+---
+
 ## 电源与充电（0.4.0 起）
 
 - **电量显示**：`src/model/battery_model.h` 里的纯逻辑模型 —— OCV 曲线（18 点）+ 充电阶段机（PRE/CC/CV/DONE）+ 满/空锚点 + 单调限速。`hwBattery()` 现在只返回缓存快照，真实采样在 bus task 每秒一次的 `hwPowerTick()`。
