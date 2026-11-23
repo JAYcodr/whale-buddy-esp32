@@ -23,6 +23,7 @@ export function apply(ctx, config = {}) {
                      : logger?.info?.(msg));
 
   const bridge = createNovaBridge({
+    brokerUrl: config.brokerUrl,     // 不设默认值：undefined 会自然落到 env 和 bridge 内的默认
     deviceApproval: config.deviceApproval || 'mirror',
     fallbackMs: config.fallbackMs ?? 20000,
     ttsVoice: config.ttsVoice,
