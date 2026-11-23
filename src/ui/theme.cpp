@@ -1,4 +1,5 @@
 #include "ui/theme.h"
+#include "ui/easing.h"
 #include <math.h>
 
 extern const AaFont g_fontPf16;
@@ -342,18 +343,24 @@ void aaDrawRoundRect(NovaCanvas& c, int16_t x, int16_t y, int16_t w, int16_t h,
   }
 }
 
-void drawSwitch(NovaCanvas& c, Rect r, bool on, uint16_t accent) {
+void drawSwitch(NovaCanvas& c, Rect r, bool on, uint16_t accent, float t) {
   if (r.w <= 0 || r.h <= 0) return;
+  const float p = ease::clamp01(t);
+  const float onFrac = on ? p : (1.0f - p);
+  const uint8_t mix = (uint8_t)lroundf(onFrac * 255.0f);
+
   int16_t rad = r.h / 2;
-  uint16_t trackBg = on ? accent : COL_TRACK;
-  uint16_t trackBd = on ? accent : COL_BORDER;
-  uint16_t knobCol = on ? COL_TEXT : COL_DIM;
+  uint16_t trackBg = blend565(COL_TRACK, accent, mix);
+  uint16_t trackBd = blend565(COL_BORDER, accent, mix);
+  uint16_t knobCol = blend565(COL_DIM, COL_TEXT, mix);
   aaFillRoundRect(c, r.x, r.y, r.w, r.h, rad, trackBg, trackBd);
 
   int16_t knobR = (r.h >= 28) ? 12 : (r.h - 6) / 2;
   if (knobR < 4) knobR = 4;
   int16_t cy = r.y + r.h / 2;
-  int16_t cx = on ? (r.x + r.w - rad) : (r.x + rad);
+  int16_t offX = r.x + rad;
+  int16_t onX  = r.x + r.w - rad;
+  int16_t cx   = (int16_t)lroundf(ease::lerp((float)offX, (float)onX, onFrac));
   aaFillCircle(c, cx, cy, knobR, knobCol);
 }
 
@@ -439,8 +446,8 @@ void drawSectionLabel(NovaCanvas& c, int16_t x, int16_t baseY, const char* s) {
   drawText(c, fontCjk14(), x, baseY, s, COL_DIM, COL_CARD);
 }
 
-void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius) {
-  if (r.w <= 0 || r.h <= 0) return;
+void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius, uint8_t alpha) {
+  if (r.w <= 0 || r.h <= 0 || alpha == 0) return;
   uint16_t* fb = c.getFramebuffer();
   if (!fb) return;
 
@@ -473,7 +480,7 @@ void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius) {
         else if (lx >= r.w - rad) dx = lx - (r.w - rad);
         if (dx > 0 && (int32_t)dx * dx + (int32_t)dy * dy > rMaxSq) continue;
       }
-      row[px] = blend565(row[px], 0xFFFF, 46);  // +18% brightness feedback
+      row[px] = blend565(row[px], 0xFFFF, alpha);  // +18% brightness feedback at alpha=46
     }
   }
 }

@@ -6,6 +6,8 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "anim/nva.h"
@@ -16,6 +18,7 @@
 #include "model/state.h"
 #include "net/net.h"
 #include "ui/canvas.h"
+#include "ui/easing.h"
 #include "ui/nav.h"
 #include "ui/pages.h"
 #include "ui/theme.h"
@@ -108,12 +111,52 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
           } else if (strcmp(cmd, "bat") == 0) {
             // Machine-readable power dump for the real-hardware acceptance run.
             HwBattery b = hwBattery();
+            BatteryCal cal = hwBatteryCal();
+            PowerWatermark wm = hwPowerWatermark();
+            const unsigned long durSec = (wm.durMs + 500u) / 1000u;
             Serial.printf("{\"bat\":{\"pct\":%d,\"mv\":%d,\"stage\":%u,\"chg\":%u,"
-                          "\"limited\":%s,\"usb\":%s,\"tmp\":%d,\"gauge\":%d}}\n",
+                          "\"limited\":%s,\"tempCap\":%s,\"usb\":%s,\"vbusLim\":%s,"
+                          "\"tmp\":%d,\"gauge\":%d,\"raw\":%u,\"compMv\":%u,"
+                          "\"effMa\":%u,\"bootMv\":%u,\"seed\":%d,\"pwrLost\":%s,"
+                          "\"mohm\":%u,\"mah\":%u,\"vbusMv\":%u,\"vsysMv\":%u,"
+                          "\"thermReg\":%s,\"onSrc\":%u,\"offSrc\":%u,"
+                          "\"wm\":{\"dur\":%lu,\"sp\":%u,\"vmin\":%u,\"vmax\":%u,"
+                          "\"vsmin\":%u,\"vbmin\":%u,\"tmax\":%d,\"vlimS\":%u,"
+                          "\"tregS\":%u,\"tcapS\":%u,\"scrS\":%u,\"aodS\":%u}}}\n",
                           b.pct, b.mV, (unsigned)b.stage, (unsigned)b.chgMa,
                           b.chargeLimited ? "true" : "false",
+                          b.chargeTempCapped ? "true" : "false",
                           b.usbPresent ? "true" : "false",
-                          b.tempC, (int)b.gaugePct);
+                          b.vbusLimited ? "true" : "false",
+                          b.tempC, (int)b.gaugePct,
+                          (unsigned)b.rawPct, (unsigned)b.compMv,
+                          (unsigned)b.effMa, (unsigned)b.bootMv,
+                          (int)b.seedPct, b.seedPowerLost ? "true" : "false",
+                          (unsigned)cal.chgMohm, (unsigned)cal.designMah,
+                          (unsigned)b.vbusMv, (unsigned)b.vsysMv,
+                          b.thermReg ? "true" : "false",
+                          (unsigned)b.pwrOnSrc, (unsigned)b.pwrOffSrc,
+                          durSec, (unsigned)wm.startPct,
+                          (unsigned)wm.vbatMinMv, (unsigned)wm.vbatMaxMv,
+                          (unsigned)wm.vsysMinMv, (unsigned)wm.vbusMinMv,
+                          (int)wm.tmpMaxC,
+                          (unsigned)powerMsToClampedSec(wm.vbusLimMs),
+                          (unsigned)powerMsToClampedSec(wm.thermRegMs),
+                          (unsigned)powerMsToClampedSec(wm.tempCapMs),
+                          (unsigned)powerMsToClampedSec(wm.screenOnMs),
+                          (unsigned)powerMsToClampedSec(wm.aodMs));
+          } else if (strcmp(cmd, "batcal") == 0) {
+            if ((doc["reset"] | 0) != 0) hwPowerResetCal();
+            BatteryCal cal = hwBatteryCal();
+            Serial.printf("{\"batcal\":{\"chgMohm\":%u,\"designMah\":%u,\"cvTauMs\":%lu,"
+                          "\"fullRestMv\":%u,\"lowAnchorMv\":%u,\"limitPct\":%u,"
+                          "\"rSamples\":%u,\"capSamples\":%u,\"cvSamples\":%u}}\n",
+                          (unsigned)cal.chgMohm, (unsigned)cal.designMah,
+                          (unsigned long)cal.cvTauMs,
+                          (unsigned)cal.fullRestMv, (unsigned)cal.lowAnchorMv,
+                          (unsigned)settingsGet().chargeLimitPct,
+                          (unsigned)cal.rSamples, (unsigned)cal.capSamples,
+                          (unsigned)cal.cvSamples);
           } else if (strcmp(cmd, "reprov") == 0) {
             netRequestReprovision();
           } else if (strcmp(cmd, "wifi") == 0) {
@@ -201,6 +244,7 @@ void uiTaskFn(void*) {
   bool wasApprovalActive = false;
   bool wasTokensAnim = false;
   bool needTokensSettle = false;
+  bool needTokensHud = false;
 
   // v0.5.0：AOD + 观测
   bool     aodActive = false;
@@ -208,10 +252,18 @@ void uiTaskFn(void*) {
   uint32_t aodEnterMs = 0;
   NvaAnimKey aodPoseApplied = NvaAnimKey::COUNT;
   bool     swallowTap = false;      // 唤醒 AOD 的那一击不派发
+  enum class AodFade : uint8_t { NONE, ENTER_DIM, ENTER_RISE, EXIT_DIM, EXIT_RISE };
+  constexpr uint32_t kAodDimMs       = 250u;
+  constexpr uint32_t kAodEnterRiseMs = 250u;
+  constexpr uint32_t kAodExitRiseMs  = 180u;
+  AodFade  aodFade        = AodFade::NONE;
+  uint32_t aodFadeStartMs = 0;
+  uint8_t  aodFadeFromRaw = 0;
 
   struct BrightCache {
-    uint8_t applied = 255;
-    void invalidate() { applied = 255; }   // 语义：下次 apply 必须写 I2C
+    uint8_t  applied    = 255;
+    uint16_t appliedRaw = 256;
+    void invalidate() { applied = 255; appliedRaw = 256; }
   } bright;
   uint32_t uiBusyUs = 0;
   uint32_t decBusyUs = 0;
@@ -225,8 +277,18 @@ void uiTaskFn(void*) {
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
   bool    settingsGrab = false;   // 设置页里按下的那个滑块
-  bool    hasPressedRect = false;
-  ui::Rect pressedRect{ 0, 0, 0, 0 };
+  enum class PressPhase : uint8_t { NONE, FADE_IN, HELD, FADE_OUT };
+  constexpr uint32_t kPressInMs     = 60u;
+  constexpr uint32_t kPressOutMs    = 120u;
+  constexpr uint8_t  kPressMaxAlpha = 46u;  // +18% 亮度反馈
+  PressPhase pressPhase     = PressPhase::NONE;
+  uint32_t   pressStartMs   = 0;
+  uint8_t    pressAlpha     = 0;
+  uint8_t    pressFadeFrom  = 0;
+  bool       pressNeedsPush = false;
+  ui::Rect   pressedRect{ 0, 0, 0, 0 };
+  uint16_t*  pressCleanBuf  = nullptr;
+  size_t     pressCleanCap  = 0;
   uint32_t key1DownAt = 0;
   bool     key1LongFired = false;
   uint32_t lastInteractMs = millis();
@@ -260,6 +322,12 @@ void uiTaskFn(void*) {
   uint32_t lastUrgentBreathMs = 0;
   uint8_t  lastBattPct = 255;
   uint32_t lastBattDrawMs = 0;
+  bool     lastUsbPresent = false;
+  uint8_t  lastBattStage = 255;
+  uint16_t lastDetailMv = 0;
+  uint16_t lastDetailChgMa = 0;
+  bool     lastDetailTempCap = false;
+  uint32_t lastDetailDrawMs = 0;
   uint8_t  lastBurnStep = 0;
   bool     lastSleepState = false;
   uint32_t curCpuMhz = getCpuFrequencyMhz();
@@ -278,13 +346,114 @@ void uiTaskFn(void*) {
     }
   };
 
-  // 亮度去重：只有有效百分比变化才写 I2C（AOD 降档 + 翻扣降暗会频繁调用）。
-  auto applyBright = [&](uint8_t pct) {
-    if (pct < 20) pct = 20;
-    if (pct > 100) pct = 100;
-    if (pct == bright.applied) return;
-    bright.applied = pct;
-    hwDisplayBrightness(pct);
+  // 亮度去重：只有有效寄存值变化才写 QSPI。
+  auto applyBrightRaw = [&](uint8_t raw, uint8_t effPct) {
+    if (raw != bright.appliedRaw) {
+      bright.appliedRaw = raw;
+      hwDisplayBrightnessRaw(raw);
+    }
+    bright.applied = effPct;
+  };
+
+  auto clipToScreen = [](const ui::Rect& r) -> ui::Rect {
+    int16_t x0 = r.x < 0 ? 0 : r.x;
+    int16_t y0 = r.y < 0 ? 0 : r.y;
+    int16_t x1 = (r.x + r.w) > UI_W ? UI_W : (int16_t)(r.x + r.w);
+    int16_t y1 = (r.y + r.h) > UI_H ? UI_H : (int16_t)(r.y + r.h);
+    return { x0, y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0) };
+  };
+
+  auto rectsOverlap = [](const ui::Rect& a, const ui::Rect& b) -> bool {
+    return a.w > 0 && a.h > 0 && b.w > 0 && b.h > 0 &&
+           a.x < (b.x + b.w) && (a.x + a.w) > b.x &&
+           a.y < (b.y + b.h) && (a.y + a.h) > b.y;
+  };
+
+  auto capturePressClean = [&](const ui::Rect& r) -> bool {
+    if (!canvas || r.w <= 0 || r.h <= 0) return false;
+    uint16_t* fb = canvas->getFramebuffer();
+    if (!fb) return false;
+    const size_t needPx = (size_t)r.w * (size_t)r.h;
+    if (needPx > pressCleanCap) {
+      free(pressCleanBuf);
+      pressCleanBuf = (uint16_t*)heap_caps_malloc(needPx * sizeof(uint16_t),
+                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!pressCleanBuf) pressCleanBuf = (uint16_t*)malloc(needPx * sizeof(uint16_t));
+      pressCleanCap = pressCleanBuf ? needPx : 0;
+    }
+    if (!pressCleanBuf) return false;
+    for (int16_t row = 0; row < r.h; row++) {
+      memcpy(pressCleanBuf + (size_t)row * r.w,
+             fb + (size_t)(r.y + row) * UI_W + r.x,
+             (size_t)r.w * sizeof(uint16_t));
+    }
+    return true;
+  };
+
+  auto restorePressClean = [&](const ui::Rect& r) {
+    if (!canvas || !pressCleanBuf || r.w <= 0 || r.h <= 0) return;
+    uint16_t* fb = canvas->getFramebuffer();
+    if (!fb) return;
+    for (int16_t row = 0; row < r.h; row++) {
+      memcpy(fb + (size_t)(r.y + row) * UI_W + r.x,
+             pressCleanBuf + (size_t)row * r.w,
+             (size_t)r.w * sizeof(uint16_t));
+    }
+  };
+
+  auto cancelPress = [&]() {
+    pressPhase = PressPhase::NONE;
+    pressAlpha = 0;
+    pressFadeFrom = 0;
+    pressNeedsPush = false;
+  };
+
+  auto startPressIn = [&](const ui::Rect& rawRect, uint32_t ms) {
+    ui::Rect r = clipToScreen(rawRect);
+    if (r.w <= 0 || r.h <= 0) return;
+    // 若上一块按下高亮还在回落，先恢复其干净区域并推屏，避免残影被新快照吃进底色。
+    if (pressPhase == PressPhase::FADE_OUT && pressAlpha > 0) {
+      restorePressClean(pressedRect);
+      hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
+    }
+    if (!capturePressClean(r)) {
+      cancelPress();
+      return;
+    }
+    pressedRect = r;
+    pressPhase = PressPhase::FADE_IN;
+    pressStartMs = ms;
+    pressAlpha = 0;
+    pressFadeFrom = 0;
+    pressNeedsPush = false;
+  };
+
+  auto startPressOut = [&](uint32_t ms) {
+    if (pressPhase != PressPhase::FADE_IN && pressPhase != PressPhase::HELD) return;
+    if (pressPhase == PressPhase::FADE_IN) {
+      float p = ease::outCubic(ease::progress(ms, pressStartMs, kPressInMs));
+      pressAlpha = (uint8_t)lroundf((float)kPressMaxAlpha * p);
+    }
+    if (pressAlpha == 0) {
+      cancelPress();
+      return;
+    }
+    pressPhase = PressPhase::FADE_OUT;
+    pressFadeFrom = pressAlpha;
+    pressStartMs = ms;
+    pressNeedsPush = false;
+  };
+
+  auto syncPressAfterDraw = [&](const ui::Rect& drawnRect) {
+    if (!rectsOverlap(pressedRect, drawnRect)) return;
+    if (pressPhase == PressPhase::NONE) {
+      pressNeedsPush = false;
+      return;
+    }
+    if (capturePressClean(pressedRect) && pressAlpha > 0) {
+      ui::drawPressedOverlay(*canvas, pressedRect, 12, pressAlpha);
+    }
+    pressNeedsPush = false;
   };
 
   for (;;) {
@@ -309,11 +478,12 @@ void uiTaskFn(void*) {
       s.battPct    = snap.battery.pct;
       s.usbPresent = snap.battery.usbPresent;
       s.charging   = snap.battery.charging;
-      s.battStage      = snap.battery.stage;
-      s.battTempC      = (int8_t)snap.battery.tempC;
-      s.chgMa          = snap.battery.chgMa;
-      s.chargeLimited  = snap.battery.chargeLimited;
-      s.gaugePct       = snap.battery.gaugePct;
+      s.battStage        = snap.battery.stage;
+      s.battTempC        = (int8_t)snap.battery.tempC;
+      s.chgMa            = snap.battery.chgMa;
+      s.chargeLimited    = snap.battery.chargeLimited;
+      s.chargeTempCapped = snap.battery.chargeTempCapped;
+      s.gaugePct         = snap.battery.gaugePct;
       s.faceDown   = snap.faceDown;
       s.hour       = snap.time.H;
       s.minute     = snap.time.M;
@@ -343,19 +513,54 @@ void uiTaskFn(void*) {
           (uint32_t)(cfg.batSleepSec >= 10 ? cfg.batSleepSec : 30) * 1000u;
       if (sleepMs < aodThresholdMs) aodThresholdMs = sleepMs;
     }
+    auto currentBrightRaw = [&]() -> uint8_t {
+      return (bright.appliedRaw <= 255u) ? (uint8_t)bright.appliedRaw
+                                         : hwDisplayPctToRaw(cfg.brightPct);
+    };
+    auto beginAodEnter = [&]() {
+      if (screenOff || dimmedForNap) {
+        aodActive = true;
+        aodEnterMs = nowMs;
+        aodFade = AodFade::NONE;
+        bright.invalidate();
+        needFull = true;
+      } else if (!aodActive && aodFade != AodFade::ENTER_DIM) {
+        aodFade = AodFade::ENTER_DIM;
+        aodFadeStartMs = nowMs;
+        aodFadeFromRaw = currentBrightRaw();
+      }
+    };
+    auto beginAodExit = [&](bool clearForced, bool urgent) {
+      if (clearForced) aodForced = false;
+      if (aodActive) {
+        if (urgent || screenOff || dimmedForNap) {
+          aodActive = false;
+          aodPoseApplied = NvaAnimKey::COUNT;
+          needFull = true;
+          aodFade = (screenOff || dimmedForNap) ? AodFade::NONE : AodFade::EXIT_RISE;
+          aodFadeStartMs = nowMs;
+          aodFadeFromRaw = currentBrightRaw();
+          if (aodFade == AodFade::NONE) bright.invalidate();
+        } else if (aodFade != AodFade::EXIT_DIM) {
+          aodFade = AodFade::EXIT_DIM;
+          aodFadeStartMs = nowMs;
+          aodFadeFromRaw = currentBrightRaw();
+        }
+      } else if (aodFade == AodFade::ENTER_DIM) {
+        aodFade = (screenOff || dimmedForNap) ? AodFade::NONE : AodFade::EXIT_RISE;
+        aodFadeStartMs = nowMs;
+        aodFadeFromRaw = currentBrightRaw();
+      }
+    };
+
     if (s_aodForceReq >= 0) {
       aodForced = (s_aodForceReq == 1);
       s_aodForceReq = -1;
-      if (aodForced && !aodActive) {
-        aodActive = true;
-        aodEnterMs = nowMs;
-        bright.invalidate();
-        needFull = true;
-      } else if (!aodForced && aodActive) {
-        aodActive = false;
-        aodPoseApplied = NvaAnimKey::COUNT;
-        bright.invalidate();
-        needFull = true;
+      if (aodForced) {
+        beginAodEnter();
+      } else {
+        lastInteractMs = nowMs;
+        beginAodExit(true, false);
       }
     }
     if (aodActive) {
@@ -363,20 +568,47 @@ void uiTaskFn(void*) {
           aod::shouldExit(cfg.aodMode, snap.battery.usbPresent, st.approvalActive,
                           st.wifiApMode, screenOff, st.battPct);
       if (exitNow) {
-        aodActive = false;
-        aodPoseApplied = NvaAnimKey::COUNT;
-        bright.invalidate();
-        needFull = true;
+        const bool urgent = st.approvalActive || st.wifiApMode || screenOff;
+        beginAodExit(false, urgent);
       }
     } else if (!aodForced && aod::shouldEnter(cfg.aodMode, snap.battery.usbPresent,
                                               st.approvalActive, st.wifiApMode, screenOff,
                                               dimmedForNap,
                                               aod::idleSince(nowMs, lastInteractMs),
                                               aodThresholdMs)) {
-      aodActive = true;
-      aodEnterMs = nowMs;
-      bright.invalidate();
-      needFull = true;
+      beginAodEnter();
+    }
+    if (aodFade == AodFade::ENTER_DIM && (st.approvalActive || st.wifiApMode)) {
+      beginAodExit(false, true);
+    }
+    if (aodFade == AodFade::ENTER_DIM || aodFade == AodFade::EXIT_DIM) {
+      if (screenOff || dimmedForNap) {
+        if (aodFade == AodFade::ENTER_DIM) {
+          aodActive = true;
+          aodEnterMs = nowMs;
+          needFull = true;
+        } else {
+          aodActive = false;
+          aodPoseApplied = NvaAnimKey::COUNT;
+          needFull = true;
+        }
+        aodFade = AodFade::NONE;
+        bright.invalidate();
+      } else if ((uint32_t)(nowMs - aodFadeStartMs) >= kAodDimMs) {
+        applyBrightRaw(0, 0);
+        if (aodFade == AodFade::ENTER_DIM) {
+          aodActive = true;
+          aodEnterMs = nowMs;
+          aodFade = AodFade::ENTER_RISE;
+        } else {
+          aodActive = false;
+          aodPoseApplied = NvaAnimKey::COUNT;
+          aodFade = AodFade::EXIT_RISE;
+        }
+        aodFadeStartMs = nowMs;
+        aodFadeFromRaw = 0;
+        needFull = true;
+      }
     }
 
     // AOD 定格姿势：有任务摆 WORKING、等审批摆 WAITING、其余 SLEEP。
@@ -409,6 +641,23 @@ void uiTaskFn(void*) {
       s.txPower = netTxPowerApplied();
     });
 
+    hwPowerSetAodActive(aodActive);
+    if (st.mqttConnected) {
+      static uint32_t lastPwrDrainMs = 0;
+      if ((uint32_t)(nowMs - lastPwrDrainMs) >= 100u) {
+        PowerEvent pe;
+        if (hwPowerPeekEvent(&pe) && netPublishPowerEvent(pe)) {
+          hwPowerAckEvent();
+          lastPwrDrainMs = nowMs;
+          Serial.printf("[pwr] evt=%s seq=%lu pct=%u mv=%u vb=%u vs=%u mohm=%u\n",
+                        battPwrEvtReasonStr(pe.reason), (unsigned long)pe.seq,
+                        (unsigned)pe.pct, (unsigned)pe.mv,
+                        (unsigned)pe.vbusMv, (unsigned)pe.vsysMv,
+                        (unsigned)pe.chgMohm);
+        }
+      }
+    }
+
     // CPU Dynamic Frequency Scaling (DFS via PLL 240/160/80 MHz, keeping APB >= 80 MHz).
     bool activeDemand = st.approvalActive || st.run > 0 || st.wait > 0 ||
                         ((nowMs - lastInteractMs) < 10000u);
@@ -438,7 +687,19 @@ void uiTaskFn(void*) {
       }
     };
 
-    auto playTransition = [&](TransKind kind, uint32_t ms) {
+    auto makeSlidePillOpts = [&](UiPage fromP, UiPage toP, TransPillOpts* out) -> const TransPillOpts* {
+      const int fromDot = uiPageRingIndex(fromP);
+      const int toDot   = uiPageRingIndex(toP);
+      if (fromDot < 0 || fromDot >= 5 || toDot < 0 || toDot >= 5 || fromDot == toDot) {
+        return nullptr;
+      }
+      *out = { (int8_t)fromDot, (int8_t)toDot, 5,
+               ui::burnOffsetX(st.burnInStep), ui::burnOffsetY(st.burnInStep) };
+      return out;
+    };
+
+    auto playTransition = [&](TransKind kind, uint32_t ms,
+                              const TransPillOpts* pills = nullptr) {
       uint16_t* from = nullptr;
       uint16_t* to   = nullptr;
       uint16_t* fb   = canvas ? canvas->getFramebuffer() : nullptr;
@@ -451,11 +712,12 @@ void uiTaskFn(void*) {
       }
       const size_t fbBytes = (size_t)UI_W * UI_H * sizeof(uint16_t);
       memcpy(from, fb, fbBytes);
+      cancelPress();
       applyCpuMhz(240);
       nav.draw(*canvas, st, cfg, frame, nowMs);
       memcpy(to, fb, fbBytes);
       uiAnimating = true;
-      transRun(*canvas, from, to, kind, ms);
+      transRun(*canvas, from, to, kind, ms, pills);
       uiAnimating = false;
       needFull = false;
       frame++;
@@ -465,7 +727,7 @@ void uiTaskFn(void*) {
     // Handle approval arrival / dismissal transitions (placed after playTransition).
     if (st.apGen != lastApGen) {
       lastApGen = st.apGen;
-      hasPressedRect = false;
+      cancelPress();
       if (settingsGrab) {
         settingsGrab = false;
         pageSettingsCancelDrag();
@@ -483,7 +745,7 @@ void uiTaskFn(void*) {
         if (!wasApprovalActive) {
           wasApprovalActive = true;
           if (!screenOff && !dimmedForNap && !snap.faceDown) {
-            playTransition(TransKind::FADE, 150);
+            playTransition(TransKind::POP_IN, 200);
           } else {
             needFull = true;
           }
@@ -492,7 +754,7 @@ void uiTaskFn(void*) {
         }
       } else if (wasApprovalActive) {
         wasApprovalActive = false;
-        playTransition(TransKind::FADE, 150);
+        playTransition(TransKind::POP_OUT, 170);
       } else {
         needFull = true;
       }
@@ -524,11 +786,14 @@ void uiTaskFn(void*) {
           } else if (prevPage == UiPage::SETTINGS && newPage != UiPage::SETTINGS) {
             playTransition(TransKind::SHEET_DOWN, 220);
           } else if (slideDir != 0) {
-            playTransition(slideDir > 0 ? TransKind::SLIDE_LEFT : TransKind::SLIDE_RIGHT, 180);
+            TransPillOpts pillOpts;
+            playTransition(slideDir > 0 ? TransKind::SLIDE_LEFT : TransKind::SLIDE_RIGHT,
+                           kSlideTransMs, makeSlidePillOpts(prevPage, newPage, &pillOpts));
           }
           break;
         }
         case UiAction::TEST_SOUND:
+          needFull = false;
           if (!sfxSpeakFile("/audio/tap0.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
             sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
           }
@@ -584,7 +849,7 @@ void uiTaskFn(void*) {
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::ACCEPT, cfg.soundPct);
-          playTransition(TransKind::FADE, 150);
+          playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::DENY:
           netPublishDecision(st.apId, false, false);
@@ -597,7 +862,7 @@ void uiTaskFn(void*) {
           oneShotSafetyEndMs = nowMs + 8500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::DENY, cfg.soundPct);
-          playTransition(TransKind::FADE, 150);
+          playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::TO_PC:
           netPublishDecision(st.apId, false, true);
@@ -610,7 +875,7 @@ void uiTaskFn(void*) {
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
-          playTransition(TransKind::FADE, 150);
+          playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::RANK_REDRAW:
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
@@ -633,6 +898,9 @@ void uiTaskFn(void*) {
           }
           break;
         case UiAction::TOKENS_REDRAW:
+          needFull = false;
+          needTokensHud = true;
+          needTokensSettle = true;
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::DOCK_TOGGLE:
@@ -644,6 +912,8 @@ void uiTaskFn(void*) {
           if (settingsApplyAction(act.kind, act.value)) {
             switch (act.kind) {
               case UiAction::SET_SOUND:
+                needFull = false;
+                needSettingsList = true;
                 netPublishPrefs();
                 if (settingsGet().soundPct > 0) {
                   sfxPlay(SfxKind::SETTING_OK, settingsGet().soundPct);
@@ -652,10 +922,14 @@ void uiTaskFn(void*) {
               case UiAction::SET_TTS:
               case UiAction::SET_QUIET:
               case UiAction::SET_CHOREO:
+                needFull = false;
+                needSettingsList = true;
                 netPublishPrefs();
                 sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               case UiAction::SET_BRIGHT:
+                needFull = false;
+                needSettingsList = true;
                 bright.invalidate();   // 交给统一亮度逻辑落地
                 sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
@@ -687,11 +961,8 @@ void uiTaskFn(void*) {
       // 注入的点击也算一次交互：不刷新的话退出 AOD 后下一轮就立刻又判进去，
       // 串口调页面时屏幕会一直停在表盘上。
       lastInteractMs = nowMs;
-      if (aodActive) {
-        aodActive = false;
-        aodForced = false;
-        bright.invalidate();
-        needFull = true;
+      if (aodActive || aodFade == AodFade::ENTER_DIM) {
+        beginAodExit(true, false);
       } else {
         UiAction act = nav.onTap(tx, ty, st, cfg);
         if (act.kind != UiAction::NONE) {
@@ -710,12 +981,8 @@ void uiTaskFn(void*) {
           tpActive = false;
           continue;
         }
-        if (aodActive) {
-          aodActive = false;
-          aodPoseApplied = NvaAnimKey::COUNT;
-          aodForced = false;
-          bright.invalidate();
-          needFull = true;
+        if (aodActive || aodFade == AodFade::ENTER_DIM) {
+          beginAodExit(true, false);
           swallowTap = true;
         }
         wakeScreen();
@@ -730,23 +997,22 @@ void uiTaskFn(void*) {
         }
         if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
           settingsGrab = pageSettingsTouchDown(ev.x, ev.y, ev.tsMs);
-          if (settingsGrab) needFull = true;
+          if (settingsGrab) needSettingsList = true;
         }
+        ui::Rect hitRect{ 0, 0, 0, 0 };
         if (!swallowTap && !dimmedForNap && canvas &&
-            nav.pressedRect(ev.x, ev.y, st, cfg, &pressedRect)) {
-          ui::drawPressedOverlay(*canvas, pressedRect, 12);
-          hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
-          hasPressedRect = true;
-        } else {
-          hasPressedRect = false;
+            nav.pressedRect(ev.x, ev.y, st, cfg, &hitRect)) {
+          startPressIn(hitRect, nowMs);
+        } else if (pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::HELD) {
+          cancelPress();
         }
       } else if (ev.type == InputEvtType::TOUCH_MOVE && tpActive) {
         wakeScreen();
         int16_t adx = ev.x > tpStartX ? (ev.x - tpStartX) : (tpStartX - ev.x);
         int16_t ady = ev.y > tpStartY ? (ev.y - tpStartY) : (tpStartY - ev.y);
-        if (hasPressedRect && (adx >= 12 || ady >= 12)) {
-          hasPressedRect = false;
-          needFull = true;
+        if ((pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::HELD) &&
+            (adx >= 12 || ady >= 12)) {
+          startPressOut(nowMs);
         }
         if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
           if (!tpDraggedV && ady >= 12 && ady > adx) {
@@ -764,8 +1030,8 @@ void uiTaskFn(void*) {
           } else {
             if (!tpDraggedV && ady >= 8 && ady > adx) {
               tpDraggedV = true;
-              if (hasPressedRect) {
-                hasPressedRect = false;
+              if (pressPhase != PressPhase::NONE) {
+                cancelPress();
                 needSettingsList = true;
               }
             }
@@ -778,13 +1044,11 @@ void uiTaskFn(void*) {
         wakeScreen();
         if (swallowTap) {
           swallowTap = false;
+          cancelPress();
           continue;
         }
-        if (hasPressedRect) {
-          hasPressedRect = false;
-          needFull = true;
-        }
         if (settingsGrab) {
+          cancelPress();
           settingsGrab = false;
           if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
             UiAction up = pageSettingsTouchUp(ev.tsMs);
@@ -798,10 +1062,13 @@ void uiTaskFn(void*) {
         if (tpDraggedV) {
           tpDraggedV = false;
           if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+            cancelPress();
             pageSettingsScrollTouchUp(ev.tsMs);
             if (!pageSettingsIsAnimating()) {
               needSettingsList = true;
             }
+          } else {
+            startPressOut(nowMs);
           }
           if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
             pageRankTouchUp(ev.tsMs, st.nRows);
@@ -828,20 +1095,21 @@ void uiTaskFn(void*) {
                            ? 0
                            : (dx < 0 ? 1 : -1);
           handleAction(act, slideDir, (int)prevPage);
+          if (needFull) cancelPress();
         } else if (!(prevPage == UiPage::SETTINGS && (adx >= 16 || ady >= 16))) {
           act = nav.onTap(ev.x, ev.y, st, cfg);
-          if (act.kind == UiAction::NONE && nav.currentPage() == UiPage::SETTINGS) {
-            needFull = true;   // 展开 / 收起只改本地 UI 状态
-          }
           handleAction(act);
+          if (needFull || (nav.currentPage() == UiPage::SETTINGS && pageSettingsIsScrolling())) {
+            cancelPress();
+          } else {
+            startPressOut(nowMs);
+          }
+        } else {
+          startPressOut(nowMs);
         }
       } else if (ev.type == InputEvtType::KEY1_DOWN) {
-        if (aodActive) {
-          aodActive = false;
-          aodPoseApplied = NvaAnimKey::COUNT;
-          aodForced = false;
-          bright.invalidate();
-          needFull = true;
+        if (aodActive || aodFade == AodFade::ENTER_DIM) {
+          beginAodExit(true, false);
         }
         wakeScreen();
         key1DownAt = nowMs;
@@ -860,21 +1128,20 @@ void uiTaskFn(void*) {
             TransKind kind = (uiPageRingIndex(next) > uiPageRingIndex(prev))
                                ? TransKind::SLIDE_LEFT
                                : TransKind::SLIDE_RIGHT;
-            playTransition(kind, 180);
+            TransPillOpts pillOpts;
+            playTransition(kind, kSlideTransMs, makeSlidePillOpts(prev, next, &pillOpts));
           }
         }
         key1DownAt = 0;
       } else if (ev.type == InputEvtType::AXP_SHORT) {
-        if (aodActive) {
-          aodActive = false;
-          aodForced = false;
-          bright.invalidate();
-          needFull = true;
+        if (aodActive || aodFade == AodFade::ENTER_DIM) {
+          beginAodExit(true, false);
         } else if (screenOff) {
           wakeScreen();
         } else {
           hwDisplaySleep(true);
           screenOff = true;
+          aodFade = AodFade::NONE;
         }
       }
     }
@@ -903,15 +1170,34 @@ void uiTaskFn(void*) {
       }
     }
 
-    // 统一亮度：暗屏 0 / AOD 降档 / 平时用户档；只在有效值变化时写 I2C。
+    // 统一亮度：暗屏 0 / AOD 降档 / 平时用户档 + AOD 进出背光渐变；只在有效值变化时写 QSPI。
     if (!screenOff) {
-      uint8_t wantBright = cfg.brightPct;
+      uint8_t wantPct = cfg.brightPct;
       if (dimmedForNap) {
-        wantBright = 20;   // 老固件的 0 档 = 20%；翻扣时压到最暗而不是全黑
+        wantPct = 20;   // 老固件的 0 档 = 20%；翻扣时压到最暗而不是全黑
+        aodFade = AodFade::NONE;
       } else if (aodActive) {
-        wantBright = aod::brightnessPct(cfg.brightPct, cfg.aodNightCap, aod::isNight(st.hour));
+        wantPct = aod::brightnessPct(cfg.brightPct, cfg.aodNightCap, aod::isNight(st.hour));
       }
-      applyBright(wantBright);
+      const uint8_t targetRaw = hwDisplayPctToRaw(wantPct);
+      if (aodFade == AodFade::ENTER_DIM || aodFade == AodFade::EXIT_DIM) {
+        const float p = ease::outCubic(ease::progress(nowMs, aodFadeStartMs, kAodDimMs));
+        const uint8_t raw = (uint8_t)lroundf(ease::lerp((float)aodFadeFromRaw, 0.0f, p));
+        applyBrightRaw(raw, (uint8_t)((uint16_t)raw * 100u / 255u));
+      } else if (aodFade == AodFade::ENTER_RISE || aodFade == AodFade::EXIT_RISE) {
+        const uint32_t dur = (aodFade == AodFade::ENTER_RISE) ? kAodEnterRiseMs : kAodExitRiseMs;
+        const uint32_t el = (uint32_t)(nowMs - aodFadeStartMs);
+        if (el >= dur) {
+          aodFade = AodFade::NONE;
+          applyBrightRaw(targetRaw, wantPct);
+        } else {
+          const float p = ease::outCubic((float)el / (float)dur);
+          const uint8_t raw = (uint8_t)lroundf(ease::lerp((float)aodFadeFromRaw, (float)targetRaw, p));
+          applyBrightRaw(raw, (uint8_t)((uint16_t)raw * 100u / 255u));
+        }
+      } else {
+        applyBrightRaw(targetRaw, wantPct);
+      }
     }
 
     // Battery idle screen-off (USB never turns off)。
@@ -925,6 +1211,7 @@ void uiTaskFn(void*) {
       if (nowMs - lastInteractMs > batOffMs) {
         hwDisplaySleep(true);
         screenOff = true;
+        aodFade = AodFade::NONE;
       }
     }
 
@@ -953,18 +1240,30 @@ void uiTaskFn(void*) {
                              : 0u;
     bool curSleepState = (nvaActiveState() == NvaAnimKey::SLEEP);
 
-    // Battery percentage is smoothed by the estimator, but a 1% change still
-    // costs a full-screen push. Redraw immediately on a 5% bucket change,
-    // otherwise at most every 15 s.
-    bool battChanged = (st.battPct != lastBattPct) &&
-                       ((st.battPct / 5u) != (lastBattPct / 5u) ||
-                        (nowMs - lastBattDrawMs) >= 15000u);
+    // Battery percentage is smoothed and slewed by the estimator, so 1% moves
+    // take >=10-25s; keep a 10s rate limit unless crossing color thresholds or
+    // 5% buckets, and redraw immediately when USB/stage changes so icons never lag.
+    const bool powerStateChanged = (st.usbPresent != lastUsbPresent) ||
+                                   (st.battStage != lastBattStage);
+    const bool battColorCrossed = ((st.battPct <= 10) != (lastBattPct <= 10)) ||
+                                  ((st.battPct <= 20) != (lastBattPct <= 20));
+    const bool battChanged = (st.battPct != lastBattPct) &&
+                             (battColorCrossed ||
+                              (st.battPct / 5u) != (lastBattPct / 5u) ||
+                              (nowMs - lastBattDrawMs) >= 10000u);
+    const int mvDelta = (st.battMv > lastDetailMv) ? (int)(st.battMv - lastDetailMv)
+                                                   : (int)(lastDetailMv - st.battMv);
+    const bool detailPowerChanged = (!aodActive && nav.currentPage() == UiPage::DETAIL) &&
+                                    ((nowMs - lastDetailDrawMs) >= 2000u) &&
+                                    (mvDelta >= 15 || st.chgMa != lastDetailChgMa ||
+                                     st.chargeTempCapped != lastDetailTempCap);
 
     // Detect state / heartbeat / burn-in pixel shift changes requiring a full redraw.
     if (st.stateGen != lastStateGen || st.quotaGen != lastQuotaGen || st.rankGen != lastRankGen ||
         st.choreoGen != lastChoreoGen || st.tokenGen != lastTokenGen ||
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
-        st.mqttConnected != lastMqttUp || st.minute != lastMinute || battChanged ||
+        st.mqttConnected != lastMqttUp || st.minute != lastMinute ||
+        battChanged || powerStateChanged || detailPowerChanged ||
         (!aodActive && st.lastMqttRxMs != lastMqttRxSeen) || isStale != lastStaleFlag ||
         staleBucket != lastStaleShownSec || quotaBucket != lastQuotaBucket ||
         burnStep != lastBurnStep || curSleepState != lastSleepState) {
@@ -983,6 +1282,12 @@ void uiTaskFn(void*) {
       lastMinute        = st.minute;
       lastBattPct       = st.battPct;
       lastBattDrawMs    = nowMs;
+      lastUsbPresent    = st.usbPresent;
+      lastBattStage     = st.battStage;
+      lastDetailMv      = st.battMv;
+      lastDetailChgMa   = st.chgMa;
+      lastDetailTempCap = st.chargeTempCapped;
+      lastDetailDrawMs  = nowMs;
       lastBurnStep      = burnStep;
       lastSleepState    = curSleepState;
       needFull          = true;
@@ -1122,7 +1427,36 @@ void uiTaskFn(void*) {
     }
     wasTokensAnim = tokensAnim;
 
-    bool interactive = tpActive || pageRankIsFlinging() || pageSettingsIsAnimating() || uiAnimating;
+    if (screenOff || dimmedForNap || aodActive) {
+      cancelPress();
+    } else if (pressPhase == PressPhase::FADE_IN) {
+      float p = ease::outCubic(ease::progress(nowMs, pressStartMs, kPressInMs));
+      uint8_t nextA = (uint8_t)lroundf((float)kPressMaxAlpha * p);
+      if (nextA != pressAlpha) {
+        pressAlpha = nextA;
+        pressNeedsPush = true;
+      }
+      if ((uint32_t)(nowMs - pressStartMs) >= kPressInMs) {
+        pressAlpha = kPressMaxAlpha;
+        pressPhase = PressPhase::HELD;
+      }
+    } else if (pressPhase == PressPhase::FADE_OUT) {
+      float p = ease::outCubic(ease::progress(nowMs, pressStartMs, kPressOutMs));
+      uint8_t nextA = (uint8_t)lroundf((float)pressFadeFrom * (1.0f - p));
+      if (nextA != pressAlpha) {
+        pressAlpha = nextA;
+        pressNeedsPush = true;
+      }
+      if ((uint32_t)(nowMs - pressStartMs) >= kPressOutMs) {
+        pressAlpha = 0;
+        pressNeedsPush = true;
+        pressPhase = PressPhase::NONE;
+      }
+    }
+
+    bool pressAnimating = (pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::FADE_OUT);
+    bool interactive = tpActive || pageRankIsFlinging() || pageSettingsIsAnimating() ||
+                       pressAnimating || (aodFade != AodFade::NONE) || uiAnimating;
     // TOKENS 页一帧要搬 63 KB（368×88）@ 实测 2.7 MB/s ≈ 23 ms，喂不到 60；
     // 鱼又是 ±2.6px / 4s 的慢速微动，30 fps 和 60 fps 肉眼没差别，锁 30 换稳定。
     const uint8_t baseFps = settingsEffectiveFps(snap.battery.usbPresent);
@@ -1132,7 +1466,7 @@ void uiTaskFn(void*) {
                           : (tokensAnim ? tokensFps
                                         : (interactive ? 60 : (st.approvalActive ? 30 : 10)));
     if (screenOff || dimmedForNap) targetFps = 5;
-    else if (aodActive) targetFps = 4;   // 只在分钟/位移/状态变化时真画
+    else if (aodActive && aodFade == AodFade::NONE) targetFps = 4;   // 只在分钟/位移/状态变化时真画
     int64_t frameUs = 1000000LL / targetFps;
 
     const int64_t drawStartUs = esp_timer_get_time();
@@ -1142,8 +1476,14 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         if (aodActive) {
           pageHomeDrawAod(*canvas, st, nowMs);
+          cancelPress();
         } else {
           nav.draw(*canvas, st, cfg, frame, nowMs);
+          if (pressPhase == PressPhase::FADE_OUT || pressPhase == PressPhase::NONE) {
+            cancelPress();
+          } else {
+            syncPressAfterDraw({ 0, 0, UI_W, UI_H });
+          }
         }
         hwDisplayPush();
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
@@ -1151,12 +1491,15 @@ void uiTaskFn(void*) {
         needRankList = false;
         needSettingsList = false;
         needTokensSettle = false;
+        needTokensHud = false;
         frame++;
         fpsFrames++;
       } else if (needSettingsList && !aodActive && !st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
         int64_t t0 = esp_timer_get_time();
         pageSettingsDrawList(*canvas, st, cfg);
         const ui::Rect sr = pageSettingsListRect();
+        if (pageSettingsIsScrolling()) cancelPress();
+        else syncPressAfterDraw(sr);
         hwDisplayPushRect(sr.x, sr.y, sr.w, sr.h);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needSettingsList = false;
@@ -1166,6 +1509,7 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         pageRankDrawList(*canvas, st);
         const ui::Rect rr = pageRankListRect();
+        syncPressAfterDraw(rr);
         hwDisplayPushRect(rr.x, rr.y, rr.w, rr.h);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needRankList = false;
@@ -1175,14 +1519,22 @@ void uiTaskFn(void*) {
         int16_t dx = 0, dy = 0, dw = 0, dh = 0;
         int64_t t0 = esp_timer_get_time();
         pageHomeDrawStage(*canvas, st, cfg, frame, &dx, &dy, &dw, &dh);
+        syncPressAfterDraw({ dx, dy, dw, dh });
         hwDisplayPushRect(dx, dy, dw, dh);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         frame++;
         fpsFrames++;
       } else if (tokensAnim || (tokensPage && needTokensSettle)) {
         int64_t t0 = esp_timer_get_time();
+        if (needTokensHud) {
+          pageTokensDrawHud(*canvas, st);
+          hwDisplayPushRect(0, 62, UI_W, 92);
+          hwDisplayPushRect(0, 414, UI_W, UI_H - 414);
+          needTokensHud = false;
+        }
         pageTokensDrawStage(*canvas, st, cfg, nowMs);
         const ui::Rect tr = pageTokensStageRect();
+        syncPressAfterDraw(tr);
         hwDisplayPushRect(tr.x, tr.y, tr.w, tr.h);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needTokensSettle = false;
@@ -1192,10 +1544,25 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         pageApprovalDrawBar(*canvas, st, nowMs);
         const ui::Rect ar = pageApprovalBarRect();
+        syncPressAfterDraw(ar);
         hwDisplayPushRect(ar.x, ar.y, ar.w, ar.h);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         frame++;
         fpsFrames++;
+      }
+      if (pressNeedsPush) {
+        int64_t t0 = esp_timer_get_time();
+        restorePressClean(pressedRect);
+        if (pressAlpha > 0) {
+          ui::drawPressedOverlay(*canvas, pressedRect, 12, pressAlpha);
+        }
+        hwDisplayPushRect(pressedRect.x, pressedRect.y, pressedRect.w, pressedRect.h);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        pressNeedsPush = false;
+        if (fpsFrames == framesBefore) {
+          frame++;
+          fpsFrames++;
+        }
       }
     }
     if (fpsFrames != framesBefore) {
@@ -1242,6 +1609,7 @@ void uiTaskFn(void*) {
 void setup() {
   hwInit();
   settingsLoad();
+  hwPowerTick(millis());
   hwDisplayBrightness(settingsGet().brightPct);
 
   uint8_t mac[6] = {0};

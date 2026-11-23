@@ -18,7 +18,7 @@ namespace {
 
 struct NetTxMsg {
   char topic[48];
-  char payload[320];
+  char payload[448];
   uint16_t len;
   bool retained;
   uint8_t qos;
@@ -430,6 +430,20 @@ void netPublishSync() {
     s_pubDrops++;
     NOVA_LOG(W, "net", "tx queue full, drop sync\n");
   }
+}
+
+bool netPublishPowerEvent(const PowerEvent& ev) {
+  if (!s_txQ || !s_topicPrefix[0]) return false;
+  NetTxMsg tx{};
+  snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
+  tx.len = (uint16_t)protoBuildPowerEvent(tx.payload, sizeof(tx.payload), ev);
+  if (tx.len == 0) {
+    NOVA_LOG(E, "net", "pwr payload overflow\n");
+    return false;
+  }
+  tx.retained = false;
+  tx.qos = 1;
+  return xQueueSend(s_txQ, &tx, 0) == pdTRUE;
 }
 
 uint32_t netPublishQueueDropCount() { return s_pubDrops; }

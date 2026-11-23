@@ -10,9 +10,11 @@ bool netStart();
 void netRequestReprovision();
 void netRequestCancelPortal();
 void netRequestWifiConnect(const char* ssid, const char* pass);
+struct PowerEvent;
 void netPublishDecision(const char* approvalId, bool accept, bool toPc);
 void netPublishPrefs();
 void netPublishSync();
+bool netPublishPowerEvent(const PowerEvent& ev);
 void netSetPowerSave(NetPsMode mode);
 void netSetStatIntervalMs(uint32_t ms);   // 5..300s，0=回默认 30s
 void netSetPowerState(bool usbPresent);   // 电池下按 RSSI 降发射功率

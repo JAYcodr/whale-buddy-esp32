@@ -29,7 +29,7 @@ page_detail_low 8e12cb94
 page_settings_batt 21a2414c
 page_approval_urgent c349e477
 page_tokens 57ce8e15
-page_tokens_selected eedc8223
+page_tokens_selected 4364dffb
 page_tokens_empty 83c4a014
 page_aod d4440017
 page_aod_idle 1d972dca

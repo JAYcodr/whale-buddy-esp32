@@ -90,6 +90,7 @@ void pageSettingsOnEnter();
 void pageSettingsCancelDrag();
 bool pageSettingsTick(uint32_t nowMs);
 bool pageSettingsIsAnimating();
+bool pageSettingsIsScrolling();
 ui::Rect pageSettingsListRect();
 #ifdef NOVA_HOST_SIM
 void pageSettingsDebugOpen(uint8_t id);
@@ -110,6 +111,7 @@ UiAction pageApprovalTap(int16_t x, int16_t y);
 
 void pageTokensDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 void pageTokensDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t nowMs);
+void pageTokensDrawHud(NovaCanvas& c, const NovaState& st);
 UiAction pageTokensTap(int16_t x, int16_t y, const NovaState& st, uint32_t nowMs);
 void pageTokensOnEnter(uint32_t nowMs);
 bool pageTokensIsAnimating(const NovaState& st, const NovaSettings& cfg, uint32_t nowMs);

@@ -7,6 +7,7 @@
 
 #include "net/proto.h"
 #include "model/aod_policy.h"
+#include "model/battery_model.h"
 #include "model/state.h"
 #include "hw/audio.h"
 #include "hw/bus.h"
@@ -201,6 +202,88 @@ int main() {
   CHECK(aod::isQuietHour(0));
   CHECK(aod::isQuietHour(7));
   CHECK(!aod::isQuietHour(8));
+
+  // ── 5. 电源关键帧载荷（evt:"pwr"，严守 NetTxMsg::payload[448]）────
+  {
+    char pwrBuf[512] = {};
+    PowerEvent boot{};
+    boot.reason = BattPwrEvtReason::BOOT;
+    boot.seq = 1;
+    boot.pct = 74;
+    boot.rawPct = 71;
+    boot.gaugePct = 68;
+    boot.seedPct = 74;
+    boot.stage = 2;
+    boot.prevStage = 2;
+    boot.usbPresent = true;
+    boot.charging = true;
+    boot.mv = 4152;
+    boot.compMv = 3966;
+    boot.restMv = 3972;
+    boot.vbusMv = 5080;
+    boot.vsysMv = 4210;
+    boot.chgMa = 300;
+    boot.effMa = 300;
+    boot.tempC = 33;
+    boot.pwrOnSrc = 0x04;
+    boot.pwrOffSrc = 0x08;
+    boot.chgMohm = 620;
+    boot.designMah = 600;
+    size_t bn = protoBuildPowerEvent(pwrBuf, sizeof(pwrBuf), boot);
+    CHECK(bn > 0 && bn < 448);
+    CHECK(std::strstr(pwrBuf, "\"evt\":\"pwr\"") != nullptr);
+    CHECK(std::strstr(pwrBuf, "\"why\":\"boot\"") != nullptr);
+    CHECK(std::strstr(pwrBuf, "\"onSrc\":4") != nullptr);
+    CHECK(std::strstr(pwrBuf, "\"offSrc\":8") != nullptr);
+    CHECK(std::strstr(pwrBuf, "\"rmv\":3972") != nullptr);
+    CHECK(std::strstr(pwrBuf, "\"vb\":5080") != nullptr);
+    CHECK(std::strstr(pwrBuf, "\"vs\":4210") != nullptr);
+
+    PowerEvent maxEv{};
+    maxEv.reason = BattPwrEvtReason::BOOT;
+    maxEv.seq = 4294967295u;
+    maxEv.pct = 100;
+    maxEv.rawPct = 100;
+    maxEv.gaugePct = 100;
+    maxEv.seedPct = 100;
+    maxEv.seedPowerLost = true;
+    maxEv.stage = 5;
+    maxEv.prevStage = 2;
+    maxEv.usbPresent = true;
+    maxEv.charging = true;
+    maxEv.limited = true;
+    maxEv.tempCapped = true;
+    maxEv.thermReg = true;
+    maxEv.vbusLimited = true;
+    maxEv.mv = 4250;
+    maxEv.compMv = 4250;
+    maxEv.restMv = 4205;
+    maxEv.vbusMv = 5250;
+    maxEv.vsysMv = 4350;
+    maxEv.chgMa = 500;
+    maxEv.effMa = 500;
+    maxEv.tempC = -40;
+    maxEv.pwrOnSrc = 255;
+    maxEv.pwrOffSrc = 255;
+    maxEv.chgMohm = 1500;
+    maxEv.designMah = 1200;
+    maxEv.hasWatermark = true;
+    maxEv.durSec = 864000u;
+    maxEv.startPct = 100;
+    maxEv.vbatMinMv = 2850;
+    maxEv.vbatMaxMv = 4250;
+    maxEv.vsysMinMv = 3300;
+    maxEv.vbusMinMv = 4350;
+    maxEv.tmpMaxC = -40;
+    maxEv.vbusLimSec = 65535u;
+    maxEv.thermRegSec = 65535u;
+    maxEv.tempCapSec = 65535u;
+    maxEv.screenOnSec = 65535u;
+    maxEv.aodSec = 65535u;
+    size_t mn = protoBuildPowerEvent(pwrBuf, sizeof(pwrBuf), maxEv);
+    CHECK(mn > 0 && mn < 448);
+    CHECK(protoBuildPowerEvent(pwrBuf, 96, maxEv) == 0);
+  }
 
   std::printf("%d checks, %d failed\n", g_checks, g_fail);
   return g_fail ? 1 : 0;

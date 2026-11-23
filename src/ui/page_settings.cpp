@@ -1,9 +1,14 @@
 #include "ui/pages.h"
+#include "ui/easing.h"
 #include "ui/theme.h"
 #include <Arduino.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#ifndef NOVA_HOST_SIM
+#include <esp_heap_caps.h>
+#endif
 
 // 设置页：分组卡片式一页清单（针对 1.8" 368×448 穿戴屏幕降低密度、放大触控热区）。
 //
@@ -49,6 +54,11 @@ constexpr uint32_t BOUNCE_MS       = 160u;
 constexpr float    FLING_DECAY     = 0.94f;
 constexpr float    FLING_STOP_V    = 0.3f;
 constexpr uint32_t EXPAND_ANIM_MS  = 150u;
+constexpr uint32_t TOGGLE_ANIM_MS  = 140u;
+constexpr uint32_t KNOB_GROW_MS    = 100u;
+constexpr uint32_t KNOB_SHRINK_MS  = 120u;
+constexpr float    KNOB_GRAB_SCALE = 1.25f;
+constexpr float    SLIDER_TAU_MS   = 35.0f;
 constexpr uint32_t CONFIRM_TIMEOUT_MS = 3000u;
 
 constexpr uint16_t COL_HDR_LINE   = rgb565(18, 26, 40);
@@ -176,23 +186,30 @@ bool        s_scrollTween       = false;
 float       s_scrollFrom        = 0.0f;
 float       s_scrollTo          = 0.0f;
 
-// 滑块 / 危险操作确认状态
+// 滑块 / 危险操作 / 开关补间状态
 int8_t      s_dragRow           = -1;
 int8_t      s_confirmRow        = -1;
 uint32_t    s_confirmAtMs       = 0;
+enum class KnobScalePhase : uint8_t { IDLE, GROW, SHRINK };
+KnobScalePhase s_knobPhase      = KnobScalePhase::IDLE;
+uint32_t    s_knobStartMs       = 0;
+float       s_knobScale         = 1.0f;
+float       s_knobScaleFrom     = 1.0f;
+int8_t      s_knobRow           = -1;
+int8_t      s_sliderAnimRow     = -1;
+float       s_sliderShownVal    = 0.0f;
+bool        s_sliderSettling    = false;
+uint32_t    s_sliderPrevMs      = 0;
+bool        s_toggleAnimActive[kRowCount]  = {};
+uint32_t    s_toggleAnimStartMs[kRowCount] = {};
+float       s_toggleFrom[kRowCount]        = {};
+float       s_toggleT[kRowCount]           = {};
 
 int8_t findRowById(uint8_t id) {
   for (uint8_t i = 0; i < kRowCount; i++) {
     if (kRows[i].id == id) return (int8_t)i;
   }
   return -1;
-}
-
-float easeOutCubic(float u) {
-  if (u <= 0.0f) return 0.0f;
-  if (u >= 1.0f) return 1.0f;
-  float inv = 1.0f - u;
-  return 1.0f - inv * inv * inv;
 }
 
 // ---------- 取值 / 回写 ----------
@@ -482,21 +499,26 @@ void drawChevronRight(NovaCanvas& c, int16_t tipX, int16_t cy, uint16_t col) {
   c.drawLine(tipX - 2, cy, tipX - 7, cy + 5, col);
 }
 
-void drawChoiceRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const RowDef& r) {
+void drawChoiceRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg,
+                   const RowDef& r, uint8_t alpha = 255) {
   const ChoiceSet& cs = kSets[r.set];
   const uint16_t cur = rowValue(cfg, r.id);
   for (uint8_t i = 0; i < cs.n; i++) {
     const ui::Rect pr = choicePillRect(top, r.set, i);
     const bool on = (cs.values[i] == cur);
-    const uint16_t bg = on ? ui::COL_ACCENT : ui::COL_CARD_HI;
-    const uint16_t bd = on ? ui::COL_ACCENT : ui::COL_BORDER;
-    const uint16_t fg = on ? ui::COL_BG : ui::COL_TEXT;
+    const uint16_t targetBg = on ? ui::COL_ACCENT : ui::COL_CARD_HI;
+    const uint16_t targetBd = on ? ui::COL_ACCENT : ui::COL_BORDER;
+    const uint16_t targetFg = on ? ui::COL_BG : ui::COL_TEXT;
+    const uint16_t bg = ui::blend565(ui::COL_CARD, targetBg, alpha);
+    const uint16_t bd = ui::blend565(ui::COL_CARD, targetBd, alpha);
+    const uint16_t fg = ui::blend565(ui::COL_CARD, targetFg, alpha);
     ui::aaFillRoundRect(c, pr.x, pr.y, pr.w, pr.h, 11, bg, bd);
     ui::drawTextCenteredInRect(c, ui::fontCjk14(), pr, cs.labels[i], fg, bg);
   }
 }
 
-void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const RowDef& r) {
+void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg,
+                   const RowDef& r, uint8_t alpha = 255) {
   const bool bright = (r.id == R_BRIGHT);
   const uint16_t lo = bright ? 20 : 0;
   const uint16_t hi = 100;
@@ -509,19 +531,94 @@ void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const Ro
   const int16_t cy = (int16_t)(top + ROW_H + SLIDER_H / 2);
   const int16_t trackH = 8;
 
+  const uint16_t trackCol  = ui::blend565(ui::COL_CARD, ui::COL_TRACK, alpha);
+  const uint16_t accentCol = ui::blend565(ui::COL_CARD, ui::COL_ACCENT, alpha);
+  const uint16_t ringCol   = ui::blend565(ui::COL_CARD, rgb565(30, 56, 86), alpha);
+  const uint16_t knobCol   = ui::blend565(ui::COL_CARD, ui::COL_TEXT, alpha);
+
   ui::aaFillRoundRect(c, x0, (int16_t)(cy - trackH / 2), (int16_t)(x1 - x0), trackH,
-                      trackH / 2, ui::COL_TRACK, ui::COL_TRACK);
+                      trackH / 2, trackCol, trackCol);
   const int16_t span = (int16_t)(x1 - x0);
-  const int16_t knobX = (int16_t)(x0 + (int32_t)span * (v - lo) / (hi - lo));
+  float dispV = (float)v;
+  if (s_sliderAnimRow >= 0 && kRows[s_sliderAnimRow].id == r.id) {
+    dispV = s_sliderShownVal;
+    if (dispV < (float)lo) dispV = (float)lo;
+    if (dispV > (float)hi) dispV = (float)hi;
+  }
+  const int16_t knobX =
+      (int16_t)lroundf((float)x0 + (float)span * (dispV - (float)lo) / (float)(hi - lo));
   if (knobX > x0) {
     int16_t fw = (int16_t)(knobX - x0);
     if (fw < trackH) fw = trackH;
     ui::aaFillRoundRect(c, x0, (int16_t)(cy - trackH / 2), fw, trackH,
-                        trackH / 2, ui::COL_ACCENT, ui::COL_ACCENT);
+                        trackH / 2, accentCol, accentCol);
   }
-  ui::aaDrawCircle(c, knobX, cy, 15, rgb565(30, 56, 86));
-  ui::aaFillCircle(c, knobX, cy, 12, ui::COL_TEXT);
-  ui::aaFillCircle(c, knobX, cy, 4, ui::COL_ACCENT);
+  const float scale = (s_knobRow >= 0 && kRows[s_knobRow].id == r.id) ? s_knobScale : 1.0f;
+  const int16_t ringR = (int16_t)lroundf(15.0f * scale);
+  const int16_t knobR = (int16_t)lroundf(12.0f * scale);
+  const int16_t dotR  = (int16_t)lroundf(4.0f * scale);
+  ui::aaDrawCircle(c, knobX, cy, ringR, ringCol);
+  ui::aaFillCircle(c, knobX, cy, knobR, knobCol);
+  ui::aaFillCircle(c, knobX, cy, dotR, accentCol);
+}
+
+void drawExpandedClipped(NovaCanvas& c, int16_t top, const NovaSettings& cfg,
+                         uint8_t idx, bool lastInGroup, float frac) {
+  const RowDef& r = kRows[idx];
+  const float fade = ease::clamp01((frac - 0.55f) / 0.45f);
+  const uint8_t alpha = (uint8_t)lroundf(fade * 255.0f);
+  const int16_t yOff = (int16_t)lroundf((1.0f - fade) * 6.0f);
+  const int16_t drawTop = (int16_t)(top + yOff);
+
+  if (frac >= 1.0f) {
+    if (r.kind == RK_SLIDER) drawSliderRow(c, drawTop, cfg, r, 255);
+    else if (r.kind == RK_CHOICE) drawChoiceRow(c, drawTop, cfg, r, 255);
+    return;
+  }
+
+  // 展开过程从 frac>=0.55 开始淡入上移；保存行底边下方区域并在绘制后恢复，避免无裁剪画布下越界。
+  uint16_t* fb = c.getFramebuffer();
+  const int16_t clipY = (int16_t)(top + rowH(idx) - (lastInGroup ? 2 : 1));
+  const int16_t maxDrawY = (int16_t)(drawTop + ROW_H + fullExtraH(idx) + 8);
+  int16_t y0 = clipY < 0 ? 0 : clipY;
+  int16_t y1 = maxDrawY > UI_H ? UI_H : maxDrawY;
+  static uint16_t* s_clipBuf = nullptr;
+  static size_t s_clipCap = 0;
+  int16_t saveRows = (fb && y1 > y0) ? (int16_t)(y1 - y0) : 0;
+  if (saveRows > 0) {
+    const size_t needPx = (size_t)saveRows * CARD_W;
+    if (needPx > s_clipCap) {
+      free(s_clipBuf);
+#ifndef NOVA_HOST_SIM
+      s_clipBuf = (uint16_t*)heap_caps_malloc(needPx * sizeof(uint16_t),
+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!s_clipBuf) s_clipBuf = (uint16_t*)malloc(needPx * sizeof(uint16_t));
+#else
+      s_clipBuf = (uint16_t*)malloc(needPx * sizeof(uint16_t));
+#endif
+      s_clipCap = s_clipBuf ? needPx : 0;
+    }
+    if (s_clipBuf) {
+      for (int16_t row = 0; row < saveRows; row++) {
+        memcpy(s_clipBuf + (size_t)row * CARD_W,
+               fb + (size_t)(y0 + row) * UI_W + CARD_X,
+               (size_t)CARD_W * sizeof(uint16_t));
+      }
+    } else {
+      saveRows = 0;
+    }
+  }
+
+  if (r.kind == RK_SLIDER) drawSliderRow(c, drawTop, cfg, r, alpha);
+  else if (r.kind == RK_CHOICE) drawChoiceRow(c, drawTop, cfg, r, alpha);
+
+  if (saveRows > 0 && s_clipBuf) {
+    for (int16_t row = 0; row < saveRows; row++) {
+      memcpy(fb + (size_t)(y0 + row) * UI_W + CARD_X,
+             s_clipBuf + (size_t)row * CARD_W,
+             (size_t)CARD_W * sizeof(uint16_t));
+    }
+  }
 }
 
 void drawItemRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, uint8_t idx, bool lastInGroup) {
@@ -550,8 +647,9 @@ void drawItemRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, uint8_t id
       break;
     case RK_TOGGLE: {
       const int16_t sy = (int16_t)(top + (ROW_H - SW_H) / 2);
+      const float toggleT = s_toggleAnimActive[idx] ? s_toggleT[idx] : 1.0f;
       ui::drawSwitch(c, ui::Rect{ (int16_t)(RIGHT_X - SW_W), sy, SW_W, SW_H },
-                     rowValue(cfg, r.id) != 0, ui::COL_ACCENT);
+                     rowValue(cfg, r.id) != 0, ui::COL_ACCENT, toggleT);
       break;
     }
     case RK_ACT:
@@ -568,13 +666,9 @@ void drawItemRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, uint8_t id
       break;
   }
 
-  // 展开区内容仅在抽屉接近到位时绘制，防止无裁剪画布下越出卡片底边。
-  if (rowExpandFrac(idx) >= 0.90f) {
-    if (r.kind == RK_SLIDER) {
-      drawSliderRow(c, top, cfg, r);
-    } else if (r.kind == RK_CHOICE) {
-      drawChoiceRow(c, top, cfg, r);
-    }
+  const float frac = rowExpandFrac(idx);
+  if (frac >= 0.55f && (r.kind == RK_SLIDER || r.kind == RK_CHOICE)) {
+    drawExpandedClipped(c, top, cfg, idx, lastInGroup, frac);
   }
 
   if (!lastInGroup) {
@@ -673,6 +767,9 @@ void applySliderX(int16_t x) {
   NovaSettings& cfg = settingsMut();
   if (r.id == R_BRIGHT) cfg.brightPct = (uint8_t)v;
   else                  cfg.soundPct = (uint8_t)v;
+  if (s_sliderAnimRow == s_dragRow && fabsf((float)v - s_sliderShownVal) >= 0.05f) {
+    s_sliderSettling = true;
+  }
 }
 
 void resetTransientState(bool resetScroll) {
@@ -686,11 +783,23 @@ void resetTransientState(bool resetScroll) {
   s_scrollTween = false;
   s_dragRow = -1;
   s_confirmRow = -1;
+  s_knobPhase = KnobScalePhase::IDLE;
+  s_knobScale = 1.0f;
+  s_knobScaleFrom = 1.0f;
+  s_knobRow = -1;
+  s_sliderAnimRow = -1;
+  s_sliderSettling = false;
+  s_sliderPrevMs = 0;
   s_scrollTouchActive = false;
   s_flinging = false;
   s_bouncing = false;
   s_flingVel = 0.0f;
   s_sampleCount = 0;
+  for (uint8_t i = 0; i < kRowCount; i++) {
+    s_toggleAnimActive[i] = false;
+    s_toggleFrom[i] = 0.0f;
+    s_toggleT[i] = 1.0f;
+  }
   if (resetScroll) s_scrollY = 0.0f;
 }
 
@@ -718,6 +827,10 @@ void pageSettingsCancelDrag() {
   s_dragRow = -1;
   s_scrollTouchActive = false;
   s_sampleCount = 0;
+  s_knobPhase = KnobScalePhase::IDLE;
+  s_knobScale = 1.0f;
+  s_knobRow = -1;
+  s_sliderSettling = false;
 }
 
 #ifdef NOVA_HOST_SIM
@@ -746,7 +859,16 @@ void pageSettingsDebugConfirm(uint8_t id) {
 #endif
 
 bool pageSettingsIsAnimating() {
-  return s_flinging || s_bouncing || s_animActive;
+  if (s_flinging || s_bouncing || s_animActive) return true;
+  if (s_knobPhase != KnobScalePhase::IDLE || s_sliderSettling) return true;
+  for (uint8_t i = 0; i < kRowCount; i++) {
+    if (s_toggleAnimActive[i]) return true;
+  }
+  return false;
+}
+
+bool pageSettingsIsScrolling() {
+  return s_flinging || s_bouncing || s_scrollTween;
 }
 
 ui::Rect pageSettingsListRect() {
@@ -776,7 +898,7 @@ bool pageSettingsTick(uint32_t nowMs) {
       }
       clampScroll();
     } else {
-      const float e = easeOutCubic((float)elapsed / (float)EXPAND_ANIM_MS);
+      const float e = ease::outCubic((float)elapsed / (float)EXPAND_ANIM_MS);
       if (s_openRow >= 0) {
         s_openFrac = s_openFrom + (1.0f - s_openFrom) * e;
       }
@@ -790,6 +912,73 @@ bool pageSettingsTick(uint32_t nowMs) {
     dirty = true;
   }
 
+  // 1b. 开关补间（140 ms outCubic）
+  for (uint8_t i = 0; i < kRowCount; i++) {
+    if (!s_toggleAnimActive[i]) continue;
+    const uint32_t elapsed =
+        (nowMs > s_toggleAnimStartMs[i]) ? (nowMs - s_toggleAnimStartMs[i]) : 0u;
+    if (elapsed >= TOGGLE_ANIM_MS) {
+      s_toggleAnimActive[i] = false;
+      s_toggleT[i] = 1.0f;
+    } else {
+      const float e = ease::outCubic((float)elapsed / (float)TOGGLE_ANIM_MS);
+      s_toggleT[i] = s_toggleFrom[i] + (1.0f - s_toggleFrom[i]) * e;
+    }
+    dirty = true;
+  }
+
+  // 1c. 滑块旋钮抓取缩放（100ms outBack 放大 / 120ms outCubic 恢复）与位置阻尼跟随
+  if (s_knobPhase == KnobScalePhase::GROW) {
+    const uint32_t elapsed = (nowMs > s_knobStartMs) ? (nowMs - s_knobStartMs) : 0u;
+    if (elapsed >= KNOB_GROW_MS) {
+      s_knobScale = KNOB_GRAB_SCALE;
+      s_knobPhase = KnobScalePhase::IDLE;
+    } else {
+      const float e = ease::outBack((float)elapsed / (float)KNOB_GROW_MS);
+      s_knobScale = ease::lerp(s_knobScaleFrom, KNOB_GRAB_SCALE, e);
+    }
+    dirty = true;
+  } else if (s_knobPhase == KnobScalePhase::SHRINK) {
+    const uint32_t elapsed = (nowMs > s_knobStartMs) ? (nowMs - s_knobStartMs) : 0u;
+    if (elapsed >= KNOB_SHRINK_MS) {
+      s_knobScale = 1.0f;
+      s_knobPhase = KnobScalePhase::IDLE;
+      s_knobRow = -1;
+    } else {
+      const float e = ease::outCubic((float)elapsed / (float)KNOB_SHRINK_MS);
+      s_knobScale = ease::lerp(s_knobScaleFrom, 1.0f, e);
+    }
+    dirty = true;
+  }
+
+  if (s_sliderAnimRow >= 0 && (s_dragRow == s_sliderAnimRow || s_sliderSettling)) {
+    uint32_t dtMs = 16u;
+    if (s_sliderPrevMs != 0 && nowMs > s_sliderPrevMs) {
+      dtMs = nowMs - s_sliderPrevMs;
+      if (dtMs > 100u) dtMs = 100u;
+    } else if (s_sliderPrevMs != 0) {
+      dtMs = 0u;
+    }
+    if (nowMs > s_sliderPrevMs || s_sliderPrevMs == 0) {
+      s_sliderPrevMs = nowMs;
+    }
+    const float targetV = (float)rowValue(settingsGet(), kRows[s_sliderAnimRow].id);
+    const float diff = targetV - s_sliderShownVal;
+    if (fabsf(diff) < 0.05f) {
+      if (s_sliderShownVal != targetV) {
+        s_sliderShownVal = targetV;
+        dirty = true;
+      }
+      s_sliderSettling = false;
+    } else if (dtMs > 0u) {
+      s_sliderShownVal += diff * ease::approachFactor(dtMs, SLIDER_TAU_MS);
+      s_sliderSettling = true;
+      dirty = true;
+    }
+  } else {
+    s_sliderPrevMs = nowMs;
+  }
+
   // 2. 越界回弹（与 page_rank.cpp 同一套 easeOutCubic 参数）
   if (!s_scrollTouchActive) {
     const float maxS = maxScrollF();
@@ -800,7 +989,7 @@ bool pageSettingsTick(uint32_t nowMs) {
         s_scrollY = s_bounceTo;
         s_bouncing = false;
       } else {
-        const float e = easeOutCubic((float)elapsed / (float)BOUNCE_MS);
+        const float e = ease::outCubic((float)elapsed / (float)BOUNCE_MS);
         s_scrollY = s_bounceFrom + (s_bounceTo - s_bounceFrom) * e;
       }
       dirty = true;
@@ -958,6 +1147,12 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
         }
         s_animStartMs = millis();
         s_animActive = true;
+        if (r.kind == RK_SLIDER) {
+          s_sliderAnimRow = h.row;
+          s_sliderShownVal = (float)rowValue(cfg, r.id);
+          s_sliderSettling = false;
+          s_sliderPrevMs = s_animStartMs;
+        }
         const float targetY = visibleScrollForTargetRow(s_openRow, desiredScroll);
         if (fabsf(targetY - s_scrollY) >= 0.5f) {
           s_scrollTween = true;
@@ -972,6 +1167,10 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
     }
 
     case RK_TOGGLE:
+      s_toggleFrom[h.row] = s_toggleAnimActive[h.row] ? (1.0f - s_toggleT[h.row]) : 0.0f;
+      s_toggleT[h.row] = s_toggleFrom[h.row];
+      s_toggleAnimStartMs[h.row] = millis();
+      s_toggleAnimActive[h.row] = true;
       return UiAction{ rowActionKind(r.id), rowValue(cfg, r.id) ? 0 : 1 };
 
     case RK_ACT: {
@@ -1048,6 +1247,16 @@ bool pageSettingsTouchDown(int16_t x, int16_t y, uint32_t nowMs) {
     s_confirmRow = -1;
     s_dragRow = h.row;
     s_scrollTouchActive = false;
+    const uint32_t grabMs = millis();
+    if (s_sliderAnimRow != h.row) {
+      s_sliderAnimRow = h.row;
+      s_sliderShownVal = (float)rowValue(settingsGet(), kRows[h.row].id);
+      s_sliderPrevMs = grabMs;
+    }
+    s_knobRow = h.row;
+    s_knobPhase = KnobScalePhase::GROW;
+    s_knobStartMs = grabMs;
+    s_knobScaleFrom = s_knobScale;
     applySliderX(x);
     return true;
   }
@@ -1069,6 +1278,10 @@ UiAction pageSettingsTouchUp(uint32_t) {
   if (s_dragRow < 0) return UiAction{};
   const uint8_t id = kRows[s_dragRow].id;
   const uint16_t v = rowValue(settingsGet(), id);
+  s_knobRow = s_dragRow;
+  s_knobPhase = KnobScalePhase::SHRINK;
+  s_knobStartMs = millis();
+  s_knobScaleFrom = s_knobScale;
   s_dragRow = -1;
   return UiAction{ rowActionKind(id), (int)v };
 }

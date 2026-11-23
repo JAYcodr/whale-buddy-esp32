@@ -3,6 +3,8 @@
 #include "model/state.h"
 #include "ui/aafont.h"
 #include "ui/canvas.h"
+#include "ui/easing.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -98,13 +100,13 @@ inline uint16_t blend565(uint16_t a, uint16_t b, uint8_t t) {
   return (uint16_t)((r << 11) | (g << 5) | bl);
 }
 
-void drawSwitch(NovaCanvas& c, Rect r, bool on, uint16_t accent);
+void drawSwitch(NovaCanvas& c, Rect r, bool on, uint16_t accent, float t = 1.0f);
 void drawSegmented(NovaCanvas& c, Rect r, const char* const* labels, int n, int sel,
                    uint16_t accent, const AaFont* f = nullptr);
 void drawLevelBar(NovaCanvas& c, Rect r, int levels, int cur, uint16_t accent,
                   bool firstIsMute);
 void drawSectionLabel(NovaCanvas& c, int16_t x, int16_t baseY, const char* s);
-void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius);
+void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius, uint8_t alpha = 46);
 
 inline void drawButton(NovaCanvas& c, Rect r, const char* label, bool active,
                        uint16_t accent = COL_ACCENT, const AaFont* font = nullptr) {
@@ -280,23 +282,69 @@ inline void drawBatteryIcon(NovaCanvas& c, int16_t rightX, int16_t centerY,
   // dim bolt = plugged but not charging; full pack = no bolt at all.
   const bool drawBolt = charging || paused || (usbPresent && !full);
   if (drawBolt) {
-    const uint16_t boltCol = (charging || paused) ? COL_BG : COL_DIM;
-    int16_t mx = bx + bw / 2;
-    c.drawLine(mx + 1, by + 2, mx - 2, centerY, boltCol);
-    c.drawLine(mx - 2, centerY, mx + 2, centerY, boltCol);
-    c.drawLine(mx + 2, centerY, mx - 1, by + bh - 3, boltCol);
+    const int16_t mx = bx + bw / 2;
+    const int16_t fillEndX = bx + 2 + fillW;
+    auto drawBoltSolid = [&](uint16_t bCol) {
+      c.drawLine(mx + 1, by + 2, mx - 2, centerY, bCol);
+      c.drawLine(mx - 2, centerY, mx + 2, centerY, bCol);
+      c.drawLine(mx + 2, centerY, mx - 1, by + bh - 3, bCol);
+    };
+    if (!(charging || paused)) {
+      drawBoltSolid(COL_DIM);
+    } else if (fillEndX > mx + 2) {
+      drawBoltSolid(COL_BG);
+    } else if (fillEndX <= mx - 2) {
+      // Low battery charging: center of the icon is unfilled (COL_BG), so draw
+      // the bolt in bright fill color instead of dark COL_BG on COL_BG.
+      drawBoltSolid(col);
+    } else {
+      // Mid-charge (~42..57%): per-pixel contrast across the fill edge.
+      uint16_t* fb = c.getFramebuffer();
+      if (fb) {
+        auto boltLine = [&](int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+          int16_t dx = x1 > x0 ? (x1 - x0) : (x0 - x1);
+          int16_t sx = x0 < x1 ? 1 : -1;
+          int16_t dy = -(y1 > y0 ? (y1 - y0) : (y0 - y1));
+          int16_t sy = y0 < y1 ? 1 : -1;
+          int16_t err = dx + dy;
+          for (;;) {
+            if (x0 >= 0 && x0 < UI_W && y0 >= 0 && y0 < UI_H) {
+              fb[(size_t)y0 * UI_W + x0] = (x0 < fillEndX) ? COL_BG : col;
+            }
+            if (x0 == x1 && y0 == y1) break;
+            int16_t e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+          }
+        };
+        boltLine(mx + 1, by + 2, mx - 2, centerY);
+        boltLine(mx - 2, centerY, mx + 2, centerY);
+        boltLine(mx + 2, centerY, mx - 1, by + bh - 3);
+      } else {
+        drawBoltSolid((fillEndX <= mx) ? col : COL_BG);
+      }
+    }
   }
   drawTextRight(c, fontAscii14(), bx - 6, centerY + 6, pctStr, col, COL_BG);
+}
+
+inline int16_t pagePillDotX(int16_t px0, int i, int activeDot) {
+  constexpr int16_t activeW = 18;
+  constexpr int16_t dotW    = 5;
+  constexpr int16_t gap     = 7;
+  int16_t x = (int16_t)(px0 + i * (dotW + gap));
+  if (i > activeDot) x = (int16_t)(x + (activeW - dotW));
+  return x;
 }
 
 inline void drawPagePills(NovaCanvas& c, int16_t centerX, int16_t centerY,
                           int activeDot, int totalDots) {
   if (totalDots <= 0) return;
-  const int16_t activeW = 18;
-  const int16_t dotW = 5;
-  const int16_t gap = 7;
-  int16_t totalW = (totalDots - 1) * (dotW + gap) + activeW;
-  int16_t px = centerX - totalW / 2;
+  constexpr int16_t activeW = 18;
+  constexpr int16_t dotW = 5;
+  constexpr int16_t gap = 7;
+  int16_t totalW = (int16_t)((totalDots - 1) * (dotW + gap) + activeW);
+  int16_t px = (int16_t)(centerX - totalW / 2);
   for (int i = 0; i < totalDots; i++) {
     bool act = (i == activeDot);
     int16_t w = act ? activeW : dotW;
@@ -304,6 +352,49 @@ inline void drawPagePills(NovaCanvas& c, int16_t centerX, int16_t centerY,
     aaFillRoundRect(c, px, centerY - 2, w, 4, 2, col, col);
     px += w + gap;
   }
+}
+
+// 滑屏期间仅重绘圆点小矩形：背景圆点按插值位移，高亮胶囊先拉长后收回（类 iOS 页面指示器）。
+inline void drawPagePillsSlide(NovaCanvas& c, int16_t centerX, int16_t centerY,
+                               int fromDot, int toDot, int totalDots, float u) {
+  if (totalDots <= 0) return;
+  if (fromDot < 0) fromDot = 0;
+  if (fromDot >= totalDots) fromDot = totalDots - 1;
+  if (toDot < 0) toDot = 0;
+  if (toDot >= totalDots) toDot = totalDots - 1;
+
+  constexpr int16_t activeW = 18;
+  constexpr int16_t dotW    = 5;
+  constexpr int16_t gap     = 7;
+  const int16_t totalW = (int16_t)((totalDots - 1) * (dotW + gap) + activeW);
+  const int16_t px0    = (int16_t)(centerX - totalW / 2);
+
+  c.fillRect((int16_t)(px0 - 2), (int16_t)(centerY - 3), (int16_t)(totalW + 4), 6, COL_BG);
+
+  const float moveE = ease::outCubic(u);
+  for (int i = 0; i < totalDots; i++) {
+    const float fx = (float)pagePillDotX(px0, i, fromDot);
+    const float tx = (float)pagePillDotX(px0, i, toDot);
+    const int16_t dx = (int16_t)lroundf(ease::lerp(fx, tx, moveE));
+    aaFillRoundRect(c, dx, (int16_t)(centerY - 2), dotW, 4, 2, COL_MUTED, COL_MUTED);
+  }
+
+  const float xFrom = (float)pagePillDotX(px0, fromDot, fromDot);
+  const float xTo   = (float)pagePillDotX(px0, toDot, toDot);
+  const float pLead  = ease::outQuart(u);
+  const float pTrail = ease::inOutCubic(u);
+  float xL, xR;
+  if (xTo >= xFrom) {
+    xL = ease::lerp(xFrom, xTo, pTrail);
+    xR = ease::lerp(xFrom + activeW, xTo + activeW, pLead);
+  } else {
+    xL = ease::lerp(xFrom, xTo, pLead);
+    xR = ease::lerp(xFrom + activeW, xTo + activeW, pTrail);
+  }
+  const int16_t ixL = (int16_t)lroundf(xL);
+  int16_t iw = (int16_t)lroundf(xR) - ixL;
+  if (iw < dotW) iw = dotW;
+  aaFillRoundRect(c, ixL, (int16_t)(centerY - 2), iw, 4, 2, COL_ACCENT, COL_ACCENT);
 }
 
 inline int16_t burnOffsetX(uint8_t step) {

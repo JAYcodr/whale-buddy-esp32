@@ -1,4 +1,5 @@
 #include "ui/pages.h"
+#include "ui/easing.h"
 #include "ui/theme.h"
 #include <math.h>
 #include <stdio.h>
@@ -436,8 +437,7 @@ bool pageRankTick(uint32_t nowMs) {
       return true;
     }
     float u = (float)elapsed / (float)BOUNCE_MS;
-    float inv = 1.0f - u;
-    float ease = 1.0f - inv * inv * inv;  // easeOutCubic
+    float ease = ease::outCubic(u);
     s_scrollY = s_bounceFrom + (s_bounceTo - s_bounceFrom) * ease;
     return true;
   }

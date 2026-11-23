@@ -49,10 +49,17 @@ payload：
 
 关掉：插件配置 `tokens: false`。手动验一包：`node bin/nova-buddy.js test-push --id D93468`。
 
+## 电源关键帧存储与分析（`nova/<id>/up` `evt:"pwr"`）
+
+- 设备仅在关键状态变化（开机黑匣子 `boot`、插拔 USB、充电阶段切换、周期 OCV 探针 `probe`、温控/限流切换、低电阈值）推送 `evt: "pwr"`。
+- 宿主侧 `lib/power.js` 将关键帧写入有界环形日志 `$DSH_HOME/nova-buddy/power-events.jsonl`（单文件上限 256 KiB，轮转保留 1 份 `.1.jsonl`，总占用上限 512 KiB），每 30 秒的 `stat` 心跳不写入日志。
+- 聚合画像与周期水位线保存在 `$DSH_HOME/nova-buddy/power-summary.json`（每台设备最多保留 60 个充放周期、30 次开机黑匣子、40 次内阻探针）。
+- 查看报告或实时抓帧：`node bin/nova-buddy.js power [--id D93468] [--watch 15] [--json]`。关掉落盘：插件配置 `powerLog: false`。
+
 ## 测试
 
 ```bash
-npm test        # node --test，当前 19 个
+npm test        # node --test
 ```
 
 `npm install` 之后直接跑，不需要设备或 broker。

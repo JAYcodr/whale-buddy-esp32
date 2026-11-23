@@ -108,23 +108,31 @@ static void testChargeSequence() {
   CHECK_MSG(start > 25 && start < 50, "start %u", start);
 
   // Plug in, CC at 300mA. 600mAh => ~0.79%/min. 10 min => +7..9.
-  BatteryOut cc = run(m, 600, tickIn(3900, true, true, AXP_CHG_CC, 300));
+  BatteryOut cc = run(m, 600, tickIn(4030, true, true, AXP_CHG_CC, 300));
   CHECK_MSG(cc.stage == BattStage::CC, "stage %u", (unsigned)cc.stage);
   CHECK_MSG(cc.pct > start + 4 && cc.pct < start + 14,
             "CC in 10min: %u -> %u", start, cc.pct);
 
-  // CV: voltage pinned, model walks 95..99.
-  BatteryOut cv = run(m, 600, tickIn(4190, true, true, AXP_CHG_CV, 300));
-  CHECK_MSG(cv.stage == BattStage::CV, "stage %u", (unsigned)cv.stage);
-  CHECK(cv.pct >= 95);
+  // Continue CC to ~75%, then enter CV: CV must progress smoothly via tapering
+  // current rather than jumping straight to 95%.
+  BatteryModel cvm;
+  run(cvm, 5, tickIn(4190, true, true, AXP_CHG_CC, 300)); // ~75%
+  const uint8_t preCv = run(cvm, 60, tickIn(4200, true, true, AXP_CHG_CC, 300)).pct;
+  BatteryOut cv30s = run(cvm, 30, tickIn(4205, true, true, AXP_CHG_CV, 300));
+  CHECK_MSG(cv30s.stage == BattStage::CV, "stage %u", (unsigned)cv30s.stage);
+  CHECK_MSG(cv30s.pct <= preCv + 1, "CV 30s must not jump: %u -> %u", preCv, cv30s.pct);
 
-  BatteryOut done = run(m, 200, tickIn(4200, true, true, AXP_CHG_DONE, 0));
+  BatteryOut cv30m = run(cvm, 1800, tickIn(4200, true, true, AXP_CHG_CV, 300));
+  CHECK_MSG(cv30m.pct > preCv + 5 && cv30m.pct <= 99,
+            "CV 30m should taper upward smoothly: %u -> %u", preCv, cv30m.pct);
+
+  BatteryOut done = run(cvm, 300, tickIn(4200, true, true, AXP_CHG_DONE, 0));
   CHECK_MSG(done.stage == BattStage::DONE, "stage %u", (unsigned)done.stage);
   CHECK_MSG(done.pct == 100, "DONE pct %u", done.pct);
   CHECK(done.full);
 
   // Unplug: 4.17V resting. Must not fall off a cliff.
-  BatteryOut unplug = run(m, 60, tickIn(4170, false, false, AXP_CHG_STOP));
+  BatteryOut unplug = run(cvm, 60, tickIn(4170, false, false, AXP_CHG_STOP));
   CHECK_MSG(unplug.stage == BattStage::DISCHARGE, "stage %u", (unsigned)unplug.stage);
   CHECK_MSG(unplug.pct >= 96, "unplug dropped to %u", unplug.pct);
 }
@@ -162,9 +170,10 @@ static void testBootOnDone() {
 
 static void testLimitCap() {
   BatteryModel m;
-  BatteryOut o = run(m, 5, tickIn(4050, true, true, AXP_CHG_CC, 300, false, NAN, 90));
-  // CV must stop at the cap, not walk to 95+.
-  o = run(m, 900, tickIn(4190, true, true, AXP_CHG_CV, 300, false, NAN, 90));
+  // Boot near 76% and run CV with a 90% maintenance cap.
+  BatteryOut o = run(m, 5, tickIn(4195, true, true, AXP_CHG_CC, 300, false, NAN, 90));
+  CHECK_MSG(o.pct >= 74 && o.pct <= 82, "start pct %u", o.pct);
+  o = run(m, 2700, tickIn(4205, true, true, AXP_CHG_CV, 300, false, NAN, 90));
   CHECK_MSG(o.stage == BattStage::CV, "stage %u", (unsigned)o.stage);
   CHECK_MSG(o.pct <= 90 && o.pct >= 88, "CV cap pct %u", o.pct);
 
@@ -172,6 +181,140 @@ static void testLimitCap() {
   o = run(m, 300, tickIn(4200, true, false, AXP_CHG_DONE, 0, false, NAN, 90));
   CHECK_MSG(o.stage == BattStage::DONE, "stage %u", (unsigned)o.stage);
   CHECK_MSG(o.pct == 90, "DONE with cap pct %u", o.pct);
+}
+
+static void testOvernightCutoffPlugIn() {
+  // Regression: overnight empty shutdown (NVS recorded 2%, PMU DATA_BUFFER lost)
+  // followed by plugging in USB with an immediate 3860mV charging polarization spike
+  // must NOT jump to 50%.
+  BatteryModel m;
+  BatteryIn in = tickIn(3860, true, true, AXP_CHG_CC, 300);
+  in.seedPct = 2;
+  in.seedPowerLost = true;
+  in.seedMvValid = true;
+  in.seedMv = 3520; // unloaded OCV sample taken before enabling charging
+  BatteryOut boot = batteryModelStep(m, in);
+  CHECK_MSG(boot.pct <= 10, "overnight cutoff boot jumped to %u%%", boot.pct);
+
+  // Even without unloaded seedMvValid, power-loss NVS guard keeps boot <= seed + 4.
+  BatteryModel m2;
+  BatteryIn in2 = tickIn(3860, true, true, AXP_CHG_CC, 300);
+  in2.seedPct = 1;
+  in2.seedPowerLost = true;
+  BatteryOut boot2 = batteryModelStep(m2, in2);
+  CHECK_MSG(boot2.pct <= 6, "overnight power-loss guard failed: %u%%", boot2.pct);
+
+  // Normal soft reboot while PMU DATA_BUFFER stayed intact keeps continuity.
+  BatteryModel m3;
+  BatteryIn in3 = tickIn(4050, true, true, AXP_CHG_CC, 300);
+  in3.seedPct = 64;
+  in3.seedPowerLost = false;
+  BatteryOut boot3 = batteryModelStep(m3, in3);
+  CHECK_MSG(boot3.pct == 64, "soft reboot continuity broken: %u%%", boot3.pct);
+}
+
+static void testNo76To80Jump() {
+  // Regression: charging at 76% (whether CC stays or transitions to CV, or screen
+  // turns off raising current 300->500mA) must never jump 4% in 10-30s.
+  BatteryModel m;
+  BatteryIn ccOn = tickIn(4201, true, true, AXP_CHG_CC, 300); // ~76% after -206mV
+  ccOn.screenOn = true;
+  BatteryOut b = run(m, 5, ccOn);
+  const uint8_t startPct = b.pct;
+  CHECK_MSG(startPct >= 74 && startPct <= 78, "start %u", startPct);
+
+  // Screen turns off: governor asks 500mA (420mA effective after VBUS budget) and
+  // terminal voltage stays pinned in CV at 4205mV. Over 30s, pct may rise at most 1%.
+  BatteryIn cvOff = tickIn(4205, true, true, AXP_CHG_CV, 500);
+  cvOff.screenOn = false;
+  BatteryOut after30s = run(m, 30, cvOff);
+  CHECK_MSG(after30s.pct <= startPct + 1,
+            "charging jumped too fast in 30s: %u -> %u", startPct, after30s.pct);
+}
+
+static void testCompensationDetails() {
+  // USB_IDLE uses 0mV offset (not +55mV discharge offset).
+  BatteryModel idleM;
+  BatteryOut idle = batteryModelStep(idleM, tickIn(4000, true, false, AXP_CHG_STOP));
+  CHECK_MSG(idle.rawPct == 77, "USB_IDLE at 4000mV should be 77%%, got %u%%", idle.rawPct);
+
+  // Real 1.8 hardware match: 4201mV @ 300mA charge -> compMv ~3995mV -> raw ~76%.
+  BatteryModel chgM;
+  BatteryIn cc300 = tickIn(4201, true, true, AXP_CHG_CC, 300);
+  cc300.screenOn = true;
+  BatteryOut chg = batteryModelStep(chgM, cc300);
+  CHECK_MSG(chg.compMv >= 3985 && chg.compMv <= 4005, "300mA charge compMv %u", chg.compMv);
+  CHECK_MSG(chg.rawPct >= 74 && chg.rawPct <= 78, "300mA rawPct %u", chg.rawPct);
+
+  // Screen-off AOD discharge uses smaller IR drop than active bright screen.
+  BatteryModel dOn, dOff;
+  BatteryIn inOn = tickIn(3920, false, false, AXP_CHG_STOP);
+  inOn.screenOn = true;
+  BatteryIn inOff = tickIn(3920, false, false, AXP_CHG_STOP);
+  inOff.screenOn = false;
+  CHECK(batteryModelStep(dOn, inOn).compMv > batteryModelStep(dOff, inOff).compMv);
+}
+
+static void testSelfCalibration() {
+  BatteryCal cal;
+  // 1. Charge-pause ESR learning: at 300mA, 4120mV -> 3910mV resting => ~633mOhm.
+  CHECK(battCalOnChargePause(cal, 4120, 3910, 300));
+  CHECK(cal.rSamples == 1);
+  CHECK_MSG(cal.chgMohm >= 580 && cal.chgMohm <= 680, "learned chgMohm %u", cal.chgMohm);
+  // Reject CV-clamped (>=4185mV) or invalid pairs.
+  CHECK(!battCalOnChargePause(cal, 4200, 3990, 300));
+  CHECK(!battCalOnChargePause(cal, 4100, 3900, 50));
+
+  // 2. Capacity learning across CC span: 3660mV (23%) -> 3860mV (54%) = 31% delta;
+  //    at 700mAh real cell, 31% / 0.95 = 228.4mAh pushed -> learns toward ~700mAh.
+  BatteryCal capCal;
+  CHECK(battCalOnCapacitySpan(capCal, 3660, 3860, 228400u));
+  CHECK(capCal.capSamples == 1);
+  CHECK_MSG(capCal.designMah > 615 && capCal.designMah < 660,
+            "learned designMah %u", capCal.designMah);
+  // Reject too-short delta (<12%).
+  CHECK(!battCalOnCapacitySpan(capCal, 3810, 3860, 60000u));
+
+  // 3. CV-to-DONE taper tuning.
+  BatteryCal cvCal;
+  const uint32_t origTau = cvCal.cvTauMs;
+  CHECK(battCalOnChargeDone(cvCal, 93, 900000u, 0));
+  CHECK_MSG(cvCal.cvTauMs > origTau, "tau should rise when DONE came before 96%%");
+  CHECK(battCalOnFullRest(cvCal, 4160));
+  CHECK(cvCal.fullRestMv < 4180);
+
+  // 4. Unexpected cutoff at 8% nudges lowAnchorMv upward safely.
+  CHECK(battCalOnUnexpectedCutoff(cvCal, 8, true));
+  CHECK_MSG(cvCal.lowAnchorMv == 3415, "lowAnchorMv %u", cvCal.lowAnchorMv);
+
+  // 5. Sanitizer clamps extreme values cleanly.
+  BatteryCal bad{ 50, 100, 1000, 3900, 3100, 0, 0, 0 };
+  battCalSanitize(bad);
+  CHECK(bad.chgMohm == 200);
+  CHECK(bad.designMah == 400);
+  CHECK(bad.cvTauMs == 240000u);
+  CHECK(bad.fullRestMv == 4120);
+  CHECK(bad.lowAnchorMv == 3350);
+
+  // 6. Periodic unloaded probe gently nudges model without jumping.
+  BatteryModel pm;
+  run(pm, 5, tickIn(4100, true, true, AXP_CHG_CC, 300)); // ~60%
+  const uint8_t beforeProbe = pm.pct;
+  BatteryIn probeIn = tickIn(4100, true, true, AXP_CHG_CC, 300);
+  probeIn.probeOcvMv = 3960; // true OCV 70%
+  BatteryOut afterProbe = batteryModelStep(pm, probeIn);
+  CHECK_MSG(afterProbe.pct <= beforeProbe + 1, "probe must not jump immediately");
+  CHECK_MSG(pm.target > beforeProbe && pm.target <= beforeProbe + 4,
+            "probe nudged target gently: %u -> %u", beforeProbe, pm.target);
+
+  // 7. CV Ohm's-law taper bound keeps tail rawPct accurate even right after reboot.
+  BatteryModel tailCv;
+  BatteryIn tailIn = tickIn(4211, true, true, AXP_CHG_CV, 300);
+  tailIn.seedPct = 95;
+  tailIn.seedPowerLost = false;
+  BatteryOut tailOut = run(tailCv, 3, tailIn);
+  CHECK_MSG(tailOut.effMa < 120, "95%% CV tail effMa should be tapered: %u", tailOut.effMa);
+  CHECK_MSG(tailOut.rawPct >= 92, "95%% CV tail rawPct should stay high: %u", tailOut.rawPct);
 }
 
 static void testGovernorReArm() {
@@ -216,15 +359,16 @@ static void testGovernor() {
   ChargeGovernor h;
   d = chargeGovernorStep(h, ChargeSpeed::AUTO, false, 49.0f, 50, 100, true, 0);
   CHECK_MSG(d.ma == 200, "49C ma %u", d.ma);
+  CHECK(!d.tempCapped);
   d = chargeGovernorStep(h, ChargeSpeed::AUTO, false, 53.0f, 50, 100, true, 0);
   CHECK_MSG(d.ma == 100, "53C ma %u", d.ma);
   d = chargeGovernorStep(h, ChargeSpeed::AUTO, false, 59.0f, 50, 100, true, 0);
-  CHECK_MSG(!d.enable, "59C should cut");
+  CHECK_MSG(!d.enable && d.tempCapped && !d.limitCut, "59C should cut via temp");
   // Still hot: no early resume.
   d = chargeGovernorStep(h, ChargeSpeed::AUTO, false, 46.0f, 50, 100, true, 0);
-  CHECK_MSG(!d.enable, "latched hot should stay cut at 46C");
+  CHECK_MSG(!d.enable && d.tempCapped, "latched hot should stay cut at 46C");
   d = chargeGovernorStep(h, ChargeSpeed::AUTO, false, 43.0f, 50, 100, true, 0);
-  CHECK_MSG(d.enable && d.ma == 500, "cooled ma %u", d.ma);
+  CHECK_MSG(d.enable && d.ma == 500 && !d.tempCapped, "cooled ma %u", d.ma);
 
   // limit 100 = no cap: no cut even at 100%.
   ChargeGovernor c;
@@ -238,6 +382,45 @@ static void testGovernor() {
   CHECK(d.enable && d.ma == 500);
 }
 
+static void testPowerWatermark() {
+  auto eq = [](const char* a, const char* b) {
+    while (*a && *b && *a == *b) { ++a; ++b; }
+    return *a == '\0' && *b == '\0';
+  };
+
+  PowerWatermark wm{};
+  powerWatermarkReset(wm, false, 3950, 3920, 0, 28, 72);
+  CHECK(wm.active && !wm.chargingSess && wm.startPct == 72);
+  CHECK(wm.vbatMinMv == 3950 && wm.vbatMaxMv == 3950 && wm.vsysMinMv == 3920);
+  CHECK(wm.vbusMinMv == 0 && wm.tmpMaxC == 28);
+
+  // AOD active must accumulate aodMs instead of double-counting screenOnMs;
+  // invalid temp -128 is ignored; dt > 10s clamps to 10s.
+  powerWatermarkAccum(wm, 2000, false, 3780, 3740, 0, 35, false, false, false, true, false);
+  powerWatermarkAccum(wm, 3000, false, 3810, 3760, 0, -128, false, false, false, true, true);
+  powerWatermarkAccum(wm, 20000, true, 4120, 4150, 4890, 41, true, true, true, false, false);
+  CHECK(wm.durMs == 15000u);
+  CHECK(wm.screenOnMs == 2000u && wm.aodMs == 3000u);
+  CHECK(wm.vbatMinMv == 3780 && wm.vbatMaxMv == 4120);
+  CHECK(wm.vsysMinMv == 3740 && wm.vbusMinMv == 4890);
+  CHECK(wm.tmpMaxC == 41);
+  CHECK(wm.vbusLimMs == 10000u && wm.thermRegMs == 10000u && wm.tempCapMs == 10000u);
+
+  PowerEvent ev{};
+  ev.reason = BattPwrEvtReason::USB_IN;
+  powerWatermarkAttach(wm, ev);
+  CHECK(ev.hasWatermark && ev.durSec == 15u && ev.startPct == 72);
+  CHECK(ev.vbatMinMv == 3780 && ev.vbatMaxMv == 4120 && ev.vsysMinMv == 3740);
+  CHECK(ev.vbusMinMv == 4890 && ev.tmpMaxC == 41);
+  CHECK(ev.screenOnSec == 2u && ev.aodSec == 3u && ev.vbusLimSec == 10u &&
+        ev.thermRegSec == 10u && ev.tempCapSec == 10u);
+  CHECK(powerMsToClampedSec(90000000u) == 65535u);
+  CHECK(eq(battPwrEvtReasonStr(BattPwrEvtReason::BOOT), "boot"));
+  CHECK(eq(battPwrEvtReasonStr(BattPwrEvtReason::PROBE), "probe"));
+  CHECK(eq(battPwrEvtReasonStr(BattPwrEvtReason::THERM), "therm"));
+  CHECK(eq(battPwrEvtReasonStr(BattPwrEvtReason::LOW_BAT), "low_bat"));
+}
+
 int main() {
   testCurve();
   testDischargeSlew();
@@ -245,9 +428,14 @@ int main() {
   testLimitedHold();
   testBootOnDone();
   testLimitCap();
+  testOvernightCutoffPlugIn();
+  testNo76To80Jump();
+  testCompensationDetails();
+  testSelfCalibration();
   testGovernorReArm();
   testLowAnchor();
   testGovernor();
+  testPowerWatermark();
 
   if (g_fail) {
     std::printf("\n%d/%d checks failed\n", g_fail, g_checks);

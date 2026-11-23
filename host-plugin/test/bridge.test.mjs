@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createNovaBridge, shortenCommand, foldTitle, foldPath, sanitizeOneLine } from '../lib/bridge.js';
 import { extractJsonObject, isQuietHours, normalizeChoreo } from '../lib/ai.js';
 import { wavToNvAdpcm } from '../lib/adpcm.js';
@@ -329,5 +332,62 @@ describe('剧本新鲜度（v0.5.0）', () => {
     const after = mockClient.published.filter((p) => p.topic === 'nova/D93468/choreo').length;
     assert.equal(after, before, '超过新鲜期后 hello 不该再推旧剧本');
     bridge.stop();
+  });
+
+  it('persists bounded evt:pwr telemetry via MQTT up channel without logging stat heartbeats', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'nova-bridge-pwr-'));
+    const mockClient = createMockMqttClient();
+    const bridge = createNovaBridge({
+      mqttConnect: () => mockClient,
+      dshHome: home,
+      fetchAllQuota: async () => ({ t: 'quota', cards: [] }),
+      fetchModelDialRank: async () => null,
+      tokensEnabled: false,
+    });
+    bridge.start();
+
+    mockClient.emit(
+      'message',
+      'nova/D93468/up',
+      Buffer.from(JSON.stringify({
+        evt: 'pwr',
+        seq: 1,
+        why: 'boot',
+        pct: 99,
+        raw: 97,
+        gauge: 100,
+        st: 4,
+        mv: 4211,
+        cmv: 4159,
+        rmv: 4162,
+        vb: 5198,
+        vs: 4426,
+        ma: 300,
+        ema: 50,
+        tmp: 30,
+        usb: 1,
+        chg: 1,
+        mohm: 620,
+        mah: 600,
+        onSrc: 4,
+        offSrc: 8,
+        seed: 100,
+        lost: 0,
+      })),
+    );
+    mockClient.emit(
+      'message',
+      'nova/D93468/up',
+      Buffer.from(JSON.stringify({ evt: 'stat', mv: 4212, pct: 99, chg: 1, stage: 4, tmp: 30, lcd: 1, aod: 0 })),
+    );
+
+    await bridge.stop();
+    const report = bridge.getPowerReport('D93468');
+    assert.equal(report.lastBoot.onTags[0], 'vbus_insert');
+    assert.equal(report.lastBoot.offTags[0], 'vsys_uvlo');
+    assert.equal(report.lastStat.mv, 4212);
+    const logStat = await stat(join(home, 'nova-buddy', 'power-events.jsonl'));
+    const sumStat = await stat(join(home, 'nova-buddy', 'power-summary.json'));
+    assert.ok(logStat.size > 0 && sumStat.size > 0);
   });
 });
