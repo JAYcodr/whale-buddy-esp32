@@ -534,3 +534,7 @@ bool pageTokensHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSett
   }
   return false;
 }
+
+ui::Rect pageTokensStageRect() {
+  return { 0, kPushTop, UI_W, kPushH };
+}

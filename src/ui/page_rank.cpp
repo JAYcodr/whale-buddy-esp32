@@ -548,3 +548,9 @@ bool pageRankHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettin
   }
   return false;
 }
+
+ui::Rect pageRankListRect() {
+  // 推送从 LIST_TOP 上方的清底色带起 2px（96）：98 是滚动裁切线，
+  // 这 2px 差值是有意的，别对齐成 98。
+  return { 0, LIST_TOP - 2, UI_W, LIST_BOTTOM - (LIST_TOP - 2) };
+}

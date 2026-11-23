@@ -95,6 +95,10 @@ bool pageTokensIsAnimating(const NovaState& st, const NovaSettings& cfg, uint32_
 
 int uiPageRingIndex(UiPage p);
 
+ui::Rect pageRankListRect();
+ui::Rect pageTokensStageRect();
+ui::Rect pageApprovalBarRect();
+
 bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
 bool pageQuotaHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
 bool pageRankHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);

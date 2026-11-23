@@ -109,3 +109,7 @@ bool pageApprovalHitRect(int16_t x, int16_t y, const NovaState&, const NovaSetti
   if (BTN_TO_PC.contains(x, y)) { *out = BTN_TO_PC; return true; }
   return false;
 }
+
+ui::Rect pageApprovalBarRect() {
+  return { kBarX, kBarY, kBarW, kBarH };
+}
