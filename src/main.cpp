@@ -760,6 +760,8 @@ void uiTaskFn(void*) {
           if (settingsApplyAction(act.kind, act.value)) {
             switch (act.kind) {
               case UiAction::SET_SOUND:
+                needFull = false;
+                needSettingsList = true;
                 netPublishPrefs();
                 if (settingsGet().soundPct > 0) {
                   sfxPlay(SfxKind::SETTING_OK, settingsGet().soundPct);
@@ -774,6 +776,8 @@ void uiTaskFn(void*) {
                 sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               case UiAction::SET_BRIGHT:
+                needFull = false;
+                needSettingsList = true;
                 bright.invalidate();   // 交给统一亮度逻辑落地
                 sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
@@ -848,7 +852,7 @@ void uiTaskFn(void*) {
         }
         if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
           settingsGrab = pageSettingsTouchDown(ev.x, ev.y, ev.tsMs);
-          if (settingsGrab) needFull = true;
+          if (settingsGrab) needSettingsList = true;
         }
         ui::Rect hitRect{ 0, 0, 0, 0 };
         if (!swallowTap && !dimmedForNap && canvas &&

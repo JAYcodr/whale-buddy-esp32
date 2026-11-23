@@ -51,6 +51,10 @@ constexpr float    FLING_DECAY     = 0.94f;
 constexpr float    FLING_STOP_V    = 0.3f;
 constexpr uint32_t EXPAND_ANIM_MS  = 150u;
 constexpr uint32_t TOGGLE_ANIM_MS  = 140u;
+constexpr uint32_t KNOB_GROW_MS    = 100u;
+constexpr uint32_t KNOB_SHRINK_MS  = 120u;
+constexpr float    KNOB_GRAB_SCALE = 1.25f;
+constexpr float    SLIDER_TAU_MS   = 35.0f;
 constexpr uint32_t CONFIRM_TIMEOUT_MS = 3000u;
 
 constexpr uint16_t COL_HDR_LINE   = rgb565(18, 26, 40);
@@ -182,6 +186,16 @@ float       s_scrollTo          = 0.0f;
 int8_t      s_dragRow           = -1;
 int8_t      s_confirmRow        = -1;
 uint32_t    s_confirmAtMs       = 0;
+enum class KnobScalePhase : uint8_t { IDLE, GROW, SHRINK };
+KnobScalePhase s_knobPhase      = KnobScalePhase::IDLE;
+uint32_t    s_knobStartMs       = 0;
+float       s_knobScale         = 1.0f;
+float       s_knobScaleFrom     = 1.0f;
+int8_t      s_knobRow           = -1;
+int8_t      s_sliderAnimRow     = -1;
+float       s_sliderShownVal    = 0.0f;
+bool        s_sliderSettling    = false;
+uint32_t    s_sliderPrevMs      = 0;
 bool        s_toggleAnimActive[kRowCount]  = {};
 uint32_t    s_toggleAnimStartMs[kRowCount] = {};
 float       s_toggleFrom[kRowCount]        = {};
@@ -511,16 +525,27 @@ void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const Ro
   ui::aaFillRoundRect(c, x0, (int16_t)(cy - trackH / 2), (int16_t)(x1 - x0), trackH,
                       trackH / 2, ui::COL_TRACK, ui::COL_TRACK);
   const int16_t span = (int16_t)(x1 - x0);
-  const int16_t knobX = (int16_t)(x0 + (int32_t)span * (v - lo) / (hi - lo));
+  float dispV = (float)v;
+  if (s_sliderAnimRow >= 0 && kRows[s_sliderAnimRow].id == r.id) {
+    dispV = s_sliderShownVal;
+    if (dispV < (float)lo) dispV = (float)lo;
+    if (dispV > (float)hi) dispV = (float)hi;
+  }
+  const int16_t knobX =
+      (int16_t)lroundf((float)x0 + (float)span * (dispV - (float)lo) / (float)(hi - lo));
   if (knobX > x0) {
     int16_t fw = (int16_t)(knobX - x0);
     if (fw < trackH) fw = trackH;
     ui::aaFillRoundRect(c, x0, (int16_t)(cy - trackH / 2), fw, trackH,
                         trackH / 2, ui::COL_ACCENT, ui::COL_ACCENT);
   }
-  ui::aaDrawCircle(c, knobX, cy, 15, rgb565(30, 56, 86));
-  ui::aaFillCircle(c, knobX, cy, 12, ui::COL_TEXT);
-  ui::aaFillCircle(c, knobX, cy, 4, ui::COL_ACCENT);
+  const float scale = (s_knobRow >= 0 && kRows[s_knobRow].id == r.id) ? s_knobScale : 1.0f;
+  const int16_t ringR = (int16_t)lroundf(15.0f * scale);
+  const int16_t knobR = (int16_t)lroundf(12.0f * scale);
+  const int16_t dotR  = (int16_t)lroundf(4.0f * scale);
+  ui::aaDrawCircle(c, knobX, cy, ringR, rgb565(30, 56, 86));
+  ui::aaFillCircle(c, knobX, cy, knobR, ui::COL_TEXT);
+  ui::aaFillCircle(c, knobX, cy, dotR, ui::COL_ACCENT);
 }
 
 void drawItemRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, uint8_t idx, bool lastInGroup) {
@@ -673,6 +698,9 @@ void applySliderX(int16_t x) {
   NovaSettings& cfg = settingsMut();
   if (r.id == R_BRIGHT) cfg.brightPct = (uint8_t)v;
   else                  cfg.soundPct = (uint8_t)v;
+  if (s_sliderAnimRow == s_dragRow && fabsf((float)v - s_sliderShownVal) >= 0.05f) {
+    s_sliderSettling = true;
+  }
 }
 
 void resetTransientState(bool resetScroll) {
@@ -686,6 +714,13 @@ void resetTransientState(bool resetScroll) {
   s_scrollTween = false;
   s_dragRow = -1;
   s_confirmRow = -1;
+  s_knobPhase = KnobScalePhase::IDLE;
+  s_knobScale = 1.0f;
+  s_knobScaleFrom = 1.0f;
+  s_knobRow = -1;
+  s_sliderAnimRow = -1;
+  s_sliderSettling = false;
+  s_sliderPrevMs = 0;
   s_scrollTouchActive = false;
   s_flinging = false;
   s_bouncing = false;
@@ -723,6 +758,10 @@ void pageSettingsCancelDrag() {
   s_dragRow = -1;
   s_scrollTouchActive = false;
   s_sampleCount = 0;
+  s_knobPhase = KnobScalePhase::IDLE;
+  s_knobScale = 1.0f;
+  s_knobRow = -1;
+  s_sliderSettling = false;
 }
 
 #ifdef NOVA_HOST_SIM
@@ -752,6 +791,7 @@ void pageSettingsDebugConfirm(uint8_t id) {
 
 bool pageSettingsIsAnimating() {
   if (s_flinging || s_bouncing || s_animActive) return true;
+  if (s_knobPhase != KnobScalePhase::IDLE || s_sliderSettling) return true;
   for (uint8_t i = 0; i < kRowCount; i++) {
     if (s_toggleAnimActive[i]) return true;
   }
@@ -816,6 +856,58 @@ bool pageSettingsTick(uint32_t nowMs) {
       s_toggleT[i] = s_toggleFrom[i] + (1.0f - s_toggleFrom[i]) * e;
     }
     dirty = true;
+  }
+
+  // 1c. 滑块旋钮抓取缩放（100ms outBack 放大 / 120ms outCubic 恢复）与位置阻尼跟随
+  if (s_knobPhase == KnobScalePhase::GROW) {
+    const uint32_t elapsed = (nowMs > s_knobStartMs) ? (nowMs - s_knobStartMs) : 0u;
+    if (elapsed >= KNOB_GROW_MS) {
+      s_knobScale = KNOB_GRAB_SCALE;
+      s_knobPhase = KnobScalePhase::IDLE;
+    } else {
+      const float e = ease::outBack((float)elapsed / (float)KNOB_GROW_MS);
+      s_knobScale = ease::lerp(s_knobScaleFrom, KNOB_GRAB_SCALE, e);
+    }
+    dirty = true;
+  } else if (s_knobPhase == KnobScalePhase::SHRINK) {
+    const uint32_t elapsed = (nowMs > s_knobStartMs) ? (nowMs - s_knobStartMs) : 0u;
+    if (elapsed >= KNOB_SHRINK_MS) {
+      s_knobScale = 1.0f;
+      s_knobPhase = KnobScalePhase::IDLE;
+      s_knobRow = -1;
+    } else {
+      const float e = ease::outCubic((float)elapsed / (float)KNOB_SHRINK_MS);
+      s_knobScale = ease::lerp(s_knobScaleFrom, 1.0f, e);
+    }
+    dirty = true;
+  }
+
+  if (s_sliderAnimRow >= 0 && (s_dragRow == s_sliderAnimRow || s_sliderSettling)) {
+    uint32_t dtMs = 16u;
+    if (s_sliderPrevMs != 0 && nowMs > s_sliderPrevMs) {
+      dtMs = nowMs - s_sliderPrevMs;
+      if (dtMs > 100u) dtMs = 100u;
+    } else if (s_sliderPrevMs != 0) {
+      dtMs = 0u;
+    }
+    if (nowMs > s_sliderPrevMs || s_sliderPrevMs == 0) {
+      s_sliderPrevMs = nowMs;
+    }
+    const float targetV = (float)rowValue(settingsGet(), kRows[s_sliderAnimRow].id);
+    const float diff = targetV - s_sliderShownVal;
+    if (fabsf(diff) < 0.05f) {
+      if (s_sliderShownVal != targetV) {
+        s_sliderShownVal = targetV;
+        dirty = true;
+      }
+      s_sliderSettling = false;
+    } else if (dtMs > 0u) {
+      s_sliderShownVal += diff * ease::approachFactor(dtMs, SLIDER_TAU_MS);
+      s_sliderSettling = true;
+      dirty = true;
+    }
+  } else {
+    s_sliderPrevMs = nowMs;
   }
 
   // 2. 越界回弹（与 page_rank.cpp 同一套 easeOutCubic 参数）
@@ -986,6 +1078,12 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
         }
         s_animStartMs = millis();
         s_animActive = true;
+        if (r.kind == RK_SLIDER) {
+          s_sliderAnimRow = h.row;
+          s_sliderShownVal = (float)rowValue(cfg, r.id);
+          s_sliderSettling = false;
+          s_sliderPrevMs = s_animStartMs;
+        }
         const float targetY = visibleScrollForTargetRow(s_openRow, desiredScroll);
         if (fabsf(targetY - s_scrollY) >= 0.5f) {
           s_scrollTween = true;
@@ -1080,6 +1178,16 @@ bool pageSettingsTouchDown(int16_t x, int16_t y, uint32_t nowMs) {
     s_confirmRow = -1;
     s_dragRow = h.row;
     s_scrollTouchActive = false;
+    const uint32_t grabMs = millis();
+    if (s_sliderAnimRow != h.row) {
+      s_sliderAnimRow = h.row;
+      s_sliderShownVal = (float)rowValue(settingsGet(), kRows[h.row].id);
+      s_sliderPrevMs = grabMs;
+    }
+    s_knobRow = h.row;
+    s_knobPhase = KnobScalePhase::GROW;
+    s_knobStartMs = grabMs;
+    s_knobScaleFrom = s_knobScale;
     applySliderX(x);
     return true;
   }
@@ -1101,6 +1209,10 @@ UiAction pageSettingsTouchUp(uint32_t) {
   if (s_dragRow < 0) return UiAction{};
   const uint8_t id = kRows[s_dragRow].id;
   const uint16_t v = rowValue(settingsGet(), id);
+  s_knobRow = s_dragRow;
+  s_knobPhase = KnobScalePhase::SHRINK;
+  s_knobStartMs = millis();
+  s_knobScaleFrom = s_knobScale;
   s_dragRow = -1;
   return UiAction{ rowActionKind(id), (int)v };
 }
