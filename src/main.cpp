@@ -652,6 +652,8 @@ void uiTaskFn(void*) {
               case UiAction::SET_TTS:
               case UiAction::SET_QUIET:
               case UiAction::SET_CHOREO:
+                needFull = false;
+                needSettingsList = true;
                 netPublishPrefs();
                 sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;

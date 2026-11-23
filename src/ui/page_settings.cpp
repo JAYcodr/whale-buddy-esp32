@@ -50,6 +50,7 @@ constexpr uint32_t BOUNCE_MS       = 160u;
 constexpr float    FLING_DECAY     = 0.94f;
 constexpr float    FLING_STOP_V    = 0.3f;
 constexpr uint32_t EXPAND_ANIM_MS  = 150u;
+constexpr uint32_t TOGGLE_ANIM_MS  = 140u;
 constexpr uint32_t CONFIRM_TIMEOUT_MS = 3000u;
 
 constexpr uint16_t COL_HDR_LINE   = rgb565(18, 26, 40);
@@ -177,10 +178,14 @@ bool        s_scrollTween       = false;
 float       s_scrollFrom        = 0.0f;
 float       s_scrollTo          = 0.0f;
 
-// 滑块 / 危险操作确认状态
+// 滑块 / 危险操作 / 开关补间状态
 int8_t      s_dragRow           = -1;
 int8_t      s_confirmRow        = -1;
 uint32_t    s_confirmAtMs       = 0;
+bool        s_toggleAnimActive[kRowCount]  = {};
+uint32_t    s_toggleAnimStartMs[kRowCount] = {};
+float       s_toggleFrom[kRowCount]        = {};
+float       s_toggleT[kRowCount]           = {};
 
 int8_t findRowById(uint8_t id) {
   for (uint8_t i = 0; i < kRowCount; i++) {
@@ -544,8 +549,9 @@ void drawItemRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg, uint8_t id
       break;
     case RK_TOGGLE: {
       const int16_t sy = (int16_t)(top + (ROW_H - SW_H) / 2);
+      const float toggleT = s_toggleAnimActive[idx] ? s_toggleT[idx] : 1.0f;
       ui::drawSwitch(c, ui::Rect{ (int16_t)(RIGHT_X - SW_W), sy, SW_W, SW_H },
-                     rowValue(cfg, r.id) != 0, ui::COL_ACCENT);
+                     rowValue(cfg, r.id) != 0, ui::COL_ACCENT, toggleT);
       break;
     }
     case RK_ACT:
@@ -685,6 +691,11 @@ void resetTransientState(bool resetScroll) {
   s_bouncing = false;
   s_flingVel = 0.0f;
   s_sampleCount = 0;
+  for (uint8_t i = 0; i < kRowCount; i++) {
+    s_toggleAnimActive[i] = false;
+    s_toggleFrom[i] = 0.0f;
+    s_toggleT[i] = 1.0f;
+  }
   if (resetScroll) s_scrollY = 0.0f;
 }
 
@@ -740,7 +751,11 @@ void pageSettingsDebugConfirm(uint8_t id) {
 #endif
 
 bool pageSettingsIsAnimating() {
-  return s_flinging || s_bouncing || s_animActive;
+  if (s_flinging || s_bouncing || s_animActive) return true;
+  for (uint8_t i = 0; i < kRowCount; i++) {
+    if (s_toggleAnimActive[i]) return true;
+  }
+  return false;
 }
 
 ui::Rect pageSettingsListRect() {
@@ -780,6 +795,21 @@ bool pageSettingsTick(uint32_t nowMs) {
       if (s_scrollTween) {
         s_scrollY = s_scrollFrom + (s_scrollTo - s_scrollFrom) * e;
       }
+    }
+    dirty = true;
+  }
+
+  // 1b. 开关补间（140 ms outCubic）
+  for (uint8_t i = 0; i < kRowCount; i++) {
+    if (!s_toggleAnimActive[i]) continue;
+    const uint32_t elapsed =
+        (nowMs > s_toggleAnimStartMs[i]) ? (nowMs - s_toggleAnimStartMs[i]) : 0u;
+    if (elapsed >= TOGGLE_ANIM_MS) {
+      s_toggleAnimActive[i] = false;
+      s_toggleT[i] = 1.0f;
+    } else {
+      const float e = ease::outCubic((float)elapsed / (float)TOGGLE_ANIM_MS);
+      s_toggleT[i] = s_toggleFrom[i] + (1.0f - s_toggleFrom[i]) * e;
     }
     dirty = true;
   }
@@ -966,6 +996,10 @@ UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg) {
     }
 
     case RK_TOGGLE:
+      s_toggleFrom[h.row] = s_toggleAnimActive[h.row] ? (1.0f - s_toggleT[h.row]) : 0.0f;
+      s_toggleT[h.row] = s_toggleFrom[h.row];
+      s_toggleAnimStartMs[h.row] = millis();
+      s_toggleAnimActive[h.row] = true;
       return UiAction{ rowActionKind(r.id), rowValue(cfg, r.id) ? 0 : 1 };
 
     case RK_ACT: {

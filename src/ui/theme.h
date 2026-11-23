@@ -98,7 +98,7 @@ inline uint16_t blend565(uint16_t a, uint16_t b, uint8_t t) {
   return (uint16_t)((r << 11) | (g << 5) | bl);
 }
 
-void drawSwitch(NovaCanvas& c, Rect r, bool on, uint16_t accent);
+void drawSwitch(NovaCanvas& c, Rect r, bool on, uint16_t accent, float t = 1.0f);
 void drawSegmented(NovaCanvas& c, Rect r, const char* const* labels, int n, int sel,
                    uint16_t accent, const AaFont* f = nullptr);
 void drawLevelBar(NovaCanvas& c, Rect r, int levels, int cur, uint16_t accent,
