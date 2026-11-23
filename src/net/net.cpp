@@ -2,6 +2,7 @@
 #include "model/settings.h"
 #include "model/state.h"
 #include "net/proto.h"
+#include "log.h"
 
 #include <Arduino.h>
 #include <MQTT.h>
@@ -18,9 +19,12 @@ namespace {
 struct NetTxMsg {
   char topic[48];
   char payload[320];
+  uint16_t len;
   bool retained;
   uint8_t qos;
 };
+
+static constexpr size_t kStatCap = 320;
 
 WiFiClient      s_wifiClient;
 MQTTClient      s_mqtt(4096);
@@ -36,6 +40,7 @@ char            s_reqPass[64] = "";
 volatile NetPsMode s_desiredPs = NetPsMode::LOW_POWER;
 NetPsMode       s_appliedPs = NetPsMode::PERFORMANCE;
 bool            s_portalActive = false;
+uint32_t        s_pubDrops = 0;
 
 char s_apName[24] = "Nova-0000";
 volatile uint16_t s_statIntervalMs = 30000;
@@ -147,6 +152,10 @@ void publishHello(bool online) {
   char payload[320];
   snprintf(topic, sizeof(topic), "%s/hello", s_topicPrefix);
   size_t n = protoBuildHello(payload, sizeof(payload), s_tmpSt, cfg, online);
+  if (n == 0) {
+    NOVA_LOG(E, "net", "hello payload overflow\n");
+    return;
+  }
   s_mqtt.publish(topic, payload, (int)n, true, 1);
   if (online) {
     snprintf(topic, sizeof(topic), "%s/up", s_topicPrefix);
@@ -305,7 +314,9 @@ void netTaskFn(void*) {
         // Drain outbound queue
         NetTxMsg tx;
         while (s_txQ && xQueueReceive(s_txQ, &tx, 0) == pdTRUE) {
-          s_mqtt.publish(tx.topic, tx.payload, (int)strlen(tx.payload), tx.retained, tx.qos);
+          if (tx.len > 0) {
+            s_mqtt.publish(tx.topic, tx.payload, (int)tx.len, tx.retained, tx.qos);
+          }
         }
 
         // 发射功率：30s 重估一次（USB 满功率；电池按 RSSI 分 13/17/20dBm）
@@ -320,10 +331,14 @@ void netTaskFn(void*) {
           static NovaState s_statSt;
           novaStateRead(&s_statSt);
           char topic[48];
-          char payload[320];
+          char payload[kStatCap];
           snprintf(topic, sizeof(topic), "%s/up", s_topicPrefix);
           size_t n = protoBuildStat(payload, sizeof(payload), s_statSt);
-          s_mqtt.publish(topic, payload, (int)n, false, 0);
+          if (n == 0) {
+            NOVA_LOG(E, "net", "stat payload overflow (cap=%u)\n", (unsigned)kStatCap);
+          } else {
+            s_mqtt.publish(topic, payload, (int)n, false, 0);
+          }
         }
       }
     }
@@ -373,20 +388,34 @@ void netPublishDecision(const char* approvalId, bool accept, bool toPc) {
   if (!s_txQ || !approvalId || !approvalId[0]) return;
   NetTxMsg tx{};
   snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
-  protoBuildDecision(tx.payload, sizeof(tx.payload), approvalId, accept, toPc);
+  tx.len = (uint16_t)protoBuildDecision(tx.payload, sizeof(tx.payload), approvalId, accept, toPc);
+  if (tx.len == 0) {
+    NOVA_LOG(E, "net", "decision payload overflow\n");
+    return;
+  }
   tx.retained = false;
   tx.qos = 1;
-  xQueueSend(s_txQ, &tx, 0);
+  if (xQueueSend(s_txQ, &tx, 0) != pdTRUE) {
+    s_pubDrops++;
+    NOVA_LOG(W, "net", "tx queue full, drop decision\n");
+  }
 }
 
 void netPublishPrefs() {
   if (!s_txQ) return;
   NetTxMsg tx{};
   snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
-  protoBuildPrefs(tx.payload, sizeof(tx.payload), settingsGet());
+  tx.len = (uint16_t)protoBuildPrefs(tx.payload, sizeof(tx.payload), settingsGet());
+  if (tx.len == 0) {
+    NOVA_LOG(E, "net", "prefs payload overflow\n");
+    return;
+  }
   tx.retained = false;
   tx.qos = 1;
-  xQueueSend(s_txQ, &tx, 0);
+  if (xQueueSend(s_txQ, &tx, 0) != pdTRUE) {
+    s_pubDrops++;
+    NOVA_LOG(W, "net", "tx queue full, drop prefs\n");
+  }
 }
 
 void netPublishSync() {
@@ -394,7 +423,13 @@ void netPublishSync() {
   NetTxMsg tx{};
   snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
   snprintf(tx.payload, sizeof(tx.payload), "{\"evt\":\"sync\"}");
+  tx.len = (uint16_t)(sizeof("{\"evt\":\"sync\"}") - 1);
   tx.retained = false;
   tx.qos = 1;
-  xQueueSend(s_txQ, &tx, 0);
+  if (xQueueSend(s_txQ, &tx, 0) != pdTRUE) {
+    s_pubDrops++;
+    NOVA_LOG(W, "net", "tx queue full, drop sync\n");
+  }
 }
+
+uint32_t netPublishQueueDropCount() { return s_pubDrops; }

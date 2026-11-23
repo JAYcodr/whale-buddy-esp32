@@ -74,6 +74,12 @@ int main() {
   CHECK(isNight(6));
   CHECK(!isNight(7));
 
+  // ── 语音静音时段（23–8，和 AOD 的 23–7 刻意不同）──────────────────
+  CHECK(!isQuietHour(22));
+  CHECK(isQuietHour(23));
+  CHECK(isQuietHour(7));
+  CHECK(!isQuietHour(8));
+
   // ── 慢漂移：有界、10 分钟回归、每 2.5 分钟换一档 ────────────────
   for (uint32_t t = 0; t < 1800000u; t += 7919u) {
     CHECK(driftX(t) <= 3 && driftX(t) >= -3);

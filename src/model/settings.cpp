@@ -1,6 +1,8 @@
 #include "model/settings.h"
 #include <string.h>
 
+#include "log.h"
+
 #ifndef NOVA_HOST_SIM
 #include <Preferences.h>
 #endif
@@ -8,6 +10,8 @@
 namespace {
 NovaSettings s_cfg;
 }
+
+static uint32_t s_nvsFails = 0;
 
 void settingsLoad() {
 #ifndef NOVA_HOST_SIM
@@ -44,6 +48,9 @@ void settingsLoad() {
     uint16_t port = prefs.getUShort("mqtt_port", 1883);
     s_cfg.brokerPort = (port > 0) ? port : 1883;
     prefs.end();
+  } else {
+    s_nvsFails++;
+    NOVA_LOG(E, "nvs", "prefs open failed\n");
   }
 #endif
 }
@@ -84,3 +91,5 @@ uint8_t settingsEffectiveFps(bool usbPresent) {
     default:                      return usbPresent ? 60 : 30;
   }
 }
+
+uint32_t settingsNvsFailCount() { return s_nvsFails; }

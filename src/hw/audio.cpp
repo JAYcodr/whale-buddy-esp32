@@ -1,5 +1,6 @@
 #include "hw/audio.h"
 #include "hw/pins.h"
+#include "log.h"
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <Wire.h>
@@ -41,6 +42,8 @@ struct AudioReq {
 
 static QueueHandle_t s_audioQ = nullptr;
 static volatile uint32_t s_voiceGen = 0;
+static uint32_t s_queueDrops = 0;
+static uint32_t s_fsFails = 0;
 
 static const int8_t kImaIdx[16] = {
   -1, -1, -1, -1, 2, 4, 6, 8,
@@ -230,6 +233,9 @@ static void beepTask(void*) {
             playAdpcmBytes(hdr, nullptr, 0, r.vol, r.voiceGen, &f);
           }
           f.close();
+        } else {
+          s_fsFails++;
+          NOVA_LOG(W, "audio", "open %s failed\n", r.path);
         }
       }
     } else if (r.kind == AudioReqKind::ADPCM_MEM) {
@@ -267,7 +273,10 @@ void hwTone(uint16_t f0Hz, uint16_t f1Hz, uint16_t durMs, uint8_t volPct) {
   r.f1 = f1Hz;
   r.dur = durMs;
   r.vol = volPct;
-  xQueueSend(s_audioQ, &r, 0);
+  if (xQueueSend(s_audioQ, &r, 0) != pdTRUE) {
+    s_queueDrops++;
+    NOVA_LOG(W, "audio", "queue full, drop tone\n");
+  }
 }
 
 void hwBeep(uint16_t freqHz, uint16_t durMs) {
@@ -282,7 +291,8 @@ void hwPlayAdpcmFile(const char* path, uint8_t volPct) {
   r.voiceGen = ++s_voiceGen;
   strncpy(r.path, path, sizeof(r.path) - 1);
   if (xQueueSend(s_audioQ, &r, 0) != pdTRUE) {
-    // Queue full: drop stale entry? Safe no-op.
+    s_queueDrops++;
+    NOVA_LOG(W, "audio", "queue full, drop file\n");
   }
 }
 
@@ -302,3 +312,6 @@ void hwPlayAdpcmOwned(uint8_t* data, size_t len, uint8_t volPct) {
     free(data);
   }
 }
+
+uint32_t hwAudioQueueDropCount() { return s_queueDrops; }
+uint32_t hwAudioFsFailCount() { return s_fsFails; }

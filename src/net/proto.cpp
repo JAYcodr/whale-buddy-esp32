@@ -1,4 +1,5 @@
 #include "net/proto.h"
+#include "model/aod_policy.h"
 #include <ArduinoJson.h>
 #include <stdio.h>
 #include <string.h>
@@ -320,7 +321,7 @@ bool applyTtsChunk(JsonDocument& doc) {
     static NovaState snap;
     novaStateRead(&snap);
     const NovaSettings& cfg = settingsGet();
-    bool quiet = cfg.quietHours && snap.timeValid && (snap.hour >= 23 || snap.hour < 8);
+    bool quiet = cfg.quietHours && snap.timeValid && aod::isQuietHour(snap.hour);
     if (cfg.ttsEnabled && cfg.soundPct > 0 && !quiet) {
       hwPlayAdpcmOwned(owned, len, cfg.soundPct);
     } else {
@@ -332,6 +333,13 @@ bool applyTtsChunk(JsonDocument& doc) {
   (void)doc;
   return true;
 #endif
+}
+
+// serializeJson 把缓冲写满时返回 cap 且不写结尾 NUL；调用方无法区分
+// "刚好写满" 和 "被截断"，所以统一在这里把截断转成明确的 0。
+size_t finishJson(JsonDocument& doc, char* buf, size_t cap) {
+  size_t n = serializeJson(doc, buf, cap);
+  return (n >= cap) ? 0 : n;
 }
 
 }  // namespace
@@ -374,7 +382,7 @@ size_t protoBuildHello(char* buf, size_t cap, const NovaState& st, const NovaSet
     p["quiet"]  = cfg.quietHours;
     p["choreo"] = cfg.choreoEnabled;
   }
-  return serializeJson(doc, buf, cap);
+  return finishJson(doc, buf, cap);
 }
 
 size_t protoBuildDecision(char* buf, size_t cap, const char* id, bool accept, bool toPc) {
@@ -386,7 +394,7 @@ size_t protoBuildDecision(char* buf, size_t cap, const char* id, bool accept, bo
   } else {
     doc["accept"] = accept;
   }
-  return serializeJson(doc, buf, cap);
+  return finishJson(doc, buf, cap);
 }
 
 size_t protoBuildStat(char* buf, size_t cap, const NovaState& st) {
@@ -416,7 +424,7 @@ size_t protoBuildStat(char* buf, size_t cap, const NovaState& st) {
   JsonObject cpu = doc["cpu"].to<JsonObject>();
   cpu["ui"]  = st.uiBusyPct;
   cpu["dec"] = st.decBusyPct;
-  return serializeJson(doc, buf, cap);
+  return finishJson(doc, buf, cap);
 }
 
 size_t protoBuildPrefs(char* buf, size_t cap, const NovaSettings& cfg) {
@@ -426,5 +434,5 @@ size_t protoBuildPrefs(char* buf, size_t cap, const NovaSettings& cfg) {
   doc["tts"]    = cfg.ttsEnabled;
   doc["quiet"]  = cfg.quietHours;
   doc["choreo"] = cfg.choreoEnabled;
-  return serializeJson(doc, buf, cap);
+  return finishJson(doc, buf, cap);
 }

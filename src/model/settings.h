@@ -42,3 +42,4 @@ void settingsSave();
 const NovaSettings& settingsGet();
 NovaSettings& settingsMut();
 uint8_t settingsEffectiveFps(bool usbPresent);
+uint32_t settingsNvsFailCount();   // NVS 打开失败次数

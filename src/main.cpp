@@ -98,6 +98,12 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
                           (unsigned)snap.battPct, (unsigned)snap.battMv,
                           (unsigned)snap.battStage, (unsigned)snap.chgMa,
                           (int)snap.battTempC, snap.usbPresent ? 1 : 0);
+            Serial.printf("fails=qin=%lu qaudio=%lu qnet=%lu fs=%lu nvs=%lu\n",
+                          (unsigned long)hwBusInputDropCount(),
+                          (unsigned long)hwAudioQueueDropCount(),
+                          (unsigned long)netPublishQueueDropCount(),
+                          (unsigned long)hwAudioFsFailCount(),
+                          (unsigned long)settingsNvsFailCount());
           } else if (strcmp(cmd, "bat") == 0) {
             // Machine-readable power dump for the real-hardware acceptance run.
             HwBattery b = hwBattery();

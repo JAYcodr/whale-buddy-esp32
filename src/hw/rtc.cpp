@@ -8,6 +8,11 @@
 
 static SensorPCF85063 s_pcf;
 
+namespace {
+// 驱动的 PCF85063_SEC_REG 是 protected，rtc.cpp 取不到；这是数据手册的秒寄存器地址。
+constexpr uint8_t kPcf85063SecReg = 0x04;
+}
+
 bool hwRtcInit() {
   if (!s_pcf.begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL)) {
     Serial.println("hwRtc: PCF85063 begin failed");
@@ -17,6 +22,11 @@ bool hwRtcInit() {
 }
 
 bool hwRtcRead(HwTime* t) {
+  // 驱动的 getDateTime() 不返回错误；先用一次单字节读确认 I2C 还在。
+  // readReg() 成功返回寄存器值 0..255，失败返回负错误码（SensorErr.hpp 的
+  // SENSOR_ERR_COMM_*），所以用 < 0 判失败；失败时交给 bus.cpp 的
+  // i2cErrStreak，连续 10 次（约 2 s）重初始化 I2C。
+  if (s_pcf.readReg(kPcf85063SecReg) < 0) return false;
   RTC_DateTime dt = s_pcf.getDateTime();
   t->H   = dt.getHour();
   t->M   = dt.getMinute();

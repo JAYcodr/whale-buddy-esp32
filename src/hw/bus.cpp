@@ -1,5 +1,6 @@
 #include "hw/bus.h"
 #include "hw/hw.h"
+#include "log.h"
 #include <Arduino.h>
 #include <Wire.h>
 #include <esp_task_wdt.h>
@@ -13,11 +14,15 @@ static BusSnapshot    s_snap    = {};
 static QueueHandle_t  s_inputQ  = nullptr;
 static QueueHandle_t  s_rtcQ    = nullptr;
 static TaskHandle_t   s_busTask = nullptr;
+static uint32_t       s_inputDrops = 0;
 
 static void pushEvt(InputEvtType type, int16_t x, int16_t y, uint32_t now) {
   if (!s_inputQ) return;
   InputEvent e{ type, x, y, now };
-  xQueueSend(s_inputQ, &e, 0);
+  if (xQueueSend(s_inputQ, &e, 0) != pdTRUE) {
+    s_inputDrops++;
+    NOVA_LOG(W, "bus", "input queue full, drop evt=%u\n", (unsigned)type);
+  }
 }
 
 static void busTaskFn(void*) {
@@ -94,7 +99,8 @@ static void busTaskFn(void*) {
     else if (faceDown && faceDownFrames <= -8) faceDown = false;
 
     // 3. RTC every ~200 ms (10 ticks), Battery every ~1000 ms (50 ticks).
-    // Preserve last valid RTC/battery snapshot on transient I2C errors.
+    // hwRtcRead() 失败时不更新 tm（保留上一份有效时间），并累计错误；
+    // 连续 10 次（约 2 s）才重初始化 I2C，避免一次抖动就重置总线。
     if ((tickCount % 10) == 0) {
       HwTime nextTm = {};
       if (hwRtcRead(&nextTm)) {
@@ -164,3 +170,5 @@ bool hwBusRequestRtcWrite(const HwTime& t) {
   if (!s_rtcQ) return false;
   return xQueueOverwrite(s_rtcQ, &t) == pdTRUE;
 }
+
+uint32_t hwBusInputDropCount() { return s_inputDrops; }

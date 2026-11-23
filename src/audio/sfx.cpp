@@ -1,9 +1,10 @@
 #include "audio/sfx.h"
 #include "hw/audio.h"
+#include "model/aod_policy.h"
 #include <LittleFS.h>
 
 static bool isQuietTime(uint8_t hour, bool timeValid, bool respectQuiet) {
-  return respectQuiet && timeValid && (hour >= 23 || hour < 8);
+  return respectQuiet && timeValid && aod::isQuietHour(hour);
 }
 
 void sfxPlay(SfxKind kind, uint8_t volPct) {

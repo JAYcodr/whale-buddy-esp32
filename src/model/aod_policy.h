@@ -49,6 +49,9 @@ inline bool shouldExit(uint8_t mode, bool usb, bool approval, bool apMode, bool 
 
 inline bool isNight(uint8_t hour) { return hour >= 23 || hour < 7; }
 
+// 语音静音用 23–8；AOD 亮度用 23–7（isNight）。两者是有意的差异，别合并。
+inline bool isQuietHour(uint8_t h) { return h >= 23 || h < 8; }
+
 // 夜间亮度档：0=封顶 1 档，1=封顶 2 档，2=跟随用户；23-07 点一律不超过 1 档。
 inline uint8_t brightness(uint8_t userBright, uint8_t nightCap, bool night) {
   uint8_t cap = (nightCap == 0) ? 1 : ((nightCap == 1) ? 2 : userBright);
