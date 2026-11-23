@@ -724,7 +724,7 @@ void uiTaskFn(void*) {
           } else if (slideDir != 0) {
             TransPillOpts pillOpts;
             playTransition(slideDir > 0 ? TransKind::SLIDE_LEFT : TransKind::SLIDE_RIGHT,
-                           180, makeSlidePillOpts(prevPage, newPage, &pillOpts));
+                           kSlideTransMs, makeSlidePillOpts(prevPage, newPage, &pillOpts));
           }
           break;
         }
@@ -1065,7 +1065,7 @@ void uiTaskFn(void*) {
                                ? TransKind::SLIDE_LEFT
                                : TransKind::SLIDE_RIGHT;
             TransPillOpts pillOpts;
-            playTransition(kind, 180, makeSlidePillOpts(prev, next, &pillOpts));
+            playTransition(kind, kSlideTransMs, makeSlidePillOpts(prev, next, &pillOpts));
           }
         }
         key1DownAt = 0;

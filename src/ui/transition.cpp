@@ -179,8 +179,14 @@ void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
     if (elapsedUs < 0) elapsedUs = 0;
 
     float u = (float)elapsedUs / (float)durUs;
-    // 进入类模态用 outQuart（收尾更柔），其余保持原 outCubic 手感不变。
-    float ease = (kind == TransKind::POP_IN) ? ease::outQuart(u) : ease::outCubic(u);
+    // 进入类模态用 outQuart（收尾更柔）；水平滑屏默认 180ms outCubic，启用 NOVA_SLIDE_EASE_QUART 切至 200ms outQuart。
+#ifdef NOVA_SLIDE_EASE_QUART
+    const bool useQuart = (kind == TransKind::POP_IN ||
+                           kind == TransKind::SLIDE_LEFT || kind == TransKind::SLIDE_RIGHT);
+#else
+    const bool useQuart = (kind == TransKind::POP_IN);
+#endif
+    float ease = useQuart ? ease::outQuart(u) : ease::outCubic(u);
 
     switch (kind) {
       case TransKind::SLIDE_LEFT:
