@@ -40,13 +40,8 @@ void UiNav::goHome(HomePageKind home) {
 
 UiAction UiNav::onSwipe(int16_t dx, int16_t dy) {
   if (m_page == UiPage::SETTINGS) {
-    int16_t adx = dx < 0 ? -dx : dx;
-    int16_t ady = dy < 0 ? -dy : dy;
-    // Allow downward or rightward swipe to dismiss settings back to DETAIL.
-    if ((dy >= 60 && dy > adx) || (dx >= 48 && dx > ady)) {
-      m_page = UiPage::DETAIL;
-      return UiAction{ UiAction::GO_PAGE, (int)UiPage::DETAIL };
-    }
+    // 设置页现在是可滚列表：垂直手势归列表，不能再拿来做「下滑退出」。
+    // 返回走左上箭头 / Key1。
     return UiAction{};
   }
   int16_t adx = dx < 0 ? -dx : dx;

@@ -84,6 +84,26 @@ Broker：`mqtt://192.168.31.15:1883`
 
 ---
 
+## 设置页与亮度（0.5.1）
+
+设置页重做成「分组卡片式一页清单」：**6 组 16 行**，`屏幕 / 熄屏显示 / 声音 / 电池 / 行为 / 设备`，可滚（对齐榜单惯性 + 越界回弹）、行内平滑展开。
+
+- **数据表**：`src/ui/page_settings.cpp` 里 `kRows[]` 一张表决定顺序、行名、控件类型、选项集；行高按 `rowH(i)` 动态算（组 38、行 62、3 项展开 +62、2×2 展开 +114、滑块展开 +68，150ms easeOutCubic 动画）。加一项设置 = 表里加一行 + `rowValue/rowActionKind` 各加一个 case。
+- **亮度 / 音量是滑块**：拖的时候只改 `settingsMut()` 内存（下一轮 loop 的 `applyBright` 自己读），**松手才发一次 UiAction 落 NVS 并播 `SETTING_OK` 确认音** —— 别改成每个 pointermove 都 `settingsSave()` 或播音，一秒几十次写会磨 flash。
+- **亮度存储换了格式**：NVS `brt` 从 0–4 档改成 20–100 百分比。迁移只在 `settingsLoad()` 里做（`raw <= 4` 判定 → `20 + raw*20`），写路径一律写新格式。`hwDisplayBrightness(pct)` 把 20–100 线性映射到面板 50–255（20% 对齐老固件最暗档）。
+- **AOD 封顶也换了单位**：`aod::brightnessPct(userPct, nightCap, night)`，封顶线 `kCap1Pct=39 / kCap2Pct=59`（对应老 1 档 / 2 档）。
+- **恢复默认**：`settingsRestoreDefaults()` 遍历 `kSettings` 回 `def` 并落盘；配网信息（`brokerHost/brokerPort`）不在表里，保持不动。动作是 `UiAction::RESTORE_DEFAULTS`。
+
+### 设置页别踩回去
+
+1. **列表会压 header**：绘制没有裁剪，滚到中间时最上面那行会画进 0–60。`pageSettingsDrawList()` 里是**先画列表、最后画 header** 把它盖住，顺序别倒；局部推屏仅推 `pageSettingsListRect()`（`61..447`）。
+2. **设置页不能再吃垂直 swipe**：`nav.onSwipe` 里 SETTINGS 直接返回 NONE，垂直手势归列表滚动。返回走左上箭头 / Key1。
+3. **串口 `tap` / `page` 现在都算一次交互**（`s_pendingInteract`）：不刷新 `lastInteractMs` 的话，切到设置页两分钟后就被 AOD 接管，串口调试会一直看到表盘。
+4. **`page` 命令的四个设置页参数支持新旧别名**：`settings` 顶部、`settings_display`/`settings_aod` 熄屏显示组、`settings_adv`/`settings_sound` 声音组、`settings_power`/`settings_batt` 电池组。
+5. **滑块要落盘才有动作**：`pageSettingsTouchUp()` 返回 `SET_BRIGHT/SET_SOUND`，走 main 的 `handleAction` → `settingsApplyAction`。别在 UI 里直接 `settingsSave()`，副作用（`bright.invalidate()` / `netPublishPrefs()`）会漏。
+
+---
+
 ## 电源与充电（0.4.0 起）
 
 - **电量显示**：`src/model/battery_model.h` 里的纯逻辑模型 —— OCV 曲线（18 点）+ 充电阶段机（PRE/CC/CV/DONE）+ 满/空锚点 + 单调限速。`hwBattery()` 现在只返回缓存快照，真实采样在 bus task 每秒一次的 `hwPowerTick()`。
@@ -211,7 +231,7 @@ bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload
 {"cmd":"bat"}                     # pct / mv / stage / chg / limited / usb / tmp / gauge
 {"cmd":"shot"}                    # 截图
 {"cmd":"reprov"}                  # 进配网模式（会断网，MQTT 掉线）
-{"cmd":"page","page":"quota"}     # 切页：home/quota/rank/detail/settings/settings_adv/settings_power/tokens
+{"cmd":"page","page":"quota"}     # 切页：home/quota/rank/detail/settings/settings_aod/settings_sound/settings_batt/tokens
 {"cmd":"tap","x":184,"y":406}     # 注入点击，走 nav.onTap + handleAction 与真实触屏同路径
 {"cmd":"demo","anim":3}           # 强制动画状态
 {"cmd":"aod","on":0|1|2}          # AOD：关/仅插电/常开（写 NVS）

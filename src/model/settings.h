@@ -23,7 +23,7 @@ struct NovaSettings {
   HomePageKind homePage      = HomePageKind::PET;
   PowerProfile powerProfile  = PowerProfile::ADAPTIVE;
   uint8_t      soundPct      = 75;
-  uint8_t      brightLevel   = 4;
+  uint8_t      brightPct     = 100;                  // 20..100（老 NVS 存 0..4 档，见 settingsMigrateBrightPct）
   bool         useNva        = true;
   bool         ttsEnabled    = true;
   bool         quietHours    = true;
@@ -40,6 +40,12 @@ struct NovaSettings {
 };
 
 static_assert(std::is_standard_layout_v<NovaSettings>);
+
+// 老固件的 NVS "brt" 是 0..4 的五档，新固件存 20..100 的百分比（背光本身是 0..255 连续）。
+// 读到 <= 4 就按老档位线性映射；20 以上的值原样返回。读路径只此一处迁移，写路径一律写新格式。
+inline uint16_t settingsMigrateBrightPct(uint16_t raw) {
+  return (raw <= 4u) ? (uint16_t)(20u + raw * 20u) : raw;
+}
 
 // NVS 键名、默认值、约束全部集中在这张表；load/save/prefs 三个遍历者共用。
 // brokerHost / brokerPort 是字符串/端口，不进表。
@@ -70,7 +76,7 @@ constexpr SettingDef kSettings[] = {
   { "home",      SettingKind::CHOICE, 0,   0, 0,   kChoiceHome,    3, offsetof(NovaSettings, homePage),      false },
   { "pwr",       SettingKind::CHOICE, 0,   0, 0,   kChoicePwr,     3, offsetof(NovaSettings, powerProfile),  false },
   { "snd",       SettingKind::U8,     75,  0, 100, nullptr,        0, offsetof(NovaSettings, soundPct),      true,  true },
-  { "brt",       SettingKind::U8,     4,   0, 4,   nullptr,        0, offsetof(NovaSettings, brightLevel),   false, true },
+  { "brt",       SettingKind::U8,     100, 20, 100, nullptr,        0, offsetof(NovaSettings, brightPct),     false, true },
   { "tts",       SettingKind::BOOL,   1,   0, 0,   nullptr,        0, offsetof(NovaSettings, ttsEnabled),    true  },
   { "quiet",     SettingKind::BOOL,   1,   0, 0,   nullptr,        0, offsetof(NovaSettings, quietHours),    true  },
   { "choreo",    SettingKind::BOOL,   1,   0, 0,   nullptr,        0, offsetof(NovaSettings, choreoEnabled), true  },
@@ -88,6 +94,8 @@ uint16_t settingsSanitize(const SettingDef& d, uint16_t v);
 
 void settingsLoad();
 void settingsSave();
+// 13 个设置项回出厂值并落盘。配网信息（brokerHost / brokerPort）不在设置表里，保持不动。
+void settingsRestoreDefaults();
 const NovaSettings& settingsGet();
 NovaSettings& settingsMut();
 uint8_t settingsEffectiveFps(bool usbPresent);

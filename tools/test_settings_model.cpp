@@ -32,8 +32,12 @@ static void legacyLoad(NovaSettings& s_cfg, const Preferences& prefs) {
   s_cfg.powerProfile = (pp <= 2) ? (PowerProfile)pp : PowerProfile::ADAPTIVE;
   s_cfg.soundPct = prefs.getUChar("snd", 75);
   if (s_cfg.soundPct > 100) s_cfg.soundPct = 100;
-  s_cfg.brightLevel = prefs.getUChar("brt", 4);
-  if (s_cfg.brightLevel > 4) s_cfg.brightLevel = 4;
+  // brt 老格式 0..4 档 → 20..100 百分比；合法区间外一律回出厂 100。
+  uint16_t brt = prefs.getUChar("brt", 100);
+  if (brt <= 4) brt = (uint16_t)(20u + brt * 20u);
+  if (brt < 20) brt = 100;
+  if (brt > 100) brt = 100;
+  s_cfg.brightPct = (uint8_t)brt;
   s_cfg.useNva = prefs.getBool("nva", true);
   s_cfg.ttsEnabled = prefs.getBool("tts", true);
   s_cfg.quietHours = prefs.getBool("quiet", true);
@@ -62,7 +66,7 @@ static const char* diffField(const NovaSettings& a, const NovaSettings& b) {
   if (a.homePage != b.homePage) return "homePage";
   if (a.powerProfile != b.powerProfile) return "powerProfile";
   if (a.soundPct != b.soundPct) return "soundPct";
-  if (a.brightLevel != b.brightLevel) return "brightLevel";
+  if (a.brightPct != b.brightPct) return "brightPct";
   if (a.ttsEnabled != b.ttsEnabled) return "ttsEnabled";
   if (a.quietHours != b.quietHours) return "quietHours";
   if (a.choreoEnabled != b.choreoEnabled) return "choreoEnabled";
@@ -132,7 +136,7 @@ int main() {
   CHECK(d.homePage == HomePageKind::PET);
   CHECK(d.powerProfile == PowerProfile::ADAPTIVE);
   CHECK(d.soundPct == 75);
-  CHECK(d.brightLevel == 4);
+  CHECK(d.brightPct == 100);
   CHECK(d.ttsEnabled && d.quietHours && d.choreoEnabled);
   CHECK(d.batSleepSec == 30);
   CHECK(d.chargeLimitPct == 90);

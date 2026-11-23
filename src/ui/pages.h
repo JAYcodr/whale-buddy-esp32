@@ -32,6 +32,7 @@ struct UiAction {
     SET_AOD_IDLE,
     SET_AOD_NIGHT,
     SET_CHOREO,
+    RESTORE_DEFAULTS,
     TEST_SOUND,
     SYNC_HOST,
     REPROVISION,
@@ -82,9 +83,26 @@ void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
 UiAction pageDetailTap(int16_t x, int16_t y);
 
 void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg);
+void pageSettingsDrawList(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg);
 UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg);
 void pageSettingsSetTab(uint8_t tab);
+void pageSettingsOnEnter();
+void pageSettingsCancelDrag();
 bool pageSettingsTick(uint32_t nowMs);
+bool pageSettingsIsAnimating();
+ui::Rect pageSettingsListRect();
+#ifdef NOVA_HOST_SIM
+void pageSettingsDebugOpen(uint8_t id);
+void pageSettingsDebugConfirm(uint8_t id);
+#endif
+// 滚动与滑块：设置页自己维护 scrollY、惯性/回弹与拖动状态，main 只转发触摸事件。
+bool pageSettingsScrollBy(int16_t dy);
+bool pageSettingsTouchDown(int16_t x, int16_t y, uint32_t nowMs);
+bool pageSettingsTouchMove(int16_t x, int16_t y, uint32_t nowMs);
+UiAction pageSettingsTouchUp(uint32_t nowMs);
+bool pageSettingsScrollTouchMove(int16_t y, uint32_t nowMs);
+void pageSettingsScrollTouchUp(uint32_t nowMs);
+void pageSettingsScrollCancel();
 
 void pageApprovalDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 void pageApprovalDrawBar(NovaCanvas& c, const NovaState& st, uint32_t nowMs);

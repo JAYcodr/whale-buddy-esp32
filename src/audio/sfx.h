@@ -8,6 +8,7 @@ enum class SfxKind : uint8_t {
   ACCEPT,
   DENY,
   LOW_BATT,
+  SETTING_OK,
 };
 
 void sfxPlay(SfxKind kind, uint8_t volPct = 100);

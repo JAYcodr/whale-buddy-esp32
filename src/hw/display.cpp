@@ -12,7 +12,6 @@ static bool i2cAck(uint8_t addr) {
   return Wire.endTransmission(true) == 0;
 }
 
-static const uint8_t BRIGHT_LUT[5] = { 50, 100, 150, 200, 255 };
 
 #if BOARD_DISPLAY_SH8601_VENDOR_INIT
 // LVGL demo SH8601 init for the 2.16 panel revision.
@@ -103,9 +102,11 @@ bool hwDisplayInit() {
 
 Arduino_Canvas* hwCanvas() { return s_canvas; }
 
-void hwDisplayBrightness(uint8_t lvl) {
-  if (lvl > 4) lvl = 4;
-  s_gfx->setBrightness(BRIGHT_LUT[lvl]);
+void hwDisplayBrightness(uint8_t pct) {
+  // 20..100 → 50..255：20% 对齐老固件最暗档（50/255），往上是连续的 205 级。
+  if (pct < 20) pct = 20;
+  if (pct > 100) pct = 100;
+  s_gfx->setBrightness((uint8_t)(50u + (uint16_t)(pct - 20u) * 205u / 80u));
 }
 
 void hwDisplaySleep(bool off) {
@@ -114,7 +115,7 @@ void hwDisplaySleep(bool off) {
     s_gfx->displayOff();
   } else {
     s_gfx->displayOn();
-    hwDisplayBrightness(2);   // mid; caller usually re-applies stored level
+    hwDisplayBrightness(60);  // mid; caller usually re-applies stored level
   }
 }
 

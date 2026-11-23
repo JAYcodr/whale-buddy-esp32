@@ -135,7 +135,7 @@ struct NovaState {
   uint32_t lastDrawMs;   // 最近一次推送的时间戳
   uint32_t drawCount;    // 累计推送次数（探针算绘制/分钟）
   uint8_t  pwrProfile;   // PowerProfile 快照
-  uint8_t  effBright;    // 当前生效亮度档 0..4
+  uint8_t  effBright;    // 当前生效的背光百分比 20..100
   bool     lcdOff;       // 熄屏 / 暗屏
   bool     aodActive;    // 正在显示 AOD
   uint8_t  uiBusyPct;    // UI 任务忙时占比（1s 窗口）

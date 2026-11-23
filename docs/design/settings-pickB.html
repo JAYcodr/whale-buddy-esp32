@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nova Buddy · 设置页 · 一页清单（定稿细稿）</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#07080a; --panel:#0d1117; --line:#1b2330;
+    --txt:#e8edf6; --dim:#8b9ab0; --muted:#4d5d75;
+    --accent:#48c6ff; --mint:#40e6b0; --amber:#ffc44c; --red:#ff586c;
+    --z:1.5;
+  }
+  body{
+    background:var(--bg); color:var(--txt);
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    font-size:15px; line-height:1.62;
+    padding:64px 40px 150px;
+  }
+  .wrap{max-width:1140px;margin:0 auto}
+  .kicker{font-size:11px;letter-spacing:.22em;color:var(--muted);text-transform:uppercase;margin-bottom:14px}
+  h1{font-size:40px;line-height:1.14;font-weight:600;letter-spacing:-.015em;margin-bottom:16px}
+  h1 em{font-style:normal;color:var(--accent)}
+  .lede{font-size:16.5px;color:var(--dim);max-width:680px;line-height:1.7}
+  .lede b{color:var(--txt);font-weight:500}
+  .meta{margin-top:22px;display:flex;gap:9px;flex-wrap:wrap}
+  .chip{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:4px 12px}
+  .zoomctl{display:flex;align-items:center;gap:7px;margin-top:24px;font-size:12px;color:var(--muted)}
+  .zoomctl button{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
+    padding:4px 11px;font-size:12px;cursor:pointer;font-family:inherit;transition:all .12s}
+  .zoomctl button:hover{border-color:#2d3d55;color:var(--txt)}
+  .zoomctl button.on{background:var(--accent);border-color:var(--accent);color:#04121c;font-weight:500}
+
+  .sec{margin-top:84px}
+  .sec-hd{display:flex;align-items:baseline;gap:16px;padding-bottom:15px;border-bottom:1px solid var(--line)}
+  .num{font-size:12px;font-variant-numeric:tabular-nums;color:var(--muted);letter-spacing:.1em}
+  .sec-hd h2{font-size:23px;font-weight:600;letter-spacing:-.01em}
+  .tag{margin-left:auto;font-size:11px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+
+  /* ---------- 设备 ---------- */
+  .split{display:flex;gap:52px;align-items:flex-start;margin-top:34px}
+  .devside{display:flex;flex-direction:column;gap:16px}
+  .devbox{
+    width:calc(368px * var(--z)); height:calc(448px * var(--z));
+    position:relative; border-radius:calc(6px * var(--z)); overflow:hidden; flex:none;
+    box-shadow:0 0 0 1px #20293a, 0 24px 60px -22px #000; background:#000;
+  }
+  .screen{
+    width:368px;height:448px;position:absolute;top:0;left:0;
+    transform-origin:0 0;transform:scale(var(--z));
+    background:#000;overflow:hidden;color:#f2f6ff;
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    font-weight:500;-webkit-font-smoothing:antialiased;
+  }
+  .states{display:flex;gap:6px}
+  .states button{flex:1;background:#0f1622;border:1px solid var(--line);color:var(--dim);
+    border-radius:8px;padding:9px 6px;font-size:11.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+  .states button:hover{background:#16203a;color:var(--txt)}
+  .devcap{font-size:11px;color:var(--muted);line-height:1.6;max-width:calc(368px * var(--z))}
+
+  .notes{flex:1;min-width:0;padding-top:4px}
+  .quote{font-size:19px;line-height:1.65;color:#cfd9e8}
+  .quote b{color:#fff;font-weight:500}
+  .axesless{margin-top:26px;border-top:1px solid var(--line)}
+  .arow{display:grid;grid-template-columns:64px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+  .arow span{color:var(--muted)}
+  .arow b{color:#cfd9e8;font-weight:400;line-height:1.55}
+  .arow b i{font-style:normal;color:var(--accent)}
+  .why{margin-top:30px;border-top:1px solid var(--line);padding-top:20px}
+  .why-h{font-size:10.5px;letter-spacing:.14em;color:var(--muted);margin-bottom:12px;text-transform:uppercase}
+  .why-r{display:grid;grid-template-columns:74px 1fr;gap:12px;padding:7px 0;font-size:13.5px;align-items:baseline}
+  .why-r b{font-weight:500;color:var(--txt)}
+  .why-r span{color:var(--dim)}
+  .why-n{margin-top:14px;font-size:12.5px;color:var(--muted);line-height:1.7}
+
+  /* ---------- 表格 ---------- */
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:26px;table-layout:fixed}
+  th{text-align:left;font-weight:500;font-size:10.5px;letter-spacing:.13em;color:var(--muted);
+    padding:0 12px 10px 0;text-transform:uppercase;border-bottom:1px solid var(--line)}
+  td{padding:11px 12px 11px 0;border-bottom:1px solid #121a26;vertical-align:top;color:var(--dim);line-height:1.5}
+  td:first-child{color:var(--txt)}
+  tr.grp td{background:#0b0f16;color:var(--accent);font-size:11px;letter-spacing:.14em;
+    padding:7px 12px 7px 10px;border-bottom:1px solid var(--line)}
+  code{background:#101722;border:1px solid #1a2534;border-radius:4px;padding:1px 5px;
+    font-size:11.5px;color:#8fa4bd;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .k{color:#7d8fa6}
+  .del{color:var(--red);text-decoration:line-through;text-decoration-color:#4a2229}
+
+  .rules{display:grid;grid-template-columns:1fr 1fr;gap:0 44px;margin-top:8px}
+  .motion-h{margin-top:40px;padding-bottom:10px;border-bottom:1px solid var(--line);
+    font-size:10.5px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}
+  .rule.mo b i{font-style:normal;font-weight:400;color:#5a6f8a;font-size:11.5px;margin-left:6px;
+    font-variant-numeric:tabular-nums}
+  .rule.mo em{font-style:normal;font-size:11.5px;padding:1px 6px;border-radius:4px;margin-left:4px}
+  .rule.mo em.ok{background:#12261f;color:var(--mint)}
+  .rule.mo em.warn{background:#2a2314;color:var(--amber)}
+  .rule.mo.note b{color:var(--muted)}
+  .rule{padding:15px 0;border-bottom:1px solid var(--line)}
+  .rule b{display:block;font-size:13.5px;font-weight:500;color:var(--txt);margin-bottom:4px}
+  .rule span{font-size:13px;color:var(--dim);line-height:1.6}
+
+  .diff{display:grid;grid-template-columns:1fr 1fr;gap:0 44px;margin-top:8px}
+  .diff .col-h{font-size:10.5px;letter-spacing:.14em;color:var(--muted);padding:18px 0 8px;text-transform:uppercase;border-bottom:1px solid var(--line)}
+  .diff li{list-style:none;padding:11px 0 11px 18px;border-bottom:1px solid #121a26;
+    font-size:13.5px;color:var(--dim);position:relative;line-height:1.55}
+  .diff li:before{position:absolute;left:0;top:12px;font-size:12px;color:var(--muted)}
+  .diff .gone li:before{content:"✕";color:#5c3a41}
+  .diff .keep li:before{content:"→";color:var(--mint)}
+  .diff .new li:before{content:"+";color:var(--accent)}
+
+  .todo{margin-top:8px}
+  .todo .ti{display:flex;gap:14px;padding:14px 0;border-bottom:1px solid var(--line);font-size:13.5px;color:var(--dim);line-height:1.55}
+  .todo .ti .qn{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;flex:none;padding-top:2px;width:22px}
+  .todo .ti b{color:var(--txt);font-weight:500}
+  .todo .ti em{font-style:normal;color:var(--muted)}
+
+  .foot{margin-top:70px;padding-top:26px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted);display:flex;gap:20px;flex-wrap:wrap}
+
+  @media (max-width:560px){
+    :root{--z:.92}
+    body{padding:32px 14px 90px}
+  }
+  @media (max-width:1000px){
+    body{padding:40px 20px 110px}
+    h1{font-size:29px}
+    .split{flex-direction:column;gap:34px}
+    .rules,.diff{grid-template-columns:1fr}
+    :root{--z:1.15}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">Nova Buddy · 设备端设置页 · 方向已定 B</div>
+    <h1>一页清单，<em>定稿细稿</em></h1>
+    <p class="lede">一张可滚的单列表，6 个分组按你会怎么说话排，值永远在行右边。点行就地展开，不跳页。<b>下面是完整 16 行的排布、交互规则、砍掉了什么</b>，最后一节是还需要你拍板的 9 件事。</p>
+    <div class="meta">
+      <span class="chip">368 × 448</span>
+      <span class="chip">13 项可调 + 3 动作</span>
+      <span class="chip">6 组 · 约 2.4 屏</span>
+      <span class="chip">行高 48 / 字 16</span>
+    </div>
+    <div class="zoomctl">
+      <span>预览缩放</span>
+      <button data-z="1">1×</button>
+      <button data-z="1.5" class="on">1.5×</button>
+      <button data-z="2">2×</button>
+      <span style="margin-left:10px;color:#33414f">1× 就是 1.8 寸屏上肉眼看到的大小</span>
+    </div>
+  </header>
+
+  <!-- ================= 01 完整屏 ================= -->
+  <section class="sec">
+    <div class="sec-hd"><span class="num">01</span><h2>完整一屏</h2><span class="tag">可交互</span></div>
+    <div class="split">
+      <div class="devside">
+        <div class="devbox">
+          <div class="screen" id="screen">
+            <div class="B-hd">
+              <svg width="12" height="17" viewBox="0 0 12 17"><path d="M10 1.5L2.5 8.5 10 15.5" fill="none" stroke="#48c6ff" stroke-width="2" stroke-linecap="round"/></svg>
+              <span class="B-title">设置</span>
+            </div>
+            <div class="B-list" id="list">
+              <div class="B-grp">屏幕</div>
+              <div class="B-item slider" data-cur="80" data-min="20" data-max="100" data-def="100" data-key="brt">
+                <div class="B-line"><span>亮度</span><b>80%</b></div>
+                <div class="B-opts"><div class="sl"><div class="sl-track"><i></i></div><div class="sl-knob"></div></div></div>
+              </div>
+              <div class="B-item" data-opts="15 秒|30 秒|1 分钟|2 分钟" data-cur="30 秒" data-def="30 秒" data-key="sleep_s">
+                <div class="B-line"><span>息屏</span><b>30 秒</b></div><div class="B-opts"></div>
+              </div>
+
+              <div class="B-grp">熄屏显示</div>
+              <div class="B-item" data-opts="关|仅插电|常开" data-cur="仅插电" data-def="仅插电" data-key="aod">
+                <div class="B-line"><span>什么时候开</span><b>仅插电</b></div><div class="B-opts"></div>
+              </div>
+              <div class="B-item" data-opts="1 分钟|2 分钟|5 分钟" data-cur="2 分钟" data-def="2 分钟" data-key="aod_idle">
+                <div class="B-line"><span>多久切表盘</span><b>2 分钟</b></div><div class="B-opts"></div>
+              </div>
+              <div class="B-item" data-opts="暗一档|暗两档|跟随亮度" data-cur="暗两档" data-def="暗两档" data-key="aod_night">
+                <div class="B-line"><span>亮度保护</span><b>暗两档</b></div><div class="B-opts"></div>
+              </div>
+
+              <div class="B-grp">声音</div>
+              <div class="B-item slider" data-cur="75" data-min="0" data-max="100" data-def="75" data-key="snd">
+                <div class="B-line"><span>音量</span><b>75%</b></div>
+                <div class="B-opts"><div class="sl"><div class="sl-track"><i></i></div><div class="sl-knob"></div></div></div>
+              </div>
+              <div class="B-item" data-sw="1" data-key="tts">
+                <div class="B-line"><span>语音播报</span><div class="sw on"></div></div>
+              </div>
+              <div class="B-item" data-sw="1" data-key="quiet">
+                <div class="B-line"><span>夜间静音 23–08</span><div class="sw on"></div></div>
+              </div>
+              <div class="B-item act play" data-action="test">
+                <div class="B-line"><span>试听语音</span><div class="playbtn" title="播放"></div></div>
+              </div>
+
+              <div class="B-grp">电池</div>
+              <div class="B-item" data-opts="80%|90%|100%" data-cur="90%" data-def="90%" data-key="chg_lim">
+                <div class="B-line"><span>充电上限</span><b>90%</b></div><div class="B-opts"></div>
+              </div>
+              <div class="B-item" data-opts="温和|自动|快速" data-cur="自动" data-def="自动" data-key="chg_spd">
+                <div class="B-line"><span>充电速度</span><b>自动</b></div><div class="B-opts"></div>
+              </div>
+
+              <div class="B-grp">行为</div>
+              <div class="B-item" data-opts="宠物|订阅|榜单" data-cur="宠物" data-def="宠物" data-key="home">
+                <div class="B-line"><span>默认首页</span><b>宠物</b></div><div class="B-opts"></div>
+              </div>
+              <div class="B-item" data-opts="自适应|长续航|灵动" data-cur="自适应" data-def="自适应" data-key="pwr">
+                <div class="B-line"><span>功耗档</span><b>自适应</b></div><div class="B-opts"></div>
+              </div>
+              <div class="B-item" data-sw="1" data-key="choreo">
+                <div class="B-line"><span>AI 编排</span><div class="sw on"></div></div>
+              </div>
+
+              <div class="B-grp">设备</div>
+              <div class="B-item warn" data-action="reprov">
+                <div class="B-line"><span>重新配网</span><b class="go">›</b></div>
+              </div>
+              <div class="B-item danger" data-action="reset">
+                <div class="B-line"><span>恢复默认</span><b class="go">›</b></div>
+              </div>
+              <div class="B-tail">v0.5.0 · Nova-D93468</div>
+            </div>
+            <div class="B-sb"><i id="sb"></i></div>
+          </div>
+        </div>
+        <div class="states">
+          <button data-go="top">回到首屏</button>
+          <button data-go="expand">展开「音量」</button>
+          <button data-go="bottom">滚到底</button>
+        </div>
+        <div class="devcap">真的可以点：点行展开、点选项生效、点开关切换、拖滑块调值、拖列表滚动。右侧细条是滚动位置。<br>设备一屏 = 8 行；这里能同时看到的行数取决于上面的缩放。</div>
+      </div>
+
+      <div class="notes">
+        <p class="quote">「<b>一张从上到下的清单</b> —— 按你说话的顺序排，右边写着现在的值；点哪行，值就在那一行里展开。」</p>
+        <div class="axesless">
+          <div class="arow"><span>没有</span><b>tab。<i>4 个 40×34 的小按钮没了，换成 6 个组标题。</i></b></div>
+          <div class="arow"><span>没有</span><b>跳页。<i>点开的值就在原地展开，不换屏、不整页重绘。</i></b></div>
+          <div class="arow"><span>没有</span><b>「完成返回」。<i>左上箭头和 Key1 长按都能走。</i></b></div>
+          <div class="arow"><span>没有</span><b>说明文字。<i>「到 90% 自动停充」这类灰字全删，值本身就是说明。</i></b></div>
+        </div>
+
+        <div class="why">
+          <div class="why-h">为什么是这 6 组</div>
+          <div class="why-r"><b>屏幕</b><span>我嫌它太亮、太暗、关得太快</span></div>
+          <div class="why-r"><b>熄屏显示</b><span>熄屏之后那块表盘，什么时候出来、要不要更护眼</span></div>
+          <div class="why-r"><b>声音</b><span>我嫌它太吵，或者它不说话</span></div>
+          <div class="why-r"><b>电池</b><span>我想让它撑久一点，或者别老充满</span></div>
+          <div class="why-r"><b>行为</b><span>我想换个首页 / 省点电 / 让它自己动</span></div>
+          <div class="why-r"><b>设备</b><span>我要重新连网，或者推倒重来</span></div>
+          <p class="why-n">分组按「你什么时候会想到它」，不按功能模块。「熄屏」是屏幕什么时候灭；「熄屏显示」是一组独立的：什么时候开、多久切过去、亮度要不要保护。两组分开，不再套缩进。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 02 结构表 ================= -->
+  <section class="sec">
+    <div class="sec-hd"><span class="num">02</span><h2>16 行的排布</h2><span class="tag">结构</span></div>
+    <table>
+      <tr><th style="width:70px">分组</th><th style="width:118px">行</th><th style="width:88px">控件</th><th style="width:228px">取值</th><th>NVS / 字段</th></tr>
+
+      <tr class="grp"><td colspan="5">屏幕 · 2 行</td></tr>
+      <tr><td></td><td>亮度</td><td><span style="color:#48c6ff">滑块</span></td><td>20 – 100 %（步进 5）</td><td><code>brt</code> (u8 0–4 → 改存 20–100；旧值 0–4 线性映射)</td></tr>
+      <tr><td></td><td>息屏</td><td>展开 4 段</td><td>15 秒 · 30 秒 · 1 分钟 · 2 分钟</td><td><code>sleep_s</code> (u16 10–600)</td></tr>
+      <tr class="grp"><td colspan="5">熄屏显示 · 3 行</td></tr>
+      <tr><td></td><td>什么时候开</td><td>展开 3 段</td><td>关 · 仅插电 · 常开</td><td><code>aod</code> (choice 0/1/2)</td></tr>
+      <tr><td></td><td>多久切表盘</td><td>展开 3 段</td><td>1 分钟 · 2 分钟 · 5 分钟</td><td><code>aod_idle</code> (choice 60/120/300)</td></tr>
+      <tr><td></td><td>亮度保护</td><td>展开 3 段</td><td>暗一档 · 暗两档 · 跟随亮度</td><td><code>aod_night</code> (u8 0–2)</td></tr>
+
+      <tr class="grp"><td colspan="5">声音 · 4 行</td></tr>
+      <tr><td></td><td>音量</td><td><span style="color:#48c6ff">滑块</span></td><td>0 – 100 %（步进 5，0 = 静音）</td><td><code>snd</code> (u8 0–100，本来就是连续)</td></tr>
+      <tr><td></td><td>语音播报</td><td>开关</td><td>开 · 关</td><td><code>tts</code> (bool)</td></tr>
+      <tr><td></td><td>夜间静音 23–08</td><td>开关</td><td>开 · 关</td><td><code>quiet</code> (bool)</td></tr>
+      <tr><td></td><td>试听语音</td><td>动作</td><td>点一下响一声</td><td><span class="k">TEST_SOUND（原有）</span></td></tr>
+
+      <tr class="grp"><td colspan="5">电池 · 2 行</td></tr>
+      <tr><td></td><td>充电上限</td><td>展开 3 段</td><td>80 · 90 · 100 %</td><td><code>chg_lim</code> (choice)</td></tr>
+      <tr><td></td><td>充电速度</td><td>展开 3 段</td><td>温和 · 自动 · 快速</td><td><code>chg_spd</code> (choice 0/1/2)</td></tr>
+
+      <tr class="grp"><td colspan="5">行为 · 3 行</td></tr>
+      <tr><td></td><td>默认首页</td><td>展开 3 段</td><td>宠物 · 订阅 · 榜单</td><td><code>home</code> (choice 0/1/2)</td></tr>
+      <tr><td></td><td>功耗档</td><td>展开 3 段</td><td>自适应 · 长续航 · 灵动</td><td><code>pwr</code> (choice 0/1/2)</td></tr>
+      <tr><td></td><td>AI 编排</td><td>开关</td><td>开 · 关</td><td><code>choreo</code> (bool)</td></tr>
+
+      <tr class="grp"><td colspan="5">设备 · 2 动作 + 版本</td></tr>
+      <tr><td></td><td>重新配网</td><td>动作</td><td>二次确认 · 3 秒超时</td><td><span class="k">REPROVISION（原有）</span></td></tr>
+      <tr><td></td><td>恢复默认</td><td>动作</td><td>二次确认 · 3 秒超时</td><td><span class="k">新增 · 全表回 def</span></td></tr>
+      <tr><td></td><td>版本号</td><td>只读小字</td><td>v0.5.0 · D93468</td><td><span class="k">NOVA_FW_VER</span></td></tr>
+    </table>
+    <p style="margin-top:18px;font-size:13px;color:var(--muted);line-height:1.7">
+      13 项可调全部落在 <code>kSettings[]</code> 现有的 13 条定义上，字段名、NVS 键、取值范围一个不动 —— 这次只换界面，不动存储。<br>
+      设备组只留 2 个动作：看状态去详情页（那里已经有 WiFi / MQTT / 电池 / 性能），设置页不再重复。
+    </p>
+  </section>
+
+  <!-- ================= 03 交互 ================= -->
+  <section class="sec">
+    <div class="sec-hd"><span class="num">03</span><h2>交互与动效</h2><span class="tag">10 条规则 · 7 条动效</span></div>
+    <div class="rules">
+      <div class="rule"><b>点一行 = 就地展开</b><span>行高从 48 变 92，下面长出选项条；同一时刻只开一行，点开另一行时上一行自动收起。</span></div>
+      <div class="rule"><b>点选项 = 立即生效</b><span>不等确认、不弹提示，选完自动收起。值写 NVS 后整行重绘一次（12ms），不整页闪。</span></div>
+      <div class="rule"><b>点开关 = 直接切</b><span>开关行不展开，点击即刻翻转；开关命中区是整行，不是那个 38×22 的小方块。</span></div>
+      <div class="rule"><b>拖滑块 = 连续调</b><span>亮度和音量展开后是一条滑轨，拖动实时改值、行右侧数字跟着变；松手不收起，点行标题才收。</span></div>
+      <div class="rule"><b>滑块与滚动不打架</b><span>手指落在滑轨上就先判方向：水平 → 调值，垂直 → 让列表滚。</span></div>
+      <div class="rule"><b>上/下拖 = 滚动</b><span>带惯性（复用榜单页的 fling），右侧细条显示位置。滚到底部不多余回弹。</span></div>
+      <div class="rule"><b>危险动作要两次</b><span>重新配网、恢复默认：第一次点变红「再点一次确认」，3 秒不点自动恢复，点别处也取消。</span></div>
+      <div class="rule"><b>恢复默认的范围</b><span>13 个设置项回出厂值（亮度 100%、音量 75%、AOD 仅插电…），不动配网信息和设备号。</span></div>
+      <div class="rule"><b>返回有三条路</b><span>左上箭头、Key1 短按回首页、Key1 长按再来一次。没有「完成返回」按钮。</span></div>
+      <div class="rule"><b>热区</b><span>行 48px（≈4.2mm，比现在的 40×34 tab 大一倍）；选项 36px 高。都 ≥ 现有最小热区。</span></div>
+    </div>
+
+    <div class="motion-h">动效 · 以及它在设备上做不做得起</div>
+    <div class="rules">
+      <div class="rule mo"><b>行展开 <i>160ms ease-out</i></b><span>选项条从 0 长到 46，同时淡入并上移 5px。设备端 3 帧，<em class="ok">做</em></span></div>
+      <div class="rule mo"><b>选项选中 <i>120ms</i></b><span>底色扫过、按下时整块缩到 0.965。设备端 1–2 帧，<em class="ok">做</em></span></div>
+      <div class="rule mo"><b>开关 <i>180ms 弹簧</i></b><span>knob 带一点回弹（cubic-bezier .34,1.56,.64,1），底色同步。设备端 3 帧，<em class="ok">做</em></span></div>
+      <div class="rule mo"><b>滑块 <i>拖动 / 松手</i></b><span>拖动中只有 knob 放大 1.1 —— 整行不点亮、数值不闪，因为这是连续状态；<b style="color:#cfd9e8">松手那一帧</b>数值才闪一次白光落下（340ms）。只重绘这一行，<em class="ok">便宜</em></span></div>
+      <div class="rule mo"><b>试听 <i>1.4s</i></b><span>按钮亮起 + 一圈波纹扩散。波纹要 12 帧，<em class="warn">建议降级</em>：亮 200ms + 图标闪两次就够了。</span></div>
+      <div class="rule mo"><b>危险确认 <i>420ms</i></b><span>整行背景红闪一次，「再点一次」同时淡入。设备端 3 帧，<em class="ok">做</em></span></div>
+      <div class="rule mo"><b>滚动条 <i>350ms</i></b><span>滚动时亮到 100%，停手 900ms 淡到 50%。只改一条 2px 宽的条，几乎不要钱。</span></div>
+      <div class="rule mo note"><b>原则</b><span>屏幕是 10–12ms 一帧推的。动效只在「状态变了」的时候跑，静止时一帧都不画 —— 否则电池先撑不住。</span></div>
+    </div>
+  </section>
+
+  <!-- ================= 04 改了什么 ================= -->
+  <section class="sec">
+    <div class="sec-hd"><span class="num">04</span><h2>砍掉了什么</h2><span class="tag">对照现状</span></div>
+    <div class="diff">
+      <div>
+        <div class="col-h">删掉</div>
+        <ul class="gone">
+          <li>顶部 4 个 tab（基础 / 进阶 / 电源 / 显示）—— 40×34，比 44pt 还小</li>
+          <li>底部 4 个重复的「完成返回」按钮</li>
+          <li>进阶页的 MQTT Broker 只读块（详情页已有）</li>
+          <li>电源页的电池状态只读块（详情页已有）</li>
+          <li>每页 2–3 条灰色说明文字（「到 90% 自动停充 · 拔插后重充」这类）</li>
+          <li>「进阶」这个分类名本身</li>
+        </ul>
+      </div>
+      <div>
+        <div class="col-h">合并 / 挪动</div>
+        <ul class="keep">
+          <li>息屏（进阶）+ AOD 三项（显示）→ 拆成「屏幕」和「熄屏显示」两组，不再套在一起</li>
+          <li>音量（基础）+ 试听（底部按钮）→ 同一组，「试听」变成一行动作</li>
+          <li>默认首页 + 功耗档 + AI 编排 → 新分组「行为」</li>
+          <li>重新配网（进阶底部）→ 底部「设备」组</li>
+          <li>只读状态（WiFi / MQTT / 电池 / 版本）→ 详情页，设置页只留一行版本小字</li>
+        </ul>
+        <div class="col-h" style="margin-top:22px">新增</div>
+        <ul class="new">
+          <li>右侧 2px 滚动位置条</li>
+          <li>「恢复默认」动作（现状没有）</li>
+          <li>行级二次确认（现状只有配网有）</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 05 落地 + 拍板 ================= -->
+  <section class="sec">
+    <div class="sec-hd"><span class="num">05</span><h2>落地要做的事</h2><span class="tag">代码层</span></div>
+    <table>
+      <tr><th style="width:210px">位置</th><th>改动</th></tr>
+      <tr><td><code>page_settings.cpp</code></td><td>整个重写：静态表 → 6 组 16 行的数据表（行高 48、组头 32），绘制按 scrollY 裁剪可见行；<code>pageSettingsTap</code> / <code>pageSettingsHitRect</code> 共用同一张动态行表；滑块要新增一条 pointer 拖动通路</td></tr>
+      <tr><td><code>pages.h</code></td><td>新增 <code>pageSettingsScrollPx</code> / <code>pageSettingsTouchDown/Move/Up</code>（照 <code>pageRank</code> 那套 fling 抄）；新增 <code>SET_DEFAULTS</code> 动作</td></tr>
+      <tr><td><code>main.cpp</code></td><td>设置页接入手势分发（现在只分发 rank）；<code>SETTINGS_REDRAW</code> 的 FADE 只在进页时播，滚动/展开不播</td></tr>
+      <tr><td><code>model/settings.h</code></td><td>加 <code>settingsRestoreDefaults()</code>：遍历 <code>kSettings</code> 按 <code>def</code> 回写 + <code>settingsSave()</code>，配网字段不动</td></tr>
+      <tr><td><code>hw/display.cpp</code></td><td><code>hwDisplayBrightness(u8 0–4)</code> → 接受 0–100，<code>BRIGHT_LUT[]</code> 换成 <code>bright = 51 + pct*2.04</code> 线性映射（20% → 51，100% → 255）</td></tr>
+      <tr><td><code>hw/audio.cpp</code></td><td><code>AUDIO_VOL = 60</code> 是初始化常量，现在要改成运行时按 <code>soundPct</code> 调 <code>es8311_voice_volume_set()</code>；0 就是静音</td></tr>
+      <tr><td><code>tools/sim/main.cpp</code></td><td>用例从 5 个（基础/进阶/电源/显示/静音）改成 6 个（首屏 / 滑块展开 / 选项展开 / 滚到底 / 配网确认 / AOD 关闭态）；<code>baseline.txt</code> 哈希重新生成</td></tr>
+      <tr><td><code>tools/test_settings.sh</code></td><td>补 <code>settingsRestoreDefaults</code> 的等价断言（13 项逐个回 def、配网字段不变）</td></tr>
+    </table>
+
+    <div class="sec-hd" style="margin-top:64px"><span class="num">06</span><h2>还需要你拍板的 9 件事</h2><span class="tag">细节</span></div>
+    <div class="todo">
+      <div class="ti"><span class="qn">01</span><span><b>组名</b>　屏幕 / 熄屏显示 / 声音 / 电池 / 行为 / 设备 —— 有没有哪个词你不顺眼？<em>「行为」是最弱的一个，备选：动作、系统、玩。</em></span></div>
+      <div class="ti"><span class="qn">02</span><span><b>只读信息确认删</b>　WiFi / MQTT / 电池状态全挪去详情页，设置页只留一行版本号。详情页那屏能不能装下，我会先量过再动。</span></div>
+      <div class="ti"><span class="qn">03</span><span><b>「试听语音」留不留</b>　留就是一行动作（点了响一声），删就是少一行、少一个入口。</span></div>
+      <div class="ti"><span class="qn">04</span><span><b>恢复默认的范围</b>　我按「13 项设置回出厂、配网与设备号不动」写。要不要连 AOD 一起回？</span></div>
+      <div class="ti"><span class="qn">05</span><span><b>滑块的范围</b>　亮度 <b>20–100%</b>（20 就是现在最暗那档，再暗真看不见）、音量 <b>0–100%</b>、步进 5%。要 1% 的细度吗？<em>步进越小，拖到手抖的概率越高。</em></span></div>
+      <div class="ti"><span class="qn">06</span><span><b>亮度的存储要改</b>　现在 NVS 里 <code>brt</code> 是 0–4 五档。改成连续后要存 20–100，老值要线性映射一次。<em>这是个格式变更，我要先写迁移测试再动代码。</em></span></div>
+      <div class="ti"><span class="qn">07</span><span><b>「亮度保护」就是按时间的</b>　设备没有光线传感器，实际逻辑是 23:00–07:00 把 AOD 表盘封顶到某一档。<em>名字已按你的叫法改成「亮度保护」，值那一列还是「暗一档 / 暗两档 / 跟随亮度」，要换成别的说法吗？</em></span></div>
+      <div class="ti"><span class="qn">08</span><span><b>行高与字号</b>　现在定 48 / 16，一屏 8 行。想更松 52 / 16（多 0.3 屏滚动），想更紧 44 / 14。</span></div>
+      <div class="ti"><span class="qn">09</span><span><b>展开时要不要收起别的行</b>　我定的是收（同时只开一行）。滑块行展开后不自动收，要点标题才收 —— 这样连着调不会被打断。</span></div>
+    </div>
+
+    <div class="foot">
+      <span>设计稿：<code>docs/design/settings-pickB.html</code></span>
+      <span>三方向对照：<code>docs/design/settings-redesign.html</code></span>
+      <span>目标文件：<code>src/ui/page_settings.cpp</code></span>
+    </div>
+  </section>
+
+</div>
+
+<style>
+  /* ============ 设备屏：一页清单 ============ */
+  .B-hd{height:56px;display:flex;align-items:center;gap:13px;padding:0 20px;
+    border-bottom:1px solid #0f1723;flex:none}
+  .B-title{font-size:17px;font-weight:500;letter-spacing:.01em}
+  .B-list{position:absolute;left:0;top:57px;right:0;bottom:0;overflow-y:auto;
+    padding:0 18px 12px;scrollbar-width:none;overscroll-behavior:contain}
+  .B-list::-webkit-scrollbar{display:none}
+  .B-grp{font-size:10.5px;letter-spacing:.16em;color:#4a5c7c;padding:15px 0 7px 6px}
+  .B-item{border-bottom:1px solid #0f1723}
+  .B-line{height:48px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 6px;font-size:16px;cursor:pointer;user-select:none;
+    transition:background .12s}
+  .B-item:not(.slider):active .B-line{background:#0a1119}
+  .B-line>span{color:#f2f6ff}
+  .B-line>b{font-weight:500;color:#48c6ff;font-size:16px;font-variant-numeric:tabular-nums}
+  .B-line>b.go{color:#4a5c7c;font-size:17px;font-weight:400}
+  .B-item.warn .B-line>span{color:#ffc44c}
+  .B-item.danger .B-line>span{color:#cfdae8}
+  .B-item.confirm{background:#25121a;animation:flash .42s ease}
+  @keyframes flash{0%{background:#25121a}40%{background:#3d1622}100%{background:#25121a}}
+  .B-item.confirm .B-line>span{color:#ff586c}
+  .B-item.confirm .B-line>b{color:#ff586c;font-size:13px;font-weight:400}
+  .playbtn{width:34px;height:34px;border-radius:50%;border:1px solid #26374f;
+    display:flex;align-items:center;justify-content:center;color:#48c6ff;flex:none;
+    transition:border-color .16s,background .16s,box-shadow .16s}
+  .playbtn:after{content:"";display:block;border-left:9px solid currentColor;
+    border-top:6px solid transparent;border-bottom:6px solid transparent;margin-left:3px}
+  .B-item.play:active .playbtn,.playbtn.playing{background:rgba(72,198,255,.14);
+    border-color:#48c6ff;box-shadow:0 0 0 5px rgba(72,198,255,.07)}
+  .playbtn.playing{animation:ripple .8s ease-out infinite}
+  @keyframes ripple{
+    0%{box-shadow:0 0 0 0 rgba(72,198,255,.30)}
+    100%{box-shadow:0 0 0 16px rgba(72,198,255,0)}
+  }
+  .B-item .B-opts{max-height:0;overflow:hidden;
+    opacity:0;transform:translateY(-5px);
+    transition:max-height .16s ease,opacity .16s ease,transform .16s ease;
+    display:flex;gap:4px;padding:0 6px}
+  .B-item.open .B-opts{max-height:46px;padding-bottom:10px;opacity:1;transform:none}
+  .B-item.dim{opacity:.34;pointer-events:none}
+  /* 滑块 */
+  .B-item.slider .B-opts{display:block;padding:0}
+  .B-item.slider.open .B-opts{max-height:50px;padding-bottom:9px}
+  .sl{position:relative;height:38px;margin:0 6px;padding:0 11px;
+    display:flex;align-items:center;touch-action:none;cursor:grab}
+  .sl:active{cursor:grabbing}
+  .sl-track{position:absolute;left:11px;right:11px;height:6px;border-radius:3px;background:#152136}
+  .sl-track i{display:block;height:6px;border-radius:3px;background:#48c6ff;width:50%}
+  .sl-knob{position:absolute;top:50%;width:22px;height:22px;border-radius:50%;
+    background:#eaf4ff;box-shadow:0 0 0 3px rgba(72,198,255,.20);
+    transform:translate(-50%,-50%);left:50%;pointer-events:none;
+    transition:transform .13s ease,box-shadow .13s ease}
+  .sl:active .sl-knob{transform:translate(-50%,-50%) scale(1.10);
+    box-shadow:0 0 0 6px rgba(72,198,255,.14)}
+  .B-item.settle .B-line b{animation:settle .34s ease-out}
+  @keyframes settle{
+    0%{color:#ffffff;text-shadow:0 0 10px rgba(72,198,255,.85)}
+    100%{color:#48c6ff;text-shadow:none}
+  }
+  .B-opt{flex:1;height:34px;border-radius:9px;background:#0e1622;color:#8294b4;
+    display:flex;align-items:center;justify-content:center;font-size:12px;cursor:pointer;
+    transition:background .1s;white-space:nowrap}
+  .B-opt:hover{background:#152034}
+  .B-opt{transition:background .12s,color .12s,transform .1s}
+  .B-opt:active{transform:scale(.965)}
+  .B-opt.on{background:#48c6ff;color:#050a12;font-weight:500}
+  .B-sb{position:absolute;right:2.5px;top:64px;bottom:6px;width:2px;border-radius:2px;
+    background:#0b1219;opacity:.5;transition:opacity .35s}
+  .B-sb i{display:block;width:2px;height:34px;border-radius:2px;background:#2b3d57;
+    transition:transform .06s linear}
+  .B-tail{text-align:center;font-size:10.5px;color:#33435a;padding:20px 0 4px;letter-spacing:.08em}
+  .sw{width:38px;height:22px;border-radius:11px;background:#1e304e;position:relative;
+    transition:background .14s;flex:none;cursor:pointer}
+  .sw:after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;
+    background:#8294b4;
+    transition:left .18s cubic-bezier(.34,1.56,.64,1),background .14s}
+  .sw.on{background:#48c6ff}
+  .sw.on:after{left:19px;background:#0b111b}
+</style>
+
+<script>
+(function(){
+  /* ---------- 缩放 ---------- */
+  document.querySelectorAll('.zoomctl button').forEach(function(b){
+    b.addEventListener('click',function(){
+      document.querySelectorAll('.zoomctl button').forEach(function(x){x.classList.remove('on')});
+      b.classList.add('on');
+      document.documentElement.style.setProperty('--z', b.dataset.z);
+    });
+  });
+
+  var list=document.getElementById('list'), sb=document.getElementById('sb');
+
+  /* ---------- 滚动条 ---------- */
+  function paintSb(){
+    var max=list.scrollHeight-list.clientHeight;
+    var track=list.clientHeight-8;
+    var h=Math.max(20, track*list.clientHeight/list.scrollHeight);
+    sb.style.height=h+'px';
+    var y=max>0 ? (list.scrollTop/max)*(track-h) : 0;
+    sb.style.transform='translateY('+y+'px)';
+  }
+  var sbTimer=null;
+  list.addEventListener('scroll',function(){
+    paintSb();
+    document.querySelector('.B-sb').style.opacity='1';
+    if(sbTimer) clearTimeout(sbTimer);
+    sbTimer=setTimeout(function(){ document.querySelector('.B-sb').style.opacity='.5'; },900);
+  });
+
+  /* ---------- 展开 / 选值 / 开关 / 确认 ---------- */
+  var confirmTimer=null, confirmEl=null, confirmLabel='';
+
+  /* ---------- 滑块 ---------- */
+  function fmtVal(el){ return el.dataset.cur + '%'; }
+  function paintSlider(el){
+    var sl=el.querySelector('.sl'); if(!sl) return;
+    var min=+el.dataset.min, max=+el.dataset.max;
+    var r=(+el.dataset.cur - min)/(max-min);
+    var w=sl.clientWidth-22;
+    sl.querySelector('.sl-track i').style.width=(r*w).toFixed(1)+'px';
+    sl.querySelector('.sl-knob').style.left=(11+r*w).toFixed(1)+'px';
+    el.querySelector('.B-line b').textContent=fmtVal(el);
+  }
+  function setSlider(el,ratio){
+    var min=+el.dataset.min, max=+el.dataset.max, step=+el.dataset.step||5;
+    var v=min+ratio*(max-min);
+    v=Math.round(v/step)*step;
+    v=Math.max(min,Math.min(max,v));
+    el.dataset.cur=String(v);
+    paintSlider(el);
+  }
+  document.querySelectorAll('.B-item.slider .sl').forEach(function(sl){
+    var el=sl.closest('.B-item');
+    var dragging=false;
+    function fromEvent(e){
+      var r=sl.getBoundingClientRect();
+      var t=(e.clientX-r.left-11)/Math.max(1,(r.width-22));
+      return Math.max(0,Math.min(1,t));
+    }
+    sl.addEventListener('pointerdown',function(e){
+      e.preventDefault(); dragging=true;
+      sl.setPointerCapture(e.pointerId);
+      setSlider(el,fromEvent(e));
+    });
+    sl.addEventListener('pointermove',function(e){
+      if(!dragging) return;
+      setSlider(el,fromEvent(e));
+    });
+    function settle(){
+      dragging=false;
+      el.classList.remove('settle');
+      void el.offsetWidth;
+      el.classList.add('settle');
+      setTimeout(function(){ el.classList.remove('settle'); },360);
+    }
+    sl.addEventListener('pointerup',settle);
+    sl.addEventListener('pointercancel',settle);
+  });
+
+  /* ---------- AOD 关闭时，两个子项变灰 ---------- */
+  function syncAodSub(){
+    var aod=[].find.call(list.querySelectorAll('.B-item'),function(i){return i.dataset.key==='aod'});
+    var off = aod && aod.dataset.cur==='关';
+    ['aod_idle','aod_night'].forEach(function(k){
+      var it=[].find.call(list.querySelectorAll('.B-item'),function(i){return i.dataset.key===k});
+      if(it) it.classList.toggle('dim',!!off);
+    });
+  }
+
+  function buildOpts(item){
+    var box=item.querySelector('.B-opts');
+    if(!box || box.dataset.built || !item.dataset.opts) return;
+    var opts=item.dataset.opts.split('|');
+    var cur=item.dataset.cur;
+    box.innerHTML=opts.map(function(v){
+      return '<div class="B-opt'+(v===cur?' on':'')+'">'+v+'</div>';
+    }).join('');
+    box.dataset.built='1';
+  }
+
+  function clearConfirm(){
+    if(confirmEl){ confirmEl.classList.remove('confirm');
+      var b=confirmEl.querySelector('.B-line b.go, .B-line b');
+      if(b) b.textContent='›';
+      confirmEl=null; }
+    if(confirmTimer){ clearTimeout(confirmTimer); confirmTimer=null; }
+  }
+
+  list.addEventListener('click',function(e){
+    var item=e.target.closest('.B-item');
+    if(!item) return;
+
+    /* 开关 */
+    if(e.target.classList.contains('sw')){
+      e.target.classList.toggle('on');
+      return;
+    }
+    /* 选值 */
+    if(e.target.classList.contains('B-opt')){
+      var v=e.target.textContent;
+      item.dataset.cur=v;
+      item.querySelector('.B-line b').textContent=v;
+      item.querySelectorAll('.B-opt').forEach(function(o){
+        o.classList.toggle('on', o===e.target);
+      });
+      item.classList.remove('open');
+      if(item.dataset.key==='aod') syncAodSub();
+      return;
+    }
+    /* 试听语音：按下响一声 + 波纹 */
+    if(item.classList.contains('play')){
+      var pb=item.querySelector('.playbtn');
+      pb.classList.add('playing');
+      setTimeout(function(){ pb.classList.remove('playing'); },1400);
+      return;
+    }
+    /* 动作 */
+    if(item.classList.contains('act') || item.classList.contains('warn') || item.classList.contains('danger')){
+      if(item.classList.contains('danger')){
+        if(item.classList.contains('confirm')){
+          clearConfirm();
+          /* 真的回默认：这里只做视觉示意 */
+          list.querySelectorAll('.B-item[data-cur]').forEach(function(it){
+            var def=it.dataset.def || it.dataset.cur;
+            var b=it.querySelector('.B-line b'); if(b) b.textContent=def;
+            it.dataset.cur=def;
+            var box=it.querySelector('.B-opts');
+            if(box){ box.innerHTML=''; delete box.dataset.built; }
+          });
+          return;
+        }
+        clearConfirm();
+        item.classList.add('confirm');
+        item.querySelector('.B-line b').textContent='再点一次';
+        confirmEl=item; confirmLabel='再点一次';
+        confirmTimer=setTimeout(clearConfirm,3000);
+        return;
+      }
+      if(item.classList.contains('warn')){
+        if(item.classList.contains('confirm')){ clearConfirm(); return; }
+        clearConfirm();
+        item.classList.add('confirm');
+        item.querySelector('.B-line b').textContent='再点一次';
+        confirmEl=item;
+        confirmTimer=setTimeout(clearConfirm,3000);
+        return;
+      }
+      return;
+    }
+
+    /* 普通行：展开 / 收起 */
+    clearConfirm();
+    var opts=item.dataset.opts;
+    if(!opts && !item.classList.contains('slider')) return;
+    var isOpen=item.classList.contains('open');
+    list.querySelectorAll('.B-item.open').forEach(function(x){x.classList.remove('open')});
+    if(!isOpen){
+      if(item.classList.contains('slider')){ item.classList.add('open'); paintSlider(item); }
+      else { buildOpts(item); item.classList.add('open'); }
+    }
+    paintSb();
+  });
+
+  /* ---------- 快捷状态按钮 ---------- */
+  document.querySelectorAll('.states button').forEach(function(b){
+    b.addEventListener('click',function(){
+      var go=b.dataset.go;
+      list.querySelectorAll('.B-item.open').forEach(function(x){x.classList.remove('open')});
+      if(go==='top'){ list.scrollTo({top:0,behavior:'smooth'}); }
+      if(go==='bottom'){ list.scrollTo({top:list.scrollHeight,behavior:'smooth'}); }
+      if(go==='expand'){
+        var vol=[].find.call(list.querySelectorAll('.B-item'),function(i){
+          return i.dataset.key==='snd';
+        });
+        if(vol){
+          if(vol.classList.contains('slider')){ vol.classList.add('open'); paintSlider(vol); }
+          else { buildOpts(vol); vol.classList.add('open'); }
+          var top=vol.offsetTop - 140;
+          list.scrollTo({top:Math.max(0,top),behavior:'smooth'});
+        }
+      }
+      setTimeout(paintSb,320);
+    });
+  });
+
+  function repaintSliders(){
+    list.querySelectorAll('.B-item.slider.open').forEach(paintSlider);
+    paintSb();
+  }
+  syncAodSub();
+  repaintSliders();
+  window.addEventListener('resize',repaintSliders);
+})();
+</script>
+</body>
+</html>

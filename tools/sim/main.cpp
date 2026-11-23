@@ -88,7 +88,7 @@ static void populateSample(NovaState& st) {
   st.drawFps = 55.0f;
   st.lastDrawMs = 1000;
   st.drawCount = 12345;
-  st.effBright = 4;
+  st.effBright = 100;
   std::strcpy(st.activeModel, "GPT-6.2 Astra");
 
   st.nCards = 3;
@@ -221,7 +221,7 @@ static void cleanupRankScroll() {
 
 static void mutateSettingsMuted(NovaState&, NovaSettings& cfg) {
   cfg.soundPct = 0;
-  cfg.brightLevel = 0;
+  cfg.brightPct = 20;
   cfg.ttsEnabled = false;
   cfg.quietHours = false;
   cfg.choreoEnabled = false;
@@ -388,6 +388,8 @@ int main(int argc, char** argv) {
     void (*mutate)(NovaState&, NovaSettings&);
     void (*afterDraw)();
     bool aod = false;
+    uint8_t openId = 0;     // 设置页：展开哪一行（RowId，0 = 不展开）
+    uint8_t confirmId = 0;  // 设置页：哪一行进二次确认
   };
   Case cases[] = {
     { "home", UiPage::HOME, false, 0, 6500, nullptr, nullptr },
@@ -395,7 +397,11 @@ int main(int argc, char** argv) {
     { "rank", UiPage::RANK, false, 0, 6500, nullptr, nullptr },
     { "detail", UiPage::DETAIL, false, 0, 6500, nullptr, nullptr },
     { "settings", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr },
-    { "settings_adv", UiPage::SETTINGS, false, 1, 6500, nullptr, nullptr },
+    { "settings_aod", UiPage::SETTINGS, false, 1, 6500, nullptr, nullptr },
+    { "settings_sound", UiPage::SETTINGS, false, 2, 6500, nullptr, nullptr },
+    { "settings_open", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr, false, 1 },   // 1 = R_BRIGHT
+    { "settings_opts", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr, false, 2 },   // 2 = R_SLEEP
+    { "settings_confirm", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr, false, 0, 21 },  // 21 = R_RESET
     { "approval", UiPage::HOME, true, 0, 6500, nullptr, nullptr },
     { "home_dock", UiPage::HOME, false, 0, 6500, mutateDockDetail, nullptr },
     { "home_dock_err", UiPage::HOME, false, 0, 6500, mutateDockError, nullptr },
@@ -414,12 +420,11 @@ int main(int argc, char** argv) {
     { "detail_full", UiPage::DETAIL, false, 0, 6500, mutateDetailFull, nullptr },
     { "detail_limited", UiPage::DETAIL, false, 0, 6500, mutateDetailLimited, nullptr },
     { "detail_low", UiPage::DETAIL, false, 0, 6500, mutateDetailLow, nullptr },
-    { "settings_power", UiPage::SETTINGS, false, 2, 6500, mutateSettingsPower, nullptr },
+    { "settings_batt", UiPage::SETTINGS, false, 3, 6500, mutateSettingsPower, nullptr },
     { "approval_urgent", UiPage::HOME, true, 0, 25000, mutateApprovalUrgent, nullptr },
     { "tokens", UiPage::TOKENS, false, 0, 6500, nullptr, nullptr },
     { "tokens_selected", UiPage::TOKENS, false, 0, 6500, mutateTokensSelected, cleanupTokensSelect },
     { "tokens_empty", UiPage::TOKENS, false, 0, 6500, mutateTokensEmpty, nullptr },
-    { "settings_display", UiPage::SETTINGS, false, 3, 6500, nullptr, nullptr },
     { "aod", UiPage::HOME, false, 0, 6500, mutateAodTime, nullptr, true },
     { "aod_idle", UiPage::HOME, false, 0, 6500, mutateAodIdle, nullptr, true },
     { "aod_nolock", UiPage::HOME, false, 0, 6500, mutateAodNoTime, nullptr, true },
@@ -437,6 +442,8 @@ int main(int argc, char** argv) {
     st.apArrivedMs = 1000;
     if (cs.mutate) cs.mutate(st, cfg);
     pageSettingsSetTab(cs.settingsTab);
+    if (cs.openId)    pageSettingsDebugOpen(cs.openId);
+    if (cs.confirmId) pageSettingsDebugConfirm(cs.confirmId);
     nav.setPage(cs.page);
     if (cs.aod) {
       // 真机按 run/wait 选定格姿势；模拟器同样先播三帧再定格。

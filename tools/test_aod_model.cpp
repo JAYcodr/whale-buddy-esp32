@@ -58,14 +58,17 @@ int main() {
   CHECK(!shouldExit(USB, true, false, false, false, 5));       // 插电低电不算退出
 
   // ── 亮度 ────────────────────────────────────────────────────────
-  CHECK(brightness(4, 0, false) == 1);
-  CHECK(brightness(4, 0, true) == 1);
-  CHECK(brightness(4, 1, false) == 2);
-  CHECK(brightness(4, 1, true) == 1);
-  CHECK(brightness(4, 2, false) == 4);
-  CHECK(brightness(4, 2, true) == 1);
-  CHECK(brightness(1, 0, false) == 1);
-  CHECK(brightness(0, 1, false) == 0);
+  // 用户 80%：封顶 1 档 39%、封顶 2 档 59%、跟随 = 80%；夜间一律 ≤39%。
+  CHECK(brightnessPct(80, 0, false) == kCap1Pct);
+  CHECK(brightnessPct(80, 0, true) == kCap1Pct);
+  CHECK(brightnessPct(80, 1, false) == kCap2Pct);
+  CHECK(brightnessPct(80, 1, true) == kCap1Pct);
+  CHECK(brightnessPct(80, 2, false) == 80);
+  CHECK(brightnessPct(80, 2, true) == kCap1Pct);
+  // 用户本来就比封顶暗 —— 不动。
+  CHECK(brightnessPct(30, 0, false) == 30);
+  CHECK(brightnessPct(20, 1, false) == 20);
+  CHECK(brightnessPct(100, 2, false) == 100);
 
   // ── 夜间判定 ────────────────────────────────────────────────────
   CHECK(!isNight(22));

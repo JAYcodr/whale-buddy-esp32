@@ -32,6 +32,10 @@ void sfxPlay(SfxKind kind, uint8_t volPct) {
       hwTone(440, 440, 70, volPct);
       hwTone(330, 330, 110, volPct);
       break;
+    case SfxKind::SETTING_OK:
+      hwTone(784, 784, 38, volPct);
+      hwTone(1175, 1175, 58, volPct);
+      break;
   }
 }
 

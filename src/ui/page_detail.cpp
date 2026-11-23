@@ -68,16 +68,16 @@ void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
   char perfBuf[64];
   const uint32_t idleMs = (st.nowMs > st.lastDrawMs) ? (st.nowMs - st.lastDrawMs) : 0;
   if (st.aodActive) {
-    snprintf(perfBuf, sizeof(perfBuf), "AOD · 亮%u/4 · %uMHz",
+    snprintf(perfBuf, sizeof(perfBuf), "AOD · 亮%u%% · %uMHz",
              (unsigned)st.effBright, (unsigned)st.cpuMhz);
   } else if (st.fps > 0.5f) {
     snprintf(perfBuf, sizeof(perfBuf), "%.0ffps · %.1fms · %uMHz",
              st.fps, st.pushUs / 1000.0f, (unsigned)st.cpuMhz);
   } else if (idleMs >= 3000u) {
-    snprintf(perfBuf, sizeof(perfBuf), "静帧 %lus · 亮%u/4",
+    snprintf(perfBuf, sizeof(perfBuf), "静帧 %lus · 亮%u%%",
              (unsigned long)(idleMs / 1000u), (unsigned)st.effBright);
   } else {
-    snprintf(perfBuf, sizeof(perfBuf), "就绪 · 亮%u/4 · %uMHz",
+    snprintf(perfBuf, sizeof(perfBuf), "就绪 · 亮%u%% · %uMHz",
              (unsigned)st.effBright, (unsigned)st.cpuMhz);
   }
   drawKvRow(c, 20, 333, 328, "系统性能", perfBuf, ui::COL_DIM, false);

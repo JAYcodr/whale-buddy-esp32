@@ -52,11 +52,17 @@ inline bool isNight(uint8_t hour) { return hour >= 23 || hour < 7; }
 // 语音静音用 23–8；AOD 亮度用 23–7（isNight）。两者是有意的差异，别合并。
 inline bool isQuietHour(uint8_t h) { return h >= 23 || h < 8; }
 
-// 夜间亮度档：0=封顶 1 档，1=封顶 2 档，2=跟随用户；23-07 点一律不超过 1 档。
-inline uint8_t brightness(uint8_t userBright, uint8_t nightCap, bool night) {
-  uint8_t cap = (nightCap == 0) ? 1 : ((nightCap == 1) ? 2 : userBright);
-  if (night && cap > 1) cap = 1;
-  return (userBright < cap) ? userBright : cap;
+// 亮度保护用的封顶线（百分比）。数值对应改百分比之前的 1 档 / 2 档：
+// 老 BRIGHT_LUT = {50,100,150,200,255}，1 档 = 100/255 ≈ 39%，2 档 = 150/255 ≈ 59%。
+constexpr uint8_t kCap1Pct = 39;
+constexpr uint8_t kCap2Pct = 59;
+
+// 亮度保护：0=封顶到 1 档，1=封顶到 2 档，2=跟随用户；23-07 点一律不超过 1 档。
+// userPct 是 20..100 的用户亮度，返回真正要下发给背光的百分比。
+inline uint8_t brightnessPct(uint8_t userPct, uint8_t nightCap, bool night) {
+  uint8_t cap = (nightCap == 0) ? kCap1Pct : ((nightCap == 1) ? kCap2Pct : userPct);
+  if (night && cap > kCap1Pct) cap = kCap1Pct;
+  return (userPct < cap) ? userPct : cap;
 }
 
 // 慢漂移：10 分钟一轮、四个落点。配合现有 ±2px/30s 的 burnOffset，

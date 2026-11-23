@@ -65,6 +65,8 @@ void settingsLoad() {
           raw = prefs.getUChar(d.key, (uint8_t)d.def);
           break;
       }
+      // brt 的老格式（0..4 档）在这里迁成百分比，之后 sanitize 才认 20..100 的合法区间。
+      if (strcmp(d.key, "brt") == 0) raw = settingsMigrateBrightPct(raw);
       settingsFieldSet(s_cfg, d, settingsSanitize(d, raw));
     }
     String host = prefs.getString("mqtt_host", "192.168.31.15");
@@ -78,6 +80,13 @@ void settingsLoad() {
     NOVA_LOG(E, "nvs", "prefs open failed\n");
   }
 #endif
+}
+
+void settingsRestoreDefaults() {
+  for (const SettingDef& d : kSettings) {
+    settingsFieldSet(s_cfg, d, d.def);
+  }
+  settingsSave();
 }
 
 void settingsSave() {

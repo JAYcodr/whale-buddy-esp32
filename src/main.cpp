@@ -60,6 +60,7 @@ void sendUsbScreenshot() {
 // 即使读到中间的写也不会画错，最多点歪一格，所以 volatile 足够。
 volatile int8_t  s_aodForceReq = -1;   // 串口 {"cmd":"aodforce","on":0|1}，V0.5.0 验收用
 volatile bool    s_pendingTap  = false;
+volatile bool    s_pendingInteract = false;  // 串口 tap/page 也算人动了一下
 volatile int16_t s_pendingTapX = 0;
 volatile int16_t s_pendingTapY = 0;
 
@@ -126,10 +127,11 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             else if (strcmp(p, "rank") == 0)     { nav.setPage(UiPage::RANK); needFull = true; }
             else if (strcmp(p, "detail") == 0)   { nav.setPage(UiPage::DETAIL); needFull = true; }
             else if (strcmp(p, "settings") == 0) { pageSettingsSetTab(0); nav.setPage(UiPage::SETTINGS); needFull = true; }
-            else if (strcmp(p, "settings_adv") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
-            else if (strcmp(p, "settings_power") == 0) { pageSettingsSetTab(2); nav.setPage(UiPage::SETTINGS); needFull = true; }
-            else if (strcmp(p, "settings_display") == 0) { pageSettingsSetTab(3); nav.setPage(UiPage::SETTINGS); needFull = true; }
+            else if (strcmp(p, "settings_adv") == 0 || strcmp(p, "settings_sound") == 0) { pageSettingsSetTab(2); nav.setPage(UiPage::SETTINGS); needFull = true; }
+            else if (strcmp(p, "settings_power") == 0 || strcmp(p, "settings_batt") == 0) { pageSettingsSetTab(3); nav.setPage(UiPage::SETTINGS); needFull = true; }
+            else if (strcmp(p, "settings_display") == 0 || strcmp(p, "settings_aod") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "tokens") == 0)   { pageTokensOnEnter(millis()); nav.setPage(UiPage::TOKENS); needFull = true; }
+            s_pendingInteract = true;
           } else if (strcmp(cmd, "tap") == 0) {
             // 真机验收用：把手动戳屏变成可重放的命令。
             // UI 任务里才拿得到 nav / handleAction，这里只放下坐标。
@@ -194,6 +196,8 @@ void uiTaskFn(void*) {
   bool uiAnimating = false;
   bool needRankList = false;
   bool wasRankFlinging = false;
+  bool needSettingsList = false;
+  bool wasSettingsAnim = false;
   bool wasApprovalActive = false;
   bool wasTokensAnim = false;
   bool needTokensSettle = false;
@@ -220,6 +224,7 @@ void uiTaskFn(void*) {
 
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
+  bool    settingsGrab = false;   // 设置页里按下的那个滑块
   bool    hasPressedRect = false;
   ui::Rect pressedRect{ 0, 0, 0, 0 };
   uint32_t key1DownAt = 0;
@@ -273,12 +278,13 @@ void uiTaskFn(void*) {
     }
   };
 
-  // 亮度去重：只有有效档变化才写 I2C（AOD 降档 + 熄屏前预降会频繁调用）。
-  auto applyBright = [&](uint8_t lvl) {
-    if (lvl > 4) lvl = 4;
-    if (lvl == bright.applied) return;
-    bright.applied = lvl;
-    hwDisplayBrightness(lvl);
+  // 亮度去重：只有有效百分比变化才写 I2C（AOD 降档 + 翻扣降暗会频繁调用）。
+  auto applyBright = [&](uint8_t pct) {
+    if (pct < 20) pct = 20;
+    if (pct > 100) pct = 100;
+    if (pct == bright.applied) return;
+    bright.applied = pct;
+    hwDisplayBrightness(pct);
   };
 
   for (;;) {
@@ -393,7 +399,7 @@ void uiTaskFn(void*) {
       s.dow = snap.time.dow;
       s.aodActive = aodActive;
       s.pwrProfile = (uint8_t)cfg.powerProfile;
-      s.effBright = bright.applied;
+      s.effBright = (bright.applied <= 100) ? bright.applied : cfg.brightPct;
       s.lcdOff = (screenOff || dimmedForNap);
       s.uiBusyPct = uiBusyPct;
       s.decBusyPct = decBusyPct;
@@ -460,6 +466,10 @@ void uiTaskFn(void*) {
     if (st.apGen != lastApGen) {
       lastApGen = st.apGen;
       hasPressedRect = false;
+      if (settingsGrab) {
+        settingsGrab = false;
+        pageSettingsCancelDrag();
+      }
       if (st.approvalActive) {
         if (!snap.faceDown && screenOff) {
           hwDisplaySleep(false);
@@ -500,6 +510,11 @@ void uiTaskFn(void*) {
           UiPage prevPage = (swipeOrigin >= 0) ? (UiPage)swipeOrigin : nav.currentPage();
           UiPage newPage  = (UiPage)act.value;
           nav.setPage(newPage);
+          if (newPage == UiPage::SETTINGS && prevPage != UiPage::SETTINGS) {
+            pageSettingsOnEnter();
+          } else if (prevPage == UiPage::SETTINGS && newPage != UiPage::SETTINGS) {
+            pageSettingsCancelDrag();
+          }
           if (newPage == UiPage::TOKENS && prevPage != UiPage::TOKENS) {
             pageTokensOnEnter(nowMs);
           }
@@ -523,6 +538,7 @@ void uiTaskFn(void*) {
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::REPROVISION:
+          pageSettingsCancelDrag();
           netRequestReprovision();
           nav.setPage(UiPage::HOME);
           sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
@@ -600,10 +616,20 @@ void uiTaskFn(void*) {
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           playTransition(TransKind::FADE, 150);
           break;
+        case UiAction::RESTORE_DEFAULTS:
+          settingsRestoreDefaults();
+          bright.invalidate();
+          netPublishPrefs();
+          needFull = true;
+          sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+          break;
         case UiAction::SETTINGS_REDRAW:
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (act.value == 0 || act.value == 1) {
             playTransition(TransKind::FADE, 150);
+          } else {
+            needFull = false;
+            needSettingsList = true;
           }
           break;
         case UiAction::TOKENS_REDRAW:
@@ -620,27 +646,27 @@ void uiTaskFn(void*) {
               case UiAction::SET_SOUND:
                 netPublishPrefs();
                 if (settingsGet().soundPct > 0) {
-                  sfxPlay(SfxKind::NAV_CHIRP, settingsGet().soundPct);
+                  sfxPlay(SfxKind::SETTING_OK, settingsGet().soundPct);
                 }
                 break;
               case UiAction::SET_TTS:
               case UiAction::SET_QUIET:
               case UiAction::SET_CHOREO:
                 netPublishPrefs();
-                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               case UiAction::SET_BRIGHT:
                 bright.invalidate();   // 交给统一亮度逻辑落地
-                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               case UiAction::SET_AOD_MODE:
               case UiAction::SET_AOD_NIGHT:
                 bright.invalidate();
                 needFull = true;
-                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               default:
-                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
             }
           }
@@ -649,10 +675,18 @@ void uiTaskFn(void*) {
     };
 
     // 串口注入的点击：复用 handleAction，与真实触屏同一条路径。
+    if (s_pendingInteract) {
+      s_pendingInteract = false;
+      lastInteractMs = nowMs;   // 串口调试不该被 AOD 打断
+    }
+
     if (s_pendingTap) {
       const int16_t tx = s_pendingTapX;
       const int16_t ty = s_pendingTapY;
       s_pendingTap = false;
+      // 注入的点击也算一次交互：不刷新的话退出 AOD 后下一轮就立刻又判进去，
+      // 串口调页面时屏幕会一直停在表盘上。
+      lastInteractMs = nowMs;
       if (aodActive) {
         aodActive = false;
         aodForced = false;
@@ -687,11 +721,16 @@ void uiTaskFn(void*) {
         wakeScreen();
         tpActive = true;
         tpDraggedV = false;
+        settingsGrab = false;
         tpStartX = ev.x;
         tpStartY = ev.y;
         tpLastY  = ev.y;
         if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
           pageRankTouchDown(ev.y, ev.tsMs);
+        }
+        if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+          settingsGrab = pageSettingsTouchDown(ev.x, ev.y, ev.tsMs);
+          if (settingsGrab) needFull = true;
         }
         if (!swallowTap && !dimmedForNap && canvas &&
             nav.pressedRect(ev.x, ev.y, st, cfg, &pressedRect)) {
@@ -719,6 +758,20 @@ void uiTaskFn(void*) {
             }
           }
         }
+        if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+          if (settingsGrab) {
+            if (pageSettingsTouchMove(ev.x, ev.y, ev.tsMs)) needSettingsList = true;
+          } else {
+            if (!tpDraggedV && ady >= 8 && ady > adx) {
+              tpDraggedV = true;
+              if (hasPressedRect) {
+                hasPressedRect = false;
+                needSettingsList = true;
+              }
+            }
+            if (tpDraggedV && pageSettingsScrollTouchMove(ev.y, ev.tsMs)) needSettingsList = true;
+          }
+        }
         tpLastY = ev.y;
       } else if (ev.type == InputEvtType::TOUCH_UP && tpActive) {
         tpActive = false;
@@ -731,8 +784,25 @@ void uiTaskFn(void*) {
           hasPressedRect = false;
           needFull = true;
         }
+        if (settingsGrab) {
+          settingsGrab = false;
+          if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+            UiAction up = pageSettingsTouchUp(ev.tsMs);
+            if (up.kind != UiAction::NONE) handleAction(up);
+          } else {
+            pageSettingsCancelDrag();
+          }
+          needSettingsList = true;
+          continue;
+        }
         if (tpDraggedV) {
           tpDraggedV = false;
+          if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+            pageSettingsScrollTouchUp(ev.tsMs);
+            if (!pageSettingsIsAnimating()) {
+              needSettingsList = true;
+            }
+          }
           if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
             pageRankTouchUp(ev.tsMs, st.nRows);
             if (!pageRankIsFlinging()) {
@@ -744,18 +814,25 @@ void uiTaskFn(void*) {
         if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
           pageRankTouchUp(ev.tsMs, st.nRows);
         }
+        if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+          pageSettingsScrollCancel();
+        }
         int16_t dx = ev.x - tpStartX;
         int16_t dy = ev.y - tpStartY;
+        int16_t adx = dx < 0 ? -dx : dx;
+        int16_t ady = dy < 0 ? -dy : dy;
         UiPage prevPage = nav.currentPage();
         UiAction act = st.approvalActive ? UiAction{} : nav.onSwipe(dx, dy);
         if (act.kind != UiAction::NONE) {
-          int16_t adx = dx < 0 ? -dx : dx;
           int slideDir = (prevPage == UiPage::SETTINGS && dy >= 60 && dy > adx)
                            ? 0
                            : (dx < 0 ? 1 : -1);
           handleAction(act, slideDir, (int)prevPage);
-        } else {
+        } else if (!(prevPage == UiPage::SETTINGS && (adx >= 16 || ady >= 16))) {
           act = nav.onTap(ev.x, ev.y, st, cfg);
+          if (act.kind == UiAction::NONE && nav.currentPage() == UiPage::SETTINGS) {
+            needFull = true;   // 展开 / 收起只改本地 UI 状态
+          }
           handleAction(act);
         }
       } else if (ev.type == InputEvtType::KEY1_DOWN) {
@@ -774,6 +851,10 @@ void uiTaskFn(void*) {
           UiPage prev = nav.currentPage();
           nav.goHome(cfg.homePage);
           UiPage next = nav.currentPage();
+          if (prev == UiPage::SETTINGS && next != UiPage::SETTINGS) {
+            settingsGrab = false;
+            pageSettingsCancelDrag();
+          }
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (next != prev) {
             TransKind kind = (uiPageRingIndex(next) > uiPageRingIndex(prev))
@@ -801,6 +882,7 @@ void uiTaskFn(void*) {
     if (snap.key1Down && key1DownAt != 0 && !key1LongFired && (nowMs - key1DownAt >= KEY1_LONG_MS)) {
       key1LongFired = true;
       if (nav.currentPage() != UiPage::SETTINGS) {
+        pageSettingsOnEnter();
         nav.setPage(UiPage::SETTINGS);
         sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
         playTransition(TransKind::SHEET_UP, 220);
@@ -822,12 +904,12 @@ void uiTaskFn(void*) {
     }
 
     // 统一亮度：暗屏 0 / AOD 降档 / 平时用户档；只在有效值变化时写 I2C。
-    {
-      uint8_t wantBright = cfg.brightLevel;
+    if (!screenOff) {
+      uint8_t wantBright = cfg.brightPct;
       if (dimmedForNap) {
-        wantBright = 0;
+        wantBright = 20;   // 老固件的 0 档 = 20%；翻扣时压到最暗而不是全黑
       } else if (aodActive) {
-        wantBright = aod::brightness(cfg.brightLevel, cfg.aodNightCap, aod::isNight(st.hour));
+        wantBright = aod::brightnessPct(cfg.brightPct, cfg.aodNightCap, aod::isNight(st.hour));
       }
       applyBright(wantBright);
     }
@@ -922,8 +1004,18 @@ void uiTaskFn(void*) {
     if (st.dockExpanded && st.turnError && st.errMsg[0] && !screenOff) {
       needFull = true;  // 浮层期间锁全量重绘，压住宠物动画
     }
-    if (pageSettingsTick(nowMs) && nav.currentPage() == UiPage::SETTINGS) {
-      needFull = true;
+    if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+      if (pageSettingsTick(nowMs)) {
+        needSettingsList = true;
+      }
+      bool curSettingsAnim = pageSettingsIsAnimating();
+      if (wasSettingsAnim && !curSettingsAnim) {
+        needSettingsList = true;
+      }
+      wasSettingsAnim = curSettingsAnim;
+    } else {
+      if (pageSettingsIsAnimating()) pageSettingsTick(nowMs);
+      wasSettingsAnim = false;
     }
     if (pageQuotaTick(nowMs) && nav.currentPage() == UiPage::QUOTA) {
       needFull = true;
@@ -1030,7 +1122,7 @@ void uiTaskFn(void*) {
     }
     wasTokensAnim = tokensAnim;
 
-    bool interactive = tpActive || pageRankIsFlinging() || uiAnimating;
+    bool interactive = tpActive || pageRankIsFlinging() || pageSettingsIsAnimating() || uiAnimating;
     // TOKENS 页一帧要搬 63 KB（368×88）@ 实测 2.7 MB/s ≈ 23 ms，喂不到 60；
     // 鱼又是 ±2.6px / 4s 的慢速微动，30 fps 和 60 fps 肉眼没差别，锁 30 换稳定。
     const uint8_t baseFps = settingsEffectiveFps(snap.battery.usbPresent);
@@ -1057,7 +1149,17 @@ void uiTaskFn(void*) {
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         needFull = false;
         needRankList = false;
+        needSettingsList = false;
         needTokensSettle = false;
+        frame++;
+        fpsFrames++;
+      } else if (needSettingsList && !aodActive && !st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
+        int64_t t0 = esp_timer_get_time();
+        pageSettingsDrawList(*canvas, st, cfg);
+        const ui::Rect sr = pageSettingsListRect();
+        hwDisplayPushRect(sr.x, sr.y, sr.w, sr.h);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        needSettingsList = false;
         frame++;
         fpsFrames++;
       } else if (needRankList && !aodActive && !st.approvalActive && nav.currentPage() == UiPage::RANK) {
@@ -1140,7 +1242,7 @@ void uiTaskFn(void*) {
 void setup() {
   hwInit();
   settingsLoad();
-  hwDisplayBrightness(settingsGet().brightLevel);
+  hwDisplayBrightness(settingsGet().brightPct);
 
   uint8_t mac[6] = {0};
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
