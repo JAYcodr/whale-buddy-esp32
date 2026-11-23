@@ -13,35 +13,65 @@ NovaSettings s_cfg;
 
 static uint32_t s_nvsFails = 0;
 
+uint16_t settingsFieldGet(const NovaSettings& cfg, const SettingDef& d) {
+  const char* p = reinterpret_cast<const char*>(&cfg) + d.offset;
+  switch (d.kind) {
+    case SettingKind::BOOL: return *reinterpret_cast<const bool*>(p) ? 1 : 0;
+    case SettingKind::U16:  return *reinterpret_cast<const uint16_t*>(p);
+    case SettingKind::U8:
+    case SettingKind::CHOICE: return *reinterpret_cast<const uint8_t*>(p);
+  }
+  return 0;
+}
+
+void settingsFieldSet(NovaSettings& cfg, const SettingDef& d, uint16_t v) {
+  char* p = reinterpret_cast<char*>(&cfg) + d.offset;
+  switch (d.kind) {
+    case SettingKind::BOOL: *reinterpret_cast<bool*>(p) = (v != 0); break;
+    case SettingKind::U16:  *reinterpret_cast<uint16_t*>(p) = v; break;
+    case SettingKind::U8:
+    case SettingKind::CHOICE: *reinterpret_cast<uint8_t*>(p) = (uint8_t)v; break;
+  }
+}
+
+namespace {
+
+#ifndef NOVA_HOST_SIM
+uint16_t settingSanitize(const SettingDef& d, uint16_t v) {
+  if (d.choices && d.nChoices) {
+    for (uint8_t i = 0; i < d.nChoices; i++) {
+      if (d.choices[i] == v) return v;
+    }
+    return d.def;
+  }
+  if (v < d.minV) return d.def;
+  if (v > d.maxV) return d.clampMax ? d.maxV : d.def;
+  return v;
+}
+#endif
+
+}  // namespace
+
 void settingsLoad() {
 #ifndef NOVA_HOST_SIM
   Preferences prefs;
   if (prefs.begin("nova", true)) {
-    uint8_t hp = prefs.getUChar("home", 0);
-    s_cfg.homePage = (hp <= 2) ? (HomePageKind)hp : HomePageKind::PET;
-    uint8_t pp = prefs.getUChar("pwr", 0);
-    s_cfg.powerProfile = (pp <= 2) ? (PowerProfile)pp : PowerProfile::ADAPTIVE;
-    s_cfg.soundPct = prefs.getUChar("snd", 75);
-    if (s_cfg.soundPct > 100) s_cfg.soundPct = 100;
-    s_cfg.brightLevel = prefs.getUChar("brt", 4);
-    if (s_cfg.brightLevel > 4) s_cfg.brightLevel = 4;
-    s_cfg.useNva = prefs.getBool("nva", true);
-    s_cfg.ttsEnabled = prefs.getBool("tts", true);
-    s_cfg.quietHours = prefs.getBool("quiet", true);
-    s_cfg.choreoEnabled = prefs.getBool("choreo", true);
-    uint16_t slp = prefs.getUShort("sleep_s", 30);
-    s_cfg.batSleepSec = (slp >= 10 && slp <= 600) ? slp : 30;
-    uint8_t lim = prefs.getUChar("chg_lim", 90);
-    s_cfg.chargeLimitPct = (lim == 80 || lim == 90 || lim == 100) ? lim : 90;
-    uint8_t spd = prefs.getUChar("chg_spd", (uint8_t)ChargeSpeed::AUTO);
-    s_cfg.chargeSpeed = (spd <= (uint8_t)ChargeSpeed::FAST)
-                          ? (ChargeSpeed)spd : ChargeSpeed::AUTO;
-    uint8_t aodm = prefs.getUChar("aod", aod::USB);
-    s_cfg.aodMode = (aodm <= aod::ALWAYS) ? aodm : aod::USB;
-    uint16_t aodIdle = prefs.getUShort("aod_idle", 120);
-    s_cfg.aodIdleSec = (aodIdle == 60 || aodIdle == 120 || aodIdle == 300) ? aodIdle : 120;
-    uint8_t aodNight = prefs.getUChar("aod_night", 1);
-    s_cfg.aodNightCap = (aodNight <= 2) ? aodNight : 1;
+    for (const SettingDef& d : kSettings) {
+      uint16_t raw = d.def;
+      switch (d.kind) {
+        case SettingKind::BOOL:
+          raw = prefs.getBool(d.key, d.def != 0) ? 1 : 0;
+          break;
+        case SettingKind::U16:
+          raw = prefs.getUShort(d.key, d.def);
+          break;
+        case SettingKind::U8:
+        case SettingKind::CHOICE:
+          raw = prefs.getUChar(d.key, (uint8_t)d.def);
+          break;
+      }
+      settingsFieldSet(s_cfg, d, settingSanitize(d, raw));
+    }
     String host = prefs.getString("mqtt_host", "192.168.31.15");
     strncpy(s_cfg.brokerHost, host.c_str(), sizeof(s_cfg.brokerHost) - 1);
     s_cfg.brokerHost[sizeof(s_cfg.brokerHost) - 1] = '\0';
@@ -59,20 +89,21 @@ void settingsSave() {
 #ifndef NOVA_HOST_SIM
   Preferences prefs;
   if (prefs.begin("nova", false)) {
-    prefs.putUChar("home", (uint8_t)s_cfg.homePage);
-    prefs.putUChar("pwr", (uint8_t)s_cfg.powerProfile);
-    prefs.putUChar("snd", s_cfg.soundPct);
-    prefs.putUChar("brt", s_cfg.brightLevel);
-    prefs.putBool("nva", s_cfg.useNva);
-    prefs.putBool("tts", s_cfg.ttsEnabled);
-    prefs.putBool("quiet", s_cfg.quietHours);
-    prefs.putBool("choreo", s_cfg.choreoEnabled);
-    prefs.putUShort("sleep_s", s_cfg.batSleepSec);
-    prefs.putUChar("chg_lim", s_cfg.chargeLimitPct);
-    prefs.putUChar("chg_spd", (uint8_t)s_cfg.chargeSpeed);
-    prefs.putUChar("aod", s_cfg.aodMode);
-    prefs.putUShort("aod_idle", s_cfg.aodIdleSec);
-    prefs.putUChar("aod_night", s_cfg.aodNightCap);
+    for (const SettingDef& d : kSettings) {
+      const uint16_t v = settingsFieldGet(s_cfg, d);
+      switch (d.kind) {
+        case SettingKind::BOOL:
+          prefs.putBool(d.key, v != 0);
+          break;
+        case SettingKind::U16:
+          prefs.putUShort(d.key, v);
+          break;
+        case SettingKind::U8:
+        case SettingKind::CHOICE:
+          prefs.putUChar(d.key, (uint8_t)v);
+          break;
+      }
+    }
     prefs.putString("mqtt_host", s_cfg.brokerHost);
     prefs.putUShort("mqtt_port", s_cfg.brokerPort);
     prefs.end();

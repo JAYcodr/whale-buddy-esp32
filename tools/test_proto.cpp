@@ -166,6 +166,15 @@ int main() {
   CHECK(n > 0 && n < 320);
   CHECK(std::strlen(buf) == n);
 
+  // prefs 只上宿主 toHost 的 4 项，键名与旧实现一致。
+  n = protoBuildPrefs(buf, sizeof(buf), cfg);
+  CHECK(std::strstr(buf, "\"evt\":\"prefs\"") != nullptr);
+  CHECK(std::strstr(buf, "\"snd\":") != nullptr);
+  CHECK(std::strstr(buf, "\"tts\":") != nullptr);
+  CHECK(std::strstr(buf, "\"quiet\":") != nullptr);
+  CHECK(std::strstr(buf, "\"choreo\":") != nullptr);
+  CHECK(std::strstr(buf, "\"brt\"") == nullptr);
+
   // ── 3. tts 分片：错序 / 重复 / seq>=tot 必须被拒 ─────────────────
   CHECK(!ttsMsg("{\"id\":1,\"seq\":0,\"tot\":0,\"b64\":\"AA==\"}"));
   CHECK(!ttsMsg("{\"id\":1,\"seq\":2,\"tot\":3,\"b64\":\"AA==\"}"));   // 先到 seq=2

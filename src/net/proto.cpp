@@ -377,10 +377,12 @@ size_t protoBuildHello(char* buf, size_t cap, const NovaState& st, const NovaSet
     h["aod"] = cfg.aodMode;
 
     JsonObject p = doc["prefs"].to<JsonObject>();
-    p["snd"]    = cfg.soundPct;
-    p["tts"]    = cfg.ttsEnabled;
-    p["quiet"]  = cfg.quietHours;
-    p["choreo"] = cfg.choreoEnabled;
+    for (const SettingDef& d : kSettings) {
+      if (!d.toHost) continue;
+      const uint16_t v = settingsFieldGet(cfg, d);
+      if (d.kind == SettingKind::BOOL) p[d.key] = (v != 0);
+      else p[d.key] = v;
+    }
   }
   return finishJson(doc, buf, cap);
 }
@@ -429,10 +431,12 @@ size_t protoBuildStat(char* buf, size_t cap, const NovaState& st) {
 
 size_t protoBuildPrefs(char* buf, size_t cap, const NovaSettings& cfg) {
   JsonDocument doc;
-  doc["evt"]    = "prefs";
-  doc["snd"]    = cfg.soundPct;
-  doc["tts"]    = cfg.ttsEnabled;
-  doc["quiet"]  = cfg.quietHours;
-  doc["choreo"] = cfg.choreoEnabled;
+  doc["evt"] = "prefs";
+  for (const SettingDef& d : kSettings) {
+    if (!d.toHost) continue;
+    const uint16_t v = settingsFieldGet(cfg, d);
+    if (d.kind == SettingKind::BOOL) doc[d.key] = (v != 0);
+    else doc[d.key] = v;
+  }
   return finishJson(doc, buf, cap);
 }
