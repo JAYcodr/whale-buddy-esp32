@@ -1020,7 +1020,10 @@ void uiTaskFn(void*) {
     bool animPage = (!aodActive && !st.approvalActive && !st.wifiApMode &&
                      nav.currentPage() == UiPage::HOME &&
                      !(st.dockExpanded && st.turnError && st.errMsg[0]));
-    bool tokensPage = (!st.approvalActive && !st.wifiApMode && nav.currentPage() == UiPage::TOKENS);
+    // AOD 是整屏浮层：和 animPage 一样必须禁掉局部重绘，否则停在鲸群页进表盘时
+    // 鱼群仍按 AOD 的 4fps 往表盘上画（2026-11-23 真机实测：表盘中间一排游动的鱼）。
+    bool tokensPage = (!aodActive && !st.approvalActive && !st.wifiApMode &&
+                       nav.currentPage() == UiPage::TOKENS);
     bool tokensAnim = tokensPage && pageTokensIsAnimating(st, cfg, nowMs);
     if (wasTokensAnim && !tokensAnim && tokensPage) {
       needTokensSettle = true;
@@ -1057,7 +1060,7 @@ void uiTaskFn(void*) {
         needTokensSettle = false;
         frame++;
         fpsFrames++;
-      } else if (needRankList && !st.approvalActive && nav.currentPage() == UiPage::RANK) {
+      } else if (needRankList && !aodActive && !st.approvalActive && nav.currentPage() == UiPage::RANK) {
         int64_t t0 = esp_timer_get_time();
         pageRankDrawList(*canvas, st);
         const ui::Rect rr = pageRankListRect();
