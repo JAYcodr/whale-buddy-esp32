@@ -16,9 +16,13 @@ export const inject = ['tokenMeter'];
 export function apply(ctx, config = {}) {
   const logger = ctx.logger?.('nova-buddy');
   const log = (msg) => logger?.info?.(msg);
+  // ctx.logger 不一定有 warn/error；没有就逐级降级，别把日志本身变成异常源。
+  log.warn = (msg) => (logger?.warn ? logger.warn(msg) : logger?.info?.(msg));
+  log.error = (msg) => (logger?.error ? logger.error(msg)
+                     : logger?.warn ? logger.warn(msg)
+                     : logger?.info?.(msg));
 
   const bridge = createNovaBridge({
-    brokerUrl: config.brokerUrl || 'mqtt://192.168.31.15:1883',
     deviceApproval: config.deviceApproval || 'mirror',
     fallbackMs: config.fallbackMs ?? 20000,
     ttsVoice: config.ttsVoice,

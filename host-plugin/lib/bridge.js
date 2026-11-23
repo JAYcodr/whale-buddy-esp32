@@ -114,9 +114,10 @@ function clipForTts(text, limit = TTS_MAX_CHARS) {
 
 export function createNovaBridge(options = {}) {
   const brokerUrl = options.brokerUrl || process.env.NOVA_MQTT_URL || 'mqtt://192.168.31.15:1883';
-  const fallbackMs = Number(options.fallbackMs ?? 8000);
-  const deviceApproval = options.deviceApproval || 'prefer'; // 'prefer' | 'mirror' | 'off'
+  const fallbackMs = Number(options.fallbackMs ?? 20000);
+  const deviceApproval = options.deviceApproval || 'mirror'; // 'prefer' | 'mirror' | 'off'
   const log = options.log || (() => {});
+  const warn = (msg) => (typeof log.warn === 'function' ? log.warn(msg) : log(msg));
   const aiCfg = loadAiConfig(options);
   const ttsSynth = options.synthesizeSpeech || synthesizeSpeechAdpcm;
   const quotaFetcher = options.fetchAllQuota || fetchAllQuota;
@@ -197,7 +198,9 @@ export function createNovaBridge(options = {}) {
 
   function publishTo(id, suffix, obj, { qos = 1, retain = false } = {}) {
     if (!client?.connected) return;
-    client.publish(`nova/${id}/${suffix}`, JSON.stringify(obj), { qos, retain });
+    client.publish(`nova/${id}/${suffix}`, JSON.stringify(obj), { qos, retain }, (err) => {
+      if (err) warn(`nova-buddy: publish 失败 nova/${id}/${suffix}: ${err.message || err}`);
+    });
   }
 
   function publishAll(suffix, obj, opts) {
@@ -463,6 +466,10 @@ export function createNovaBridge(options = {}) {
       refreshTokens(false).catch(() => {});
     });
 
+    client.on('error', (e) => warn(`nova-buddy: mqtt error ${e?.message || e}`));
+    client.on('offline', () => warn('nova-buddy: mqtt offline'));
+    client.on('reconnect', () => log('nova-buddy: mqtt reconnecting'));
+
     client.on('message', (topic, buf) => {
       const parts = topic.split('/');
       if (parts.length !== 3 || parts[0] !== 'nova') return;
@@ -471,14 +478,21 @@ export function createNovaBridge(options = {}) {
       try {
         data = JSON.parse(buf.toString('utf8'));
       } catch {
+        warn(`nova-buddy: 上行载荷不是合法 JSON: ${suffix}`);
         return;
       }
       if (suffix === 'hello') handleHello(id, data);
       else if (suffix === 'up') handleUp(id, data);
     });
 
-    quotaTimer = setInterval(() => refreshQuota().catch(() => {}), 5 * 60 * 1000);
-    rankTimer = setInterval(() => refreshRank(true).catch(() => {}), 6 * 60 * 60 * 1000);
+    quotaTimer = setInterval(
+      () => refreshQuota().catch((e) => warn(`nova-buddy: 额度抓取失败 ${e?.message || e}`)),
+      5 * 60 * 1000,
+    );
+    rankTimer = setInterval(
+      () => refreshRank(true).catch((e) => warn(`nova-buddy: 榜单抓取失败 ${e?.message || e}`)),
+      6 * 60 * 60 * 1000,
+    );
     hbTimer = setInterval(() => {
       for (const id of onlineIds()) pushTime(id);
     }, 30 * 1000);
@@ -570,16 +584,19 @@ export function createNovaBridge(options = {}) {
             const line = detail ? `出错了，${detail}` : '唔，刚刚好像出了一点小差错，快来看看呀！';
             const key = `err:${cur.errMsg || 'unknown'}`;
             if (!ttsDedupHit(key)) {
-              publishTts(line, { force: true }).catch(() => {});
+              publishTts(line, { force: true }).catch((e) =>
+                warn(`nova-buddy: TTS 播报失败 ${e?.message || e}`));
             }
           } else {
             // 结束那句以前没传 force，被 4 秒节流吃掉；传了之后要靠 task 维度去重。
             const key = `turnend:${sid}:${cur.updatedAt}`;
             if (!ttsDedupHit(key)) {
-              publishTts(clipForTts('主人，刚刚的任务完成啦！'), { force: true }).catch(() => {});
+              publishTts(clipForTts('主人，刚刚的任务完成啦！'), { force: true }).catch((e) =>
+                warn(`nova-buddy: TTS 播报失败 ${e?.message || e}`));
             }
           }
-          refreshChoreo('turn-end', 120000).catch(() => {});
+          refreshChoreo('turn-end', 120000).catch((e) =>
+            warn(`nova-buddy: 剧本生成失败 ${e?.message || e}`));
         }
         break;
       }

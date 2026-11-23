@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "诺瓦副屏",
-    "description": "把 DSH 的会话状态、订阅额度、ModelDial 榜单和工具审批推送到 ESP32-S3 AMOLED 桌面副屏（MQTT）。副屏在线时，工具审批会先问设备，8 秒无应答自动回落到本机对话框。"
+    "description": "把 DSH 的会话状态、订阅额度、ModelDial 榜单和工具审批推送到 ESP32-S3 AMOLED 桌面副屏（MQTT）。副屏在线时，工具审批会先问设备，超时后自动回落到本机对话框。"
   }
 }

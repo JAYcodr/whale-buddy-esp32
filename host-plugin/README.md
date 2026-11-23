@@ -48,3 +48,11 @@ payload：
 | `avg` | 故意不传。设备端按 `days` 自己算日均，单一实现，免得两边口径漂移 |
 
 关掉：插件配置 `tokens: false`。手动验一包：`node bin/nova-buddy.js test-push --id D93468`。
+
+## 测试
+
+```bash
+npm test        # node --test，当前 19 个
+```
+
+`npm install` 之后直接跑，不需要设备或 broker。

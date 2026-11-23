@@ -16,6 +16,9 @@ function argVal(flag, defVal = '') {
 
 async function connectMqtt() {
   const client = mqtt.connect(brokerUrl);
+  client.on('error', (e) => console.error('mqtt error', e?.message || e));
+  client.on('offline', () => console.warn('mqtt offline'));
+  client.on('reconnect', () => console.log('mqtt reconnecting'));
   await new Promise((resolve, reject) => {
     client.once('connect', resolve);
     client.once('error', reject);
