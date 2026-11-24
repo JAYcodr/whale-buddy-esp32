@@ -78,8 +78,26 @@ export function resampleLinear(samples, srcRate, dstRate = 16000) {
   return out;
 }
 
+// 单条 TTS 固件侧缓冲上限 98304 字节；16kHz 4-bit ADPCM 头 16B + 数据 ceil(n/2)。
+// 196500 样本 ≈ 12.28 秒（98266 字节 <= 98304），超出直接截断并做 80ms 淡出，防固件静默丢包。
+export const MAX_NVAD_SAMPLES = 196500;
+const FADE_OUT_SAMPLES = 1280; // 80ms @ 16kHz
+
+export function clampNvAdpcmSamples(samples, maxSamples = MAX_NVAD_SAMPLES) {
+  if (!samples || samples.length <= maxSamples) return samples;
+  const out = new Int16Array(samples.subarray(0, maxSamples));
+  const fade = Math.min(FADE_OUT_SAMPLES, out.length);
+  const start = out.length - fade;
+  for (let i = 0; i < fade; i++) {
+    const gain = (fade - 1 - i) / fade;
+    out[start + i] = Math.round(out[start + i] * gain);
+  }
+  return out;
+}
+
 export function encodeNvAdpcm(samples, sampleRate = 16000) {
-  const n = samples.length;
+  const safeSamples = clampNvAdpcmSamples(samples);
+  const n = safeSamples.length;
   const payloadBytes = Math.ceil(n / 2);
   const out = Buffer.allocUnsafe(16 + payloadBytes);
 
@@ -93,7 +111,7 @@ export function encodeNvAdpcm(samples, sampleRate = 16000) {
   let predictor = 0;
   let stepIndex = 0;
   for (let i = 0; i < n; i++) {
-    const sample = samples[i];
+    const sample = safeSamples[i];
     const step = STEP_TABLE[stepIndex];
     let diff = sample - predictor;
     let code = 0;

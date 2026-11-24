@@ -1,6 +1,17 @@
 import mqtt from 'mqtt';
+import { basename } from 'node:path';
 import { fetchAllQuota, fetchModelDialRank } from './fetchers.js';
-import { generateChoreography, loadAiConfig, synthesizeSpeechAdpcm } from './ai.js';
+import {
+  clipByDisplayWidth,
+  DEVICE_REPLY_WIDTH,
+  generateChatReply,
+  generateChoreography,
+  loadAiConfig,
+  stripMarkdownToPlain,
+  summarizeSessionReply,
+  synthesizeSpeechAdpcm,
+} from './ai.js';
+import { createMicReassembler, loadMiMoApiKey, transcribeMiMoWav } from './asr.js';
 import { createTokenCollector } from './tokens.js';
 import { createPowerStore, stageNameOf } from './power.js';
 
@@ -106,11 +117,46 @@ function readCtxPct(session, tokenMeter) {
  * 约 12.3 秒语音 ≈ 43–55 个汉字。超了 applyTtsChunk 会 free + return false，
  * 整条语音静默丢掉 —— 所以必须在送进合成之前就压到 ~40 字。
  */
-const TTS_MAX_CHARS = 40;
+const TTS_MAX_CHARS = DEVICE_REPLY_WIDTH;
 function clipForTts(text, limit = TTS_MAX_CHARS) {
-  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  return clipByDisplayWidth(stripMarkdownToPlain(text), limit);
+}
+
+function cleanBoardName(raw, fallback = '') {
+  let s = sanitizeOneLine(raw, 80).replace(/^@+/, '');
+  if (!s) return fallback;
+  if (/^(?:\/|~\/)/.test(s)) {
+    const base = basename(s.replace(/[\\/]+$/, ''));
+    if (base) s = base;
+  }
+  return s.length > 28 ? `${s.slice(0, 27)}…` : s;
+}
+
+function cwdBasename(raw) {
+  const s = sanitizeOneLine(raw, 200).replace(/[\\/]+$/, '');
   if (!s) return '';
-  return s.length <= limit ? s : `${s.slice(0, limit - 1)}…`;
+  return basename(s) || '';
+}
+
+function extractAssistantText(data) {
+  const content = data?.message?.content ?? data?.content;
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => part && (part.type === 'text' || typeof part.text === 'string'))
+      .map((part) => String(part.text || ''))
+      .join('\n')
+      .trim();
+  }
+  return '';
+}
+
+function fmtStepClock(msAgo) {
+  const totalSec = Math.max(0, Math.floor(msAgo / 1000));
+  if (totalSec < 60) return `${totalSec}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 export function createNovaBridge(options = {}) {
@@ -121,6 +167,20 @@ export function createNovaBridge(options = {}) {
   const warn = (msg) => (typeof log.warn === 'function' ? log.warn(msg) : log(msg));
   const aiCfg = loadAiConfig(options);
   const ttsSynth = options.synthesizeSpeech || synthesizeSpeechAdpcm;
+  const transcribeAudio = options.transcribeAudio || ((wav) => transcribeMiMoWav(wav, loadMiMoApiKey(aiCfg)));
+  const chatReplyGenerator = options.chatReplyGenerator || generateChatReply;
+  const replySummarizer = options.replySummarizer || summarizeSessionReply;
+  const hasCustomChatReply = typeof options.chatReplyGenerator === 'function';
+  let sessionController = options.sessionController || null;
+  // 拿实时标题：list() 的 SessionSummary 不含 title，重启后收不到历史 session/title 事件，
+  // 只能靠 sessionTitle.get(session) 补，否则看板会退化成 cwd 末段（工作区名）。
+  let titleSource = options.titleSource || null;
+  const pendingChatQueue = []; // { id, clipId, text, target, mode, enqueuedAt }
+  const activeFollowAborts = new Set();
+  let monoReqSeq = 1;
+  let lastSayText = '';
+  let lastSayAt = 0;
+  const micReassembler = createMicReassembler(options.micReassemblerOptions);
   const quotaFetcher = options.fetchAllQuota || fetchAllQuota;
   const choreoGen = options.choreoGenerator || generateChoreography;
   const choreoFreshMs = Number(options.choreoFreshMs ?? 15 * 60 * 1000);
@@ -143,6 +203,7 @@ export function createNovaBridge(options = {}) {
   const devices = new Map(); // id -> { online, lastSeen, meta, prefs, stat }
   const sessions = new Map(); // sessionId -> { running, waiting, error, lastTool, msg, ctxPct, model, updatedAt }
   const pendingApprovals = new Map(); // apId -> { resolve, deviceIds, timer }
+  const chatHistories = new Map(); // deviceId -> Array<{ role: 'user' | 'assistant', content: string }>
 
   let client = null;
   let quotaPayload = null;
@@ -153,6 +214,9 @@ export function createNovaBridge(options = {}) {
   let recentMood = '';
   let lastStateJson = '';
   let lastStateSentAt = 0;
+  let lastSessionsJson = '';
+  let lastSessionsSentAt = 0;
+  let sessionsTimer = null;
   let lastChoreoAt = 0;
   let lastTtsAt = 0;
   // force 一开节流就形同虚设，必须补去重：同一条错误连播会把语音串成一片。
@@ -188,10 +252,12 @@ export function createNovaBridge(options = {}) {
     return out;
   }
 
-  function ttsTargetIds() {
+  function ttsTargetIds(filterIds = null) {
+    const allow = Array.isArray(filterIds) ? new Set(filterIds) : null;
     const out = [];
     for (const [id, info] of devices.entries()) {
       if (!info.online) continue;
+      if (allow && !allow.has(id)) continue;
       const p = info.prefs;
       if (p && (p.tts === false || p.snd === 0)) continue;
       out.push(id);
@@ -286,6 +352,75 @@ export function createNovaBridge(options = {}) {
     publishAll('state', payload, { qos: 1, retain: true });
   }
 
+  function buildSessionsPayload() {
+    const now = Date.now();
+    const list = [];
+    for (const [sid, s] of sessions.entries()) {
+      if (s.origin === 'subagent' || s.archived) continue;
+      const prio = s.waiting ? 3 : (s.running ? 2 : (s.error ? 1 : 0));
+      list.push({ sid, s, prio });
+    }
+    list.sort((a, b) => (b.prio - a.prio) || ((b.s.updatedAt || 0) - (a.s.updatedAt || 0)));
+
+    const items = list.slice(0, 4).map(({ sid, s }) => {
+      const st = s.waiting ? 'wait' : (s.running ? 'run' : (s.error ? 'err' : 'idle'));
+      const el = (s.running && s.startedAt) ? Math.max(0, Math.floor((now - s.startedAt) / 1000)) : 0;
+      const name = cleanBoardName(s.boardName || s.title || s.cwd || sid, sid.slice(0, 14));
+      const cwd = s.cwd || '';
+      let act = s.lastAction || '';
+      if (!act) {
+        act = s.waiting ? `等待审批: ${s.lastTool || 'Tool'}` : (s.running ? '处理中' : '已停下');
+      }
+      let note = '';
+      if (s.waiting && s.waitReason) {
+        note = sanitizeOneLine(s.waitReason, 56);
+      } else if (s.error && s.errMsg) {
+        note = sanitizeOneLine(s.errMsg, 56);
+      } else if (!s.running && s.updatedAt) {
+        const mins = Math.max(0, Math.floor((now - s.updatedAt) / 60000));
+        note = mins > 0 ? `${mins} 分钟前停下` : '刚刚停下';
+      } else if (s.lastReplySnippet) {
+        note = s.lastReplySnippet;
+      }
+
+      const steps = Array.isArray(s.steps)
+        ? s.steps.slice(0, 3).map((sp) => ({
+            t: fmtStepClock(now - (sp.at || now)),
+            s: sp.tool || 'tool',
+            a: sp.arg || '',
+          }))
+        : [];
+
+      return { id: sid, name, cwd, st, el, act, note, steps };
+    });
+
+    const payload = { t: 'sessions', items };
+    if (lastSayText) {
+      payload.lastSay = lastSayText;
+      payload.lastAgo = lastSayAt > 0 ? Math.max(0, Math.floor((now - lastSayAt) / 1000)) : 0;
+    }
+    return payload;
+  }
+
+  function flushSessions(force = false) {
+    const payload = buildSessionsPayload();
+    const raw = JSON.stringify(payload);
+    const now = Date.now();
+    if (!force && raw === lastSessionsJson && now - lastSessionsSentAt < 5000) return;
+    if (!force && now - lastSessionsSentAt < 400) {
+      if (!sessionsTimer) {
+        sessionsTimer = setTimeout(() => {
+          sessionsTimer = null;
+          flushSessions(true);
+        }, 400);
+      }
+      return;
+    }
+    lastSessionsJson = raw;
+    lastSessionsSentAt = now;
+    publishAll('sessions', payload, { qos: 1, retain: true });
+  }
+
   function pushTime(id) {
     const epoch = Math.floor(Date.now() / 1000);
     const tz = -new Date().getTimezoneOffset() * 60;
@@ -348,9 +483,10 @@ export function createNovaBridge(options = {}) {
   }
 
   async function publishTts(text, opts = {}) {
+    if (!String(text || '').trim()) return false;
     const now = Date.now();
     if (!opts.force && now - lastTtsAt < 4000) return false;
-    const targets = ttsTargetIds();
+    const targets = ttsTargetIds(opts.targetIds);
     if (targets.length === 0 || !client?.connected) return false;
     const synthOpts = {
       ...opts,
@@ -407,6 +543,7 @@ export function createNovaBridge(options = {}) {
     if (online) {
       pushTime(id);
       publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
+      publishTo(id, 'sessions', buildSessionsPayload(), { qos: 1, retain: true });
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
       if (tokensPayload) publishTo(id, 'tokens', tokensPayload, { qos: 1, retain: true });
@@ -451,6 +588,7 @@ export function createNovaBridge(options = {}) {
       devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now() });
       pushTime(id);
       publishTo(id, 'state', buildStatePayload(), { qos: 1, retain: true });
+      publishTo(id, 'sessions', buildSessionsPayload(), { qos: 1, retain: true });
       if (quotaPayload) publishTo(id, 'quota', quotaPayload, { qos: 1, retain: true });
       if (rankPayload) publishTo(id, 'rank', rankPayload, { qos: 1, retain: true });
       if (tokensPayload) publishTo(id, 'tokens', tokensPayload, { qos: 1, retain: true });
@@ -462,7 +600,367 @@ export function createNovaBridge(options = {}) {
         lastSyncQuotaAt = now;
         refreshQuota().catch(() => {});
       }
+    } else if (data?.evt === 'chat_send') {
+      devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now() });
+      const clipId = Number(data.id) || 0;
+      const text = String(data.text || '').trim();
+      const target = typeof data.target === 'string' ? data.target.trim() : '';
+      const mode = data.mode === 'steer' ? 'steer' : 'queue';
+      if (!text) return;
+      handleChatSend(id, clipId, text, target, mode).catch((err) => {
+        warn(`nova-buddy: chat_send 异常 ${err?.message || err}`);
+      });
+    } else if (data?.evt === 'chat_tts') {
+      devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now() });
+      const text = String(data.text || '').trim();
+      if (!text) return;
+      publishTts(clipForTts(text), { force: true, targetIds: [id] }).catch((err) =>
+        warn(`nova-buddy: chat_tts 播报失败 ${err?.message || err}`),
+      );
     }
+  }
+
+  async function syncSessionsFromController() {
+    if (!sessionController || typeof sessionController.list !== 'function') return;
+    try {
+      const res = await sessionController.list({}, AbortSignal.timeout(3000));
+      const items = Array.isArray(res?.items) ? res.items : [];
+      const seen = new Set();
+      for (const item of items) {
+        const sid = String(item?.sessionId || '');
+        if (!sid || item?.origin === 'subagent' || item?.archived) continue;
+        seen.add(sid);
+        const cur = sessions.get(sid) || {
+          running: false,
+          waiting: false,
+          error: false,
+          lastTool: '',
+          title: '',
+          boardName: '',
+          cwd: '',
+          origin: item?.origin || '',
+          errMsg: '',
+          msg: '',
+          lastAction: '',
+          steps: [],
+          updatedAt: Date.now(),
+        };
+        cur.running = Boolean(item.running);
+        if (item.cwd) cur.cwd = cwdBasename(item.cwd);
+        const liveTitle = titleSource ? titleSource(sid) : '';
+        if (liveTitle) {
+          cur.boardName = cleanBoardName(liveTitle, cur.boardName);
+          cur.title = foldTitle(liveTitle);
+        } else if (item.title) {
+          cur.boardName = cleanBoardName(item.title, cur.boardName);
+          if (!cur.title) cur.title = foldTitle(item.title);
+        }
+        if (item.origin) cur.origin = item.origin;
+        if (cur.running && !cur.startedAt) cur.startedAt = Date.now();
+        if (typeof item.updatedAt === 'number') cur.updatedAt = item.updatedAt;
+        sessions.set(sid, cur);
+      }
+      if (seen.size > 0) {
+        for (const sid of [...sessions.keys()]) {
+          const cur = sessions.get(sid);
+          if (!seen.has(sid) && !cur?.running && !cur?.waiting) {
+            sessions.delete(sid);
+          }
+        }
+      }
+      flushState(false);
+      flushSessions(false);
+    } catch (err) {
+      warn(`nova-buddy: sessionController.list 失败 ${err?.message || err}`);
+    }
+  }
+
+  function setTitleSource(fn) {
+    titleSource = typeof fn === 'function' ? fn : null;
+    if (titleSource) syncSessionsFromController().catch(() => {});
+  }
+
+  function setSessionController(ctrl) {
+    sessionController = ctrl || null;
+    if (!sessionController) return;
+    syncSessionsFromController().catch(() => {});
+    while (pendingChatQueue.length > 0) {
+      const item = pendingChatQueue.shift();
+      if (Date.now() - item.enqueuedAt > 15000) {
+        publishTo(item.id, 'chat', {
+          t: 'delivery',
+          id: item.clipId,
+          kind: 'fail',
+          target: item.target,
+          text: '宿主会话服务启动超时',
+        }, { qos: 1, retain: false });
+        continue;
+      }
+      handleChatSend(item.id, item.clipId, item.text, item.target, item.mode).catch((err) => {
+        warn(`nova-buddy: queued chat_send 异常 ${err?.message || err}`);
+      });
+    }
+  }
+
+  async function resolveTargetSession(requestedTarget) {
+    if (!requestedTarget) {
+      return { ok: false, err: '未选择目标会话' };
+    }
+    const known = sessions.get(requestedTarget);
+    if (known?.waiting) {
+      return { ok: false, err: '目标会话正在等审批，请先处理审批' };
+    }
+    if (typeof sessionController?.list === 'function') {
+      try {
+        const res = await sessionController.list({}, AbortSignal.timeout(3000));
+        const items = Array.isArray(res?.items) ? res.items : [];
+        const match = items.find((it) => it?.sessionId === requestedTarget);
+        if (!match || match.archived || match.origin === 'subagent') {
+          return { ok: false, err: '目标会话已换段或已关闭，请重选' };
+        }
+        return {
+          ok: true,
+          sessionId: match.sessionId,
+          name: cleanBoardName(match.title || known?.boardName || known?.title || cwdBasename(match.cwd), requestedTarget.slice(0, 14)),
+        };
+      } catch (err) {
+        return { ok: false, err: `会话校验失败: ${sanitizeOneLine(err?.message || 'unknown', 24)}` };
+      }
+    }
+    if (!known) {
+      return { ok: false, err: '目标会话已失效，请重选' };
+    }
+    return {
+      ok: true,
+      sessionId: requestedTarget,
+      name: cleanBoardName(known.boardName || known.title || known.cwd, requestedTarget.slice(0, 14)),
+    };
+  }
+
+  async function handleLegacyChatSend(id, clipId, text) {
+    const prevHistory = chatHistories.get(id) || [];
+    try {
+      const rawReply = await chatReplyGenerator(
+        text,
+        prevHistory.slice(-12),
+        buildContextSummary('chat'),
+        aiCfg,
+        log,
+      );
+      const reply = clipByDisplayWidth(stripMarkdownToPlain(rawReply), DEVICE_REPLY_WIDTH);
+      if (!reply) throw new Error('empty reply');
+      const nextHistory = [
+        ...prevHistory,
+        { role: 'user', content: text },
+        { role: 'assistant', content: reply },
+      ].slice(-12);
+      chatHistories.set(id, nextHistory);
+      lastSayText = reply;
+      lastSayAt = Date.now();
+      publishTo(id, 'chat', { t: 'reply', id: clipId, ok: true, text: reply }, { qos: 1, retain: false });
+      await publishTts(clipForTts(reply), { force: true, targetIds: [id] });
+    } catch (err) {
+      log(`chat_send error for ${id}: ${err?.message || err}`);
+      publishTo(id, 'chat', { t: 'reply', id: clipId, ok: false, err: '回复超时' }, { qos: 1, retain: false });
+    }
+  }
+
+  async function handleChatSend(id, clipId, text, target = '', mode = 'queue') {
+    if (!sessionController) {
+      if (hasCustomChatReply && !target) {
+        return handleLegacyChatSend(id, clipId, text);
+      }
+      if (pendingChatQueue.length >= 8) pendingChatQueue.shift();
+      pendingChatQueue.push({ id, clipId, text, target, mode, enqueuedAt: Date.now() });
+      publishTo(id, 'chat', {
+        t: 'delivery',
+        id: clipId,
+        kind: 'sent',
+        pos: 1,
+        target,
+        name: cleanBoardName(sessions.get(target)?.boardName || sessions.get(target)?.title || '', ''),
+      }, { qos: 1, retain: false });
+      return;
+    }
+
+    const resolved = await resolveTargetSession(target);
+    if (!resolved.ok) {
+      publishTo(id, 'chat', {
+        t: 'delivery',
+        id: clipId,
+        kind: 'fail',
+        target,
+        text: resolved.err,
+      }, { qos: 1, retain: false });
+      return;
+    }
+
+    const { sessionId, name } = resolved;
+    const safeMode = mode === 'steer' ? 'steer' : 'queue';
+    const requestId = `${id}:${clipId}:${monoReqSeq++}`;
+    const ac = new AbortController();
+    activeFollowAborts.add(ac);
+    const timeout = setTimeout(() => ac.abort(), 10 * 60 * 1000);
+
+    try {
+      const frames = sessionController.follow({ address: { kind: 'session', sessionId } }, ac.signal);
+      await sessionController.prompt({
+        requestId,
+        sessionId,
+        mode: safeMode,
+        content: [{ type: 'text', text }],
+      }, ac.signal);
+
+      publishTo(id, 'chat', {
+        t: 'delivery',
+        id: clipId,
+        kind: 'sent',
+        pos: safeMode === 'steer' ? 0 : 1,
+        target: sessionId,
+        name,
+      }, { qos: 1, retain: false });
+
+      let admitted = false;
+      const turnTexts = [];
+      for await (const frame of frames) {
+        if (closed) break;
+        if (frame?.type !== 'event' || !frame.event) continue;
+        const ev = frame.event;
+        if (ev.type === 'user/message') {
+          const src = ev.data?.source;
+          if (src?.rpcId === requestId && (!src.kind || src.kind === 'user')) {
+            admitted = true;
+            publishTo(id, 'chat', {
+              t: 'delivery',
+              id: clipId,
+              kind: 'run',
+              secs: 0,
+              target: sessionId,
+              name,
+            }, { qos: 1, retain: false });
+          }
+          continue;
+        }
+        if (!admitted) continue;
+        if (ev.type === 'assistant/message') {
+          const chunk = extractAssistantText(ev.data);
+          if (chunk) turnTexts.push(chunk);
+          continue;
+        }
+        if (ev.type === 'turn/end') {
+          const kind = ev.data?.reason?.kind;
+          if (kind === 'error') {
+            const errMsg = ev.data?.reason?.error?.message || '本轮异常结束';
+            const outErr = await replySummarizer({ userText: text, errText: errMsg }, aiCfg, log);
+            publishTo(id, 'chat', {
+              t: 'delivery',
+              id: clipId,
+              kind: 'fail',
+              target: sessionId,
+              name,
+              text: outErr,
+            }, { qos: 1, retain: false });
+            await publishTts(clipForTts(outErr), { force: true, targetIds: [id] });
+          } else if (turnTexts.length === 0) {
+            publishTo(id, 'chat', {
+              t: 'delivery',
+              id: clipId,
+              kind: 'mute',
+              target: sessionId,
+              name,
+            }, { qos: 1, retain: false });
+          } else {
+            const summary = await replySummarizer({
+              userText: text,
+              assistantText: turnTexts.join('\n'),
+            }, aiCfg, log);
+            if (!summary) {
+              publishTo(id, 'chat', {
+                t: 'delivery',
+                id: clipId,
+                kind: 'mute',
+                target: sessionId,
+                name,
+              }, { qos: 1, retain: false });
+            } else {
+              lastSayText = summary;
+              lastSayAt = Date.now();
+              publishTo(id, 'chat', {
+                t: 'delivery',
+                id: clipId,
+                kind: 'reply',
+                target: sessionId,
+                name,
+                text: summary,
+                ago: 0,
+              }, { qos: 1, retain: false });
+              await publishTts(clipForTts(summary), { force: true, targetIds: [id] });
+              flushSessions(true);
+            }
+          }
+          break;
+        }
+      }
+    } catch (err) {
+      if (!closed && err?.name !== 'AbortError') {
+        const msg = clipByDisplayWidth(`未送达：${sanitizeOneLine(err?.message || '投递失败', 28)}`, DEVICE_REPLY_WIDTH);
+        publishTo(id, 'chat', {
+          t: 'delivery',
+          id: clipId,
+          kind: 'fail',
+          target: sessionId,
+          name,
+          text: msg,
+        }, { qos: 1, retain: false });
+      }
+    } finally {
+      clearTimeout(timeout);
+      activeFollowAborts.delete(ac);
+      ac.abort();
+    }
+  }
+
+  function handleMicMessage(id, sub, buf) {
+    if (sub === 'chunk') {
+      micReassembler.chunk(id, buf);
+      return;
+    }
+    if (sub !== 'start' && sub !== 'end') return;
+    let data;
+    try {
+      data = JSON.parse(buf.toString('utf8'));
+    } catch {
+      warn(`nova-buddy: mic/${sub} 载荷不是合法 JSON`);
+      return;
+    }
+    if (sub === 'start') {
+      micReassembler.start(id, data);
+      return;
+    }
+    const res = micReassembler.end(id, data);
+    if (!res) return;
+    if (!res.ok) {
+      publishTo(id, 'mic_ack', { id: res.id, ok: false, missing: res.missing }, { qos: 1, retain: false });
+      return;
+    }
+    publishTo(id, 'mic_ack', { id: res.id, ok: true, file: 'mimo_asr', missing: 0 }, { qos: 1, retain: false });
+    const startedAt = Date.now();
+    Promise.resolve()
+      .then(() => transcribeAudio(res.wav))
+      .then((asr) => {
+        const ms = Math.max(0, Math.round(asr?.ms ?? (Date.now() - startedAt)));
+        const text = String(asr?.text || '').trim();
+        if (asr?.ok && text) {
+          publishTo(id, 'chat', { t: 'asr', id: res.id, ok: true, text, ms }, { qos: 1, retain: false });
+        } else {
+          const err = sanitizeOneLine(asr?.err || '未识别到语音', 60) || '未识别到语音';
+          publishTo(id, 'chat', { t: 'asr', id: res.id, ok: false, err }, { qos: 1, retain: false });
+        }
+      })
+      .catch((err) => {
+        const msg = sanitizeOneLine(err?.message || '识别失败', 60) || '识别失败';
+        publishTo(id, 'chat', { t: 'asr', id: res.id, ok: false, err: msg }, { qos: 1, retain: false });
+      });
   }
 
   function start() {
@@ -473,7 +971,7 @@ export function createNovaBridge(options = {}) {
 
     client.on('connect', () => {
       log(`connected to ${brokerUrl}`);
-      client.subscribe(['nova/+/hello', 'nova/+/up'], { qos: 1 });
+      client.subscribe(['nova/+/hello', 'nova/+/up', 'nova/+/mic/+'], { qos: 1 });
       refreshQuota().catch(() => {});
       refreshRank(false).catch(() => {});
       refreshChoreo('boot', 30000).catch(() => {});
@@ -486,7 +984,12 @@ export function createNovaBridge(options = {}) {
 
     client.on('message', (topic, buf) => {
       const parts = topic.split('/');
-      if (parts.length !== 3 || parts[0] !== 'nova') return;
+      if (parts[0] !== 'nova') return;
+      if (parts.length === 4 && parts[2] === 'mic') {
+        handleMicMessage(parts[1], parts[3], buf);
+        return;
+      }
+      if (parts.length !== 3) return;
       const [, id, suffix] = parts;
       let data;
       try {
@@ -522,12 +1025,26 @@ export function createNovaBridge(options = {}) {
       error: false,
       lastTool: '',
       title: '',
+      boardName: '',
+      cwd: '',
+      origin: '',
       errMsg: '',
       msg: '',
+      lastAction: '',
+      waitReason: '',
+      lastReplySnippet: '',
+      steps: [],
+      startedAt: 0,
       updatedAt: Date.now(),
     };
     const type = String(event?.type || '');
     const data = event?.data || {};
+    if (session?.header?.cwd && !cur.cwd) {
+      cur.cwd = cwdBasename(session.header.cwd);
+    }
+    if (session?.origin && !cur.origin) {
+      cur.origin = String(session.origin);
+    }
 
     if (data?.model) cur.model = String(data.model);
 
@@ -538,14 +1055,17 @@ export function createNovaBridge(options = {}) {
       case 'session/title':
         // SessionTitleEventData { title, messageSeqs, source }；last-wins。
         cur.title = foldTitle(data.title);
+        cur.boardName = cleanBoardName(data.title, cur.boardName);
         break;
       case 'turn/start':
         cur.running = true;
         cur.waiting = false;
         cur.error = false;
+        cur.waitReason = '';
         cur.lastTool = '';
         cur.errMsg = '';
         cur.msg = '思考中...';
+        cur.startedAt = Date.now();
         break;
       case 'tool/call': {
         cur.running = true;
@@ -554,27 +1074,41 @@ export function createNovaBridge(options = {}) {
         const arg = toolArgPreview(data.arguments).slice(0, 34);
         cur.lastTool = tool;
         cur.msg = arg ? `${tool}: ${arg}` : `${tool}`;
+        cur.lastAction = cur.msg;
+        cur.steps = [{ at: Date.now(), tool, arg }, ...(cur.steps || [])].slice(0, 3);
         break;
       }
       case 'tool/result':
         cur.running = true;
         if (data.error || data.message?.isError) {
           cur.msg = cur.lastTool ? `${cur.lastTool} 返回异常` : '工具执行异常';
+          cur.lastAction = cur.msg;
         } else if (cur.lastTool) {
           cur.msg = `整理 ${cur.lastTool} 结果...`;
         }
         break;
+      case 'assistant/message': {
+        const txt = stripMarkdownToPlain(extractAssistantText(data));
+        if (txt) {
+          cur.lastReplySnippet = txt.length > 42 ? `${txt.slice(0, 41)}…` : txt;
+        }
+        break;
+      }
       case 'approval/asked':
         cur.waiting = true;
         cur.msg = `等待审批: ${String(data.toolName || 'tool')}`;
+        cur.waitReason = sanitizeOneLine(data.reason || data.displayReason?.zh || '', 56);
+        cur.lastAction = `${String(data.toolName || 'tool')}${cur.waitReason ? ` · ${cur.waitReason}` : ''}`;
         break;
       case 'approval/decided':
         cur.waiting = false;
+        cur.waitReason = '';
         break;
       case 'turn/end': {
         const wasRunning = cur.running;
         cur.running = false;
         cur.waiting = false;
+        cur.waitReason = '';
         cur.error = data.reason?.kind === 'error';
         if (cur.error) {
           // reason.error 是 LlmFailure { message, code, status?, requestId? }。
@@ -583,9 +1117,11 @@ export function createNovaBridge(options = {}) {
           const detail = String(failure.message || failure.reason || failure.code || '').trim();
           cur.errMsg = detail.slice(0, 120);
           cur.msg = cur.errMsg ? `本轮异常结束 · ${cur.errMsg}` : '本轮异常结束';
+          cur.lastAction = cur.errMsg || '本轮异常结束';
         } else {
           cur.errMsg = '';
           cur.msg = '待命中';
+          if (!cur.lastAction) cur.lastAction = '已停下';
         }
         {
           const pct = readCtxPct(session, tokenMeter);
@@ -627,12 +1163,14 @@ export function createNovaBridge(options = {}) {
     cur.updatedAt = Date.now();
     sessions.set(sid, cur);
     flushState(false);
+    flushSessions(false);
   }
 
   function onSessionDisposed(session) {
     const sid = String(session?.id || '');
     if (sid && sessions.delete(sid)) {
       flushState(true);
+      flushSessions(true);
     }
   }
 
@@ -691,11 +1229,14 @@ export function createNovaBridge(options = {}) {
     if (closed) return powerStore.flush();
     closed = true;
     if (stateTimer) clearTimeout(stateTimer);
+    if (sessionsTimer) clearTimeout(sessionsTimer);
     if (quotaTimer) clearInterval(quotaTimer);
     if (rankTimer) clearInterval(rankTimer);
     if (hbTimer) clearInterval(hbTimer);
     if (choreoTimer) clearInterval(choreoTimer);
     if (tokensTimer) clearInterval(tokensTimer);
+    for (const ac of activeFollowAborts) ac.abort();
+    activeFollowAborts.clear();
     for (const apId of [...pendingApprovals.keys()]) {
       settleApproval(apId, { kind: 'abort' }, { notifyDeviceEnd: true });
     }
@@ -710,6 +1251,9 @@ export function createNovaBridge(options = {}) {
     onSessionDisposed,
     onApprovalRequest,
     buildStatePayload,
+    buildSessionsPayload,
+    setSessionController,
+    syncSessionsFromController,
     refreshQuota,
     refreshRank,
     refreshChoreo,

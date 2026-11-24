@@ -141,12 +141,12 @@ export function normalizeChoreo(rawObj, opts = {}) {
   return { t: 'choreo', mood, steps };
 }
 
-async function callOneLlm(provider, prompt, normOpts = {}) {
+async function requestChatCompletion(provider, messages, { timeoutMs = 25000, maxTokens = 8000 } = {}) {
   if (!provider?.url || !provider?.apiKey || !provider?.model) {
     throw new Error('LLM provider not configured');
   }
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 25000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(provider.url, {
       method: 'POST',
@@ -156,25 +156,9 @@ async function callOneLlm(provider, prompt, normOpts = {}) {
       },
       body: JSON.stringify({
         model: provider.model,
-        max_tokens: Number(provider.maxTokens || 8000),
+        max_tokens: Number(provider.maxTokens || maxTokens),
         reasoning_effort: provider.reasoningEffort || 'low',
-        messages: [
-          {
-            role: 'system',
-            content:
-              '你是桌面AI宠物「鲸鱼娘诺瓦」的行为编排导演。人设：元气可爱、轻快带一点点小傲娇的小女仆。\n' +
-              '请根据当前时间、主人开发状态、算力余额与上一轮已播动作，编排一段 5 步左右的循环桌面动画剧本。\n' +
-              '可选动作库（每段约10秒）：idle(悠闲待机)、thinking(思考散步)、working(认真干活)、waiting(乖巧张望)、success(比耶开心)、quota(看余额算力)、click(元气挥手)、sleep(犯困打盹)、error(委屈叹气)。\n' +
-              '严格只输出纯 JSON（禁止 Markdown 代码块或任何解释）：\n' +
-              '{"mood":"4-8字心情","steps":[{"x":184,"speed":"walk","anim":"idle","dur":11500,"say":"不超过10字"}]}\n' +
-              '编排规则（重要）：\n' +
-              '1. 5步内尽量覆盖 4~5 种不同 anim，禁止连续两步相同动画，首步与末步也不得相同；避免单调重复！\n' +
-              '2. dur 为毫秒整数 [11000,18000]（每个动作至少11秒以便完整播完一整段动画）。\n' +
-              '3. x 为整数 [80,288]（每步换个位置更有灵动感），speed 仅限 "walk" 或 "run"。\n' +
-              '4. 深夜(23:00-06:00)多安排 sleep/idle/waiting 并温柔提醒休息；白天多用元气互动动作。',
-          },
-          { role: 'user', content: prompt },
-        ],
+        messages,
       }),
       signal: ctrl.signal,
     });
@@ -182,11 +166,35 @@ async function callOneLlm(provider, prompt, normOpts = {}) {
       throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 160)}`);
     }
     const json = await res.json();
-    const content = json?.choices?.[0]?.message?.content || '';
-    return normalizeChoreo(extractJsonObject(content), normOpts);
+    return json?.choices?.[0]?.message?.content || '';
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function callOneLlm(provider, prompt, normOpts = {}) {
+  const content = await requestChatCompletion(
+    provider,
+    [
+      {
+        role: 'system',
+        content:
+          '你是桌面AI宠物「鲸鱼娘诺瓦」的行为编排导演。人设：元气可爱、轻快带一点点小傲娇的小女仆。\n' +
+          '请根据当前时间、主人开发状态、算力余额与上一轮已播动作，编排一段 5 步左右的循环桌面动画剧本。\n' +
+          '可选动作库（每段约10秒）：idle(悠闲待机)、thinking(思考散步)、working(认真干活)、waiting(乖巧张望)、success(比耶开心)、quota(看余额算力)、click(元气挥手)、sleep(犯困打盹)、error(委屈叹气)。\n' +
+          '严格只输出纯 JSON（禁止 Markdown 代码块或任何解释）：\n' +
+          '{"mood":"4-8字心情","steps":[{"x":184,"speed":"walk","anim":"idle","dur":11500,"say":"不超过10字"}]}\n' +
+          '编排规则（重要）：\n' +
+          '1. 5步内尽量覆盖 4~5 种不同 anim，禁止连续两步相同动画，首步与末步也不得相同；避免单调重复！\n' +
+          '2. dur 为毫秒整数 [11000,18000]（每个动作至少11秒以便完整播完一整段动画）。\n' +
+          '3. x 为整数 [80,288]（每步换个位置更有灵动感），speed 仅限 "walk" 或 "run"。\n' +
+          '4. 深夜(23:00-06:00)多安排 sleep/idle/waiting 并温柔提醒休息；白天多用元气互动动作。',
+      },
+      { role: 'user', content: prompt },
+    ],
+    { timeoutMs: 25000, maxTokens: 8000 },
+  );
+  return normalizeChoreo(extractJsonObject(content), normOpts);
 }
 
 export async function generateChoreography(ctxSummary, aiCfg, log = () => {}, history = {}) {
@@ -210,6 +218,162 @@ export async function generateChoreography(ctxSummary, aiCfg, log = () => {}, hi
     }
   }
   return null;
+}
+
+// 屏显与 TTS 共用同一套显示宽度上限（40 全角字宽；ASCII 按 0.5 字宽计）。
+export const DEVICE_REPLY_WIDTH = 40;
+
+export function measureDisplayWidth(text) {
+  let w = 0;
+  for (const ch of String(text || '')) {
+    const cp = ch.codePointAt(0);
+    w += cp <= 0x7f ? 0.5 : 1;
+  }
+  return w;
+}
+
+export function clipByDisplayWidth(text, maxWidth = DEVICE_REPLY_WIDTH) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  if (measureDisplayWidth(s) <= maxWidth) return s;
+  let out = '';
+  let w = 0;
+  const budget = Math.max(1, maxWidth - 1);
+  for (const ch of s) {
+    const cw = ch.codePointAt(0) <= 0x7f ? 0.5 : 1;
+    if (w + cw > budget) break;
+    out += ch;
+    w += cw;
+  }
+  return `${out.trimEnd()}…`;
+}
+
+export function stripMarkdownToPlain(rawText) {
+  let txt = String(rawText || '');
+  txt = txt.replace(/<think>[\s\S]*?<\/think>/gi, ' ');
+  txt = txt.replace(/```[\s\S]*?```/g, ' ');
+  txt = txt.replace(/`([^`]*)`/g, '$1');
+  txt = txt.replace(/\*\*([^*]+)\*\*/g, '$1');
+  txt = txt.replace(/__([^_]+)__/g, '$1');
+  txt = txt.replace(/(^|\s)[#>*\-]+(?=\s)/g, '$1');
+  return txt.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function cleanChatReply(rawText) {
+  return clipByDisplayWidth(stripMarkdownToPlain(rawText), DEVICE_REPLY_WIDTH);
+}
+
+/**
+ * 工作会话出站压缩器：把长篇回复压成适合 1.8 寸屏和语音的一句结论（<=40 全角字宽）。
+ * 已在宽度内直接放行；超长时用轻量 LLM 提取结论；不可用/失败时返回明确模板，绝不盲截前 40 字。
+ */
+export async function summarizeSessionReply(
+  { userText = '', assistantText = '', errText = '' } = {},
+  aiCfg,
+  log = () => {},
+) {
+  if (errText) {
+    return clipByDisplayWidth(`出错：${stripMarkdownToPlain(errText)}`, DEVICE_REPLY_WIDTH);
+  }
+  const plain = stripMarkdownToPlain(assistantText);
+  if (!plain) return '';
+  if (measureDisplayWidth(plain) <= DEVICE_REPLY_WIDTH) return plain;
+
+  const tail = plain.length > 1200 ? plain.slice(-1200) : plain;
+  const providers = [aiCfg?.llm?.primary, aiCfg?.llm?.fallback].filter(
+    (p) => p?.url && p?.apiKey && p?.model,
+  );
+  for (const p of providers) {
+    try {
+      const raw = await requestChatCompletion(
+        p,
+        [
+          {
+            role: 'system',
+            content:
+              '你是桌面 1.8 寸副屏的电报压缩器。\n' +
+              '请根据用户原话和助手回复，提炼出一句最核心的结果或阻塞点。\n' +
+              '严格要求：纯中文自然口语，禁止 Markdown，禁止寒暄过渡词，不超过 38 个汉字。',
+          },
+          {
+            role: 'user',
+            content: `用户问：${String(userText || '').slice(0, 120)}\n助手回复：${tail}`,
+          },
+        ],
+        { timeoutMs: 8000, maxTokens: 120 },
+      );
+      const summary = cleanChatReply(raw);
+      if (summary) {
+        log(`session reply compressed by ${p.name || p.model}: ${summary}`);
+        return summary;
+      }
+    } catch (err) {
+      log(`compress reply ${p.name || p.model} failed: ${err.message}`);
+    }
+  }
+  return '本轮已处理完成，详细结果请看电脑端。';
+}
+
+function buildChatFallbackReply(ctxSummary, hadConfiguredProvider) {
+  const summary = String(ctxSummary || '');
+  const runMatch = summary.match(/DSH运行=(\d+)/);
+  const waitMatch = summary.match(/等待=(\d+)/);
+  const balMatch = summary.match(/DeepSeek余额([^\s，,]+)/);
+  const parts = [];
+  if (runMatch) parts.push(`运行${runMatch[1]}任务`);
+  if (waitMatch && Number(waitMatch[1]) > 0) parts.push(`待审批${waitMatch[1]}`);
+  if (balMatch) parts.push(`余额${balMatch[1]}`);
+  const status = parts.join('，');
+
+  if (!hadConfiguredProvider) {
+    const base = status ? `已收到（${status}），目前没有配置对话大模型。` : '已收到，目前没有配置对话大模型。';
+    return base.length <= 60 ? base : '已收到，目前没有配置对话大模型。';
+  }
+  const failBase = status ? `诺瓦信号不太稳，当前${status}，稍后再试哦。` : '诺瓦刚刚信号卡了一下，稍后再试一次吧。';
+  return failBase.length <= 60 ? failBase : `${failBase.slice(0, 59)}…`;
+}
+
+/**
+ * 语音对话回复生成：携带实时桌面上下文与最多 6 轮历史，输出纯中文短句（<= 60 字），
+ * 供 1.8" OLED 对话气泡与 40 字语音播报使用；未配置或全失败时返回简洁兜底回复。
+ */
+export async function generateChatReply(userText, history, ctxSummary, aiCfg, log = () => {}) {
+  const text = String(userText || '').trim();
+  const safeHistory = Array.isArray(history)
+    ? history
+      .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content.trim() }))
+    : [];
+
+  const systemPrompt =
+    '你是桌面AI伙伴「鲸鱼娘诺瓦」：元气可爱、聪明贴心、带一点点小傲娇。\n' +
+    `实时状态：${ctxSummary || '待命中'}\n` +
+    '回复规则：\n' +
+    '1. 只用纯中文自然口语回答，严禁任何 Markdown 符号（如 *、#、`、- 列表）或代码块。\n' +
+    '2. 回答必须精炼在 40 字以内，方便 1.8 寸小屏展示和简短语音播报。';
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...safeHistory,
+    { role: 'user', content: text },
+  ];
+
+  const providers = [aiCfg?.llm?.primary, aiCfg?.llm?.fallback].filter(
+    (p) => p?.url && p?.apiKey && p?.model,
+  );
+  for (const p of providers) {
+    try {
+      const raw = await requestChatCompletion(p, messages, { timeoutMs: 15000, maxTokens: 512 });
+      const reply = cleanChatReply(raw);
+      if (!reply) throw new Error('Empty reply');
+      log(`chat reply generated by ${p.name || p.model}: ${reply}`);
+      return reply;
+    } catch (err) {
+      log(`chat reply ${p.name || p.model} failed: ${err.message}`);
+    }
+  }
+  return buildChatFallbackReply(ctxSummary, providers.length > 0);
 }
 
 export async function synthesizeSpeechAdpcm(text, opts = {}, aiCfg = loadAiConfig()) {

@@ -47,6 +47,26 @@ export function apply(ctx, config = {}) {
 
   bridge.start();
 
+  ctx.inject(['sessionController'], (sctx) => {
+    bridge.setSessionController(sctx.sessionController);
+    return () => bridge.setSessionController(null);
+  });
+
+  // 标题单独 inject：list() 不返回 title，重启后历史 session/title 事件收不到，
+  // 只能从 title 服务按 session 现取。两个 inject 分开，任一服务缺失不拖累投递链路。
+  ctx.inject(['sessions', 'sessionTitle'], (sctx) => {
+    bridge.setTitleSource((sessionId) => {
+      try {
+        const session = sctx.sessions.get(sessionId);
+        if (!session) return '';
+        return sctx.sessionTitle.get(session)?.title || '';
+      } catch {
+        return '';
+      }
+    });
+    return () => bridge.setTitleSource(null);
+  });
+
   ctx.effect(() => {
     // 这些事件都按 agent scope 路由（scopeTarget），不带 global 的监听只能收到
     // 本插件自己作用域内的事件——而本插件不持有任何 session，等于永远收不到。

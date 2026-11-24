@@ -5,8 +5,8 @@ import { mkdtemp, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNovaBridge, shortenCommand, foldTitle, foldPath, sanitizeOneLine } from '../lib/bridge.js';
-import { extractJsonObject, isQuietHours, normalizeChoreo } from '../lib/ai.js';
-import { wavToNvAdpcm } from '../lib/adpcm.js';
+import { extractJsonObject, isQuietHours, normalizeChoreo, summarizeSessionReply, measureDisplayWidth } from '../lib/ai.js';
+import { wavToNvAdpcm, encodeNvAdpcm, MAX_NVAD_SAMPLES } from '../lib/adpcm.js';
 
 function createMockMqttClient() {
   const emitter = new EventEmitter();
@@ -389,5 +389,146 @@ describe('剧本新鲜度（v0.5.0）', () => {
     const logStat = await stat(join(home, 'nova-buddy', 'power-events.jsonl'));
     const sumStat = await stat(join(home, 'nova-buddy', 'power-summary.json'));
     assert.ok(logStat.size > 0 && sumStat.size > 0);
+  });
+});
+
+describe('命令方块桥接（sessionController + 压缩器 + NVAD clamp）', () => {
+  it('clamps oversized NVAD TTS audio to <= 196500 samples (<= 98304 bytes) with smooth tail fade', () => {
+    const longSamples = new Int16Array(220000);
+    longSamples.fill(16000);
+    const adp = encodeNvAdpcm(longSamples, 16000);
+    assert.equal(adp.readUInt32LE(8), MAX_NVAD_SAMPLES);
+    assert.ok(adp.length <= 98304, `NVAD bytes ${adp.length} exceeded 98304`);
+  });
+
+  it('compresses long assistant output cleanly and falls back without blind 40-char truncation', async () => {
+    const short = await summarizeSessionReply({ assistantText: '单测全部通过了。' }, {});
+    assert.equal(short, '单测全部通过了。');
+
+    const longText = '好的，我已经帮你检查了全部代码结构，下面是详细分析：\n1. 修改了电池模型\n' + '细节内容'.repeat(30);
+    const fallback = await summarizeSessionReply({ userText: '跑完了吗', assistantText: longText }, {});
+    assert.ok(measureDisplayWidth(fallback) <= 40);
+    assert.ok(!fallback.startsWith('好的，我已经'), 'must never blindly slice the opening preamble');
+  });
+
+  it('filters subagents, preserves lastAction across turn/end, and runs follow + prompt + rpcId claiming', async () => {
+    const mockClient = createMockMqttClient();
+    const promptCalls = [];
+    const ttsCalls = [];
+
+    const bridge = createNovaBridge({
+      mqttConnect: () => mockClient,
+      fetchAllQuota: async () => ({ t: 'quota', cards: [] }),
+      fetchModelDialRank: async () => null,
+      tokensEnabled: false,
+      powerLogEnabled: false,
+      replySummarizer: async () => '单测还剩 2 个失败。',
+      synthesizeSpeech: async (text) => {
+        ttsCalls.push(text);
+        return Buffer.alloc(64, 1);
+      },
+    });
+    bridge.start();
+
+    mockClient.emit('message', 'nova/D93468/hello', Buffer.from(JSON.stringify({ online: true, prefs: { snd: 80, tts: true } })));
+
+    // Main session + subagent session
+    bridge.onSessionEvent({ id: 's1', header: { cwd: '/tmp/nova-buddy' } }, { type: 'session/title', data: { title: '电量估算四改' } });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/start', data: {} });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'tool/call', data: { name: 'bash', arguments: JSON.stringify({ command: 'cargo test' }) } });
+    bridge.onSessionEvent({ id: 's1' }, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
+
+    bridge.onSessionEvent({ id: 'sub_1', origin: 'subagent' }, { type: 'session/title', data: { title: '内部子代理' } });
+    bridge.onSessionEvent({ id: 'sub_1', origin: 'subagent' }, { type: 'turn/start', data: {} });
+
+    const sessPayload = bridge.buildSessionsPayload();
+    assert.equal(sessPayload.items.length, 1, 'subagent must be filtered out');
+    assert.equal(sessPayload.items[0].id, 's1');
+    assert.equal(sessPayload.items[0].cwd, 'nova-buddy');
+    assert.equal(sessPayload.items[0].act, 'bash: cargo test', 'turn/end must preserve lastAction');
+
+    // Queue chat_send before sessionController arrives
+    mockClient.emit(
+      'message',
+      'nova/D93468/up',
+      Buffer.from(JSON.stringify({ evt: 'chat_send', id: 42, text: '把测试跑完', target: 's1', mode: 'queue' })),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Attach mock sessionController
+    const mockController = {
+      async list() {
+        return { items: [{ sessionId: 's1', title: '电量估算四改', cwd: '/tmp/nova-buddy', running: false }] };
+      },
+      async prompt(req) {
+        promptCalls.push(req);
+      },
+      follow() {
+        return (async function* () {
+          const reqId = promptCalls[0]?.requestId;
+          // Foreign turn/end BEFORE admitted must be ignored!
+          yield { type: 'event', event: { type: 'turn/end', data: { reason: { kind: 'completed' } } } };
+          yield { type: 'event', event: { type: 'user/message', data: { source: { kind: 'user', rpcId: reqId } } } };
+          yield { type: 'event', event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '很长的回复'.repeat(20) }] } } } };
+          yield { type: 'event', event: { type: 'turn/end', data: { reason: { kind: 'completed' } } } };
+        })();
+      },
+    };
+    bridge.setSessionController(mockController);
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(promptCalls.length, 1);
+    assert.equal(promptCalls[0].sessionId, 's1');
+    assert.equal(promptCalls[0].mode, 'queue');
+
+    const deliveries = mockClient.published
+      .filter((p) => p.topic === 'nova/D93468/chat' && p.payload.t === 'delivery')
+      .map((p) => p.payload);
+    assert.ok(deliveries.some((d) => d.kind === 'run'));
+    const reply = deliveries.find((d) => d.kind === 'reply');
+    assert.ok(reply);
+    assert.equal(reply.text, '单测还剩 2 个失败。');
+    assert.ok(ttsCalls.includes('单测还剩 2 个失败。'));
+
+    // Rejects waiting (approval) session
+    bridge.onSessionEvent({ id: 's2' }, { type: 'session/title', data: { title: '等审批会话' } });
+    bridge.onSessionEvent({ id: 's2' }, { type: 'approval/asked', data: { toolName: 'bash', reason: 'rm -rf' } });
+    mockClient.emit(
+      'message',
+      'nova/D93468/up',
+      Buffer.from(JSON.stringify({ evt: 'chat_send', id: 43, text: '继续', target: 's2', mode: 'steer' })),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const failWait = mockClient.published.find((p) => p.topic === 'nova/D93468/chat' && p.payload.kind === 'fail' && p.payload.target === 's2');
+    assert.ok(failWait, 'must refuse injection into approval-waiting session');
+
+    // Emits 'mute' when turn/end has no assistant text, and forwards mode='steer'
+    const muteController = {
+      async list() {
+        return { items: [{ sessionId: 's1', title: '电量估算四改', cwd: '/tmp/nova-buddy', running: true }] };
+      },
+      async prompt(req) {
+        promptCalls.push(req);
+      },
+      follow() {
+        return (async function* () {
+          const reqId = promptCalls[promptCalls.length - 1]?.requestId;
+          yield { type: 'event', event: { type: 'user/message', data: { source: { kind: 'user', rpcId: reqId } } } };
+          yield { type: 'event', event: { type: 'turn/end', data: { reason: { kind: 'completed' } } } };
+        })();
+      },
+    };
+    bridge.setSessionController(muteController);
+    mockClient.emit(
+      'message',
+      'nova/D93468/up',
+      Buffer.from(JSON.stringify({ evt: 'chat_send', id: 44, text: '停一下', target: 's1', mode: 'steer' })),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(promptCalls[promptCalls.length - 1].mode, 'steer');
+    const muteMsg = mockClient.published.find((p) => p.topic === 'nova/D93468/chat' && p.payload.id === 44 && p.payload.kind === 'mute');
+    assert.ok(muteMsg, 'must publish explicit mute state when assistant produced no reply text');
+
+    await bridge.stop();
   });
 });
