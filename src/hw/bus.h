@@ -35,4 +35,5 @@ bool hwBusStart();
 BusSnapshot hwBusSnapshot();
 bool hwBusPollInput(InputEvent* out);
 bool hwBusRequestRtcWrite(const HwTime& t);
+bool hwBusRequestMicGain(uint8_t gainDb);
 uint32_t hwBusInputDropCount();   // 输入队列满导致的丢弃次数

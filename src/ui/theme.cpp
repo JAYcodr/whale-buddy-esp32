@@ -446,6 +446,32 @@ void drawSectionLabel(NovaCanvas& c, int16_t x, int16_t baseY, const char* s) {
   drawText(c, fontCjk14(), x, baseY, s, COL_DIM, COL_CARD);
 }
 
+void drawIcon(NovaCanvas& c, const AaIcon& icon, int16_t x, int16_t y, uint16_t fg) {
+  if (!icon.data || icon.w == 0 || icon.h == 0) return;
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) return;
+  const int16_t W = (int16_t)c.width();
+  const int16_t H = (int16_t)c.height();
+  uint32_t pxIdx = 0;
+  for (uint8_t row = 0; row < icon.h; row++) {
+    int16_t py = y + (int16_t)row;
+    if (py < 0 || py >= H) {
+      pxIdx += icon.w;
+      continue;
+    }
+    uint16_t* rowFb = fb + (int32_t)py * W;
+    for (uint8_t col = 0; col < icon.w; col++) {
+      uint8_t byte = icon.data[pxIdx >> 1];
+      uint8_t a4 = (pxIdx & 1) ? (byte & 0x0F) : (byte >> 4);
+      pxIdx++;
+      if (a4 == 0) continue;
+      int16_t px = x + (int16_t)col;
+      if (px < 0 || px >= W) continue;
+      rowFb[px] = (a4 >= 15) ? fg : blendAlpha15(rowFb[px], fg, a4);
+    }
+  }
+}
+
 void drawPressedOverlay(NovaCanvas& c, Rect r, int16_t radius, uint8_t alpha) {
   if (r.w <= 0 || r.h <= 0 || alpha == 0) return;
   uint16_t* fb = c.getFramebuffer();

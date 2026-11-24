@@ -13,6 +13,7 @@ enum class UiPage : uint8_t {
   DETAIL   = 3,
   SETTINGS = 4,
   TOKENS   = 5,
+  CHAT     = 6,
 };
 
 struct UiAction {
@@ -32,6 +33,7 @@ struct UiAction {
     SET_AOD_IDLE,
     SET_AOD_NIGHT,
     SET_CHOREO,
+    SET_MIC_GAIN,
     RESTORE_DEFAULTS,
     TEST_SOUND,
     SYNC_HOST,
@@ -45,6 +47,18 @@ struct UiAction {
     SETTINGS_REDRAW,
     TOKENS_REDRAW,
     DOCK_TOGGLE,   // 主屏码头：展开/收起异常详情
+    CHAT_REC_TOGGLE,
+    CHAT_GAIN_CYCLE,
+    CHAT_PLAY_TTS,
+    CHAT_DRAFT_CANCEL,
+    CHAT_DRAFT_SEND,
+    CHAT_DRAFT_SEND_MODE,
+    CHAT_DRAFT_CYCLE_TARGET,
+    CHAT_SELECT_SESS,
+    CHAT_DELIVERY_DISMISS,
+    CHAT_REPLAY_LAST,
+    CHAT_OPEN_APPROVAL,
+    CHAT_QUICK_SEND,
   };
   Kind kind = NONE;
   int  value = 0;
@@ -115,6 +129,19 @@ void pageTokensDrawHud(NovaCanvas& c, const NovaState& st);
 UiAction pageTokensTap(int16_t x, int16_t y, const NovaState& st, uint32_t nowMs);
 void pageTokensOnEnter(uint32_t nowMs);
 bool pageTokensIsAnimating(const NovaState& st, const NovaSettings& cfg, uint32_t nowMs);
+
+void pageChatDraw(NovaCanvas& c, const NovaState& st);
+UiAction pageChatTap(int16_t x, int16_t y, const NovaState& st);
+bool pageChatHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg, ui::Rect* out);
+bool pageChatIsHoldBtn(int16_t x, int16_t y, const NovaState& st);
+bool pageChatCanStartHold(const NovaState& st);
+void pageChatTouchDown(int16_t y, uint32_t ms);
+bool pageChatScrollTouchMove(int16_t y, uint32_t ms, const NovaState& st);
+void pageChatScrollTouchUp(uint32_t ms, const NovaState& st);
+bool pageChatTick(uint32_t nowMs, const NovaState& st);
+bool pageChatIsFlinging();
+void pageChatScrollCancel();
+const char* pageChatQuickCmdText(int idx);
 
 int uiPageRingIndex(UiPage p);
 

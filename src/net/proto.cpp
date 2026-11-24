@@ -16,25 +16,16 @@
 namespace {
 
 void safeStrCopy(char* dst, size_t cap, const char* src) {
-  if (!dst || cap == 0) return;
-  if (!src) { dst[0] = '\0'; return; }
-  size_t i = 0;
-  while (src[i]) {
-    uint8_t b = (uint8_t)src[i];
-    size_t len = 1;
-    if ((b & 0xE0) == 0xC0) len = 2;
-    else if ((b & 0xF0) == 0xE0) len = 3;
-    else if ((b & 0xF8) == 0xF0) len = 4;
-    if (i + len >= cap) break;
-    bool valid = true;
-    for (size_t k = 1; k < len; k++) {
-      if (((uint8_t)src[i + k] & 0xC0) != 0x80) { valid = false; break; }
-    }
-    if (!valid) break;
-    i += len;
+  novaSafeUtf8Copy(dst, cap, src);
+}
+
+bool hasNonWhitespace(const char* s) {
+  if (!s) return false;
+  for (; *s; s++) {
+    const unsigned char ch = (unsigned char)*s;
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') return true;
   }
-  memcpy(dst, src, i);
-  dst[i] = '\0';
+  return false;
 }
 
 bool applyTime(JsonDocument& doc) {
@@ -209,6 +200,8 @@ bool applyApproval(JsonDocument& doc, uint32_t nowMs) {
     safeStrCopy(st.apId, sizeof(st.apId), id);
     safeStrCopy(st.apTool, sizeof(st.apTool), doc["tool"] | "Tool");
     safeStrCopy(st.apReason, sizeof(st.apReason), doc["reason"] | "");
+    safeStrCopy(st.apSessName, sizeof(st.apSessName), doc["sess"] | "");
+    safeStrCopy(st.apNote, sizeof(st.apNote), doc["note"] | "");
     st.apTtlMs = doc["ttl"] | (uint32_t)8000;
     st.apArrivedMs = nowMs;
     st.apGen++;
@@ -336,6 +329,230 @@ bool applyTtsChunk(JsonDocument& doc) {
 #endif
 }
 
+bool applyMicAck(JsonDocument& doc) {
+  static uint16_t s_lastAckId = 0;
+  uint16_t id = (uint16_t)(doc["id"] | 0u);
+  bool ok = doc["ok"] | false;
+  const char* file = doc["file"] | "";
+  uint16_t missing = (uint16_t)(doc["missing"] | 0u);
+  novaStateWithLock([&](NovaState& st) {
+    if (ok) {
+      st.recState = 4;  // SAVED
+      if (id == 0 || id != s_lastAckId) {
+        if (id != 0) s_lastAckId = id;
+        st.recSavedCount++;
+      }
+      if (file[0]) safeStrCopy(st.recLastFile, sizeof(st.recLastFile), file);
+      st.recErr[0] = '\0';
+    } else {
+      st.recState = 5;  // ERR
+      if (missing > 0) snprintf(st.recErr, sizeof(st.recErr), "丢包 %u 块", (unsigned)missing);
+      else safeStrCopy(st.recErr, sizeof(st.recErr), doc["err"] | "保存失败");
+    }
+    st.recGen++;
+  });
+  return true;
+}
+
+BoardSessState parseBoardState(const char* s) {
+  if (!s) return BoardSessState::IDLE;
+  if (strcmp(s, "run") == 0)  return BoardSessState::RUN;
+  if (strcmp(s, "wait") == 0) return BoardSessState::WAIT;
+  if (strcmp(s, "err") == 0)  return BoardSessState::ERR;
+  return BoardSessState::IDLE;
+}
+
+ChatDelivKind parseDelivKind(const char* s) {
+  if (!s) return ChatDelivKind::NONE;
+  if (strcmp(s, "sent") == 0)  return ChatDelivKind::SENT;
+  if (strcmp(s, "run") == 0)   return ChatDelivKind::RUN;
+  if (strcmp(s, "reply") == 0) return ChatDelivKind::REPLY;
+  if (strcmp(s, "fail") == 0)  return ChatDelivKind::FAIL;
+  if (strcmp(s, "mute") == 0)  return ChatDelivKind::MUTE;
+  return ChatDelivKind::NONE;
+}
+
+bool applySessions(JsonDocument& doc, uint32_t nowMs) {
+  JsonArray arr = doc["items"].as<JsonArray>();
+  if (arr.isNull()) arr = doc["sessions"].as<JsonArray>();
+  if (arr.isNull()) return false;
+
+  novaStateWithLock([&](NovaState& st) {
+    uint8_t n = 0;
+    for (JsonObject obj : arr) {
+      if (n >= MAX_BOARD_SESSIONS) break;
+      BoardSession& bs = st.boardSessions[n];
+      memset(&bs, 0, sizeof(bs));
+      safeStrCopy(bs.id, sizeof(bs.id), obj["id"] | "");
+      if (!bs.id[0]) continue;
+      safeStrCopy(bs.name, sizeof(bs.name), obj["name"] | bs.id);
+      safeStrCopy(bs.cwd, sizeof(bs.cwd), obj["cwd"] | "");
+      bs.state = parseBoardState(obj["st"] | "idle");
+      bs.elapsedSec = obj["el"] | (uint32_t)0;
+      safeStrCopy(bs.act, sizeof(bs.act), obj["act"] | "");
+      safeStrCopy(bs.note, sizeof(bs.note), obj["note"] | "");
+
+      JsonArray steps = obj["steps"].as<JsonArray>();
+      uint8_t ns = 0;
+      if (!steps.isNull()) {
+        for (JsonObject sp : steps) {
+          if (ns >= MAX_SESS_STEPS) break;
+          safeStrCopy(bs.steps[ns].time, sizeof(bs.steps[ns].time), sp["t"] | "");
+          safeStrCopy(bs.steps[ns].tool, sizeof(bs.steps[ns].tool), sp["s"] | "");
+          safeStrCopy(bs.steps[ns].arg, sizeof(bs.steps[ns].arg), sp["a"] | "");
+          ns++;
+        }
+      }
+      bs.nSteps = ns;
+      n++;
+    }
+    st.nBoardSessions = n;
+    st.boardRxMs = nowMs;
+    st.boardGen++;
+
+    const char* lastSay = doc["lastSay"] | "";
+    if (lastSay[0]) {
+      safeStrCopy(st.lastSayText, sizeof(st.lastSayText), lastSay);
+      st.lastSayAgeSec = doc["lastAgo"] | (uint32_t)0;
+      st.lastSayRxMs = nowMs;
+    }
+
+    if (st.boardExpandedId[0] && !novaBoardFind(st, st.boardExpandedId)) {
+      st.boardExpandedId[0] = '\0';
+    }
+    if (st.boardTargetId[0] && !novaBoardFind(st, st.boardTargetId) &&
+        st.chatDelivery.kind != ChatDelivKind::FAIL) {
+      st.boardTargetId[0] = '\0';
+    }
+    st.lastMqttRxMs = nowMs;
+  });
+  return true;
+}
+
+bool applyChat(JsonDocument& doc, uint32_t nowMs) {
+  const char* t = doc["t"] | "";
+  uint16_t id = (uint16_t)(doc["id"] | 0u);
+  bool ok = doc["ok"] | false;
+  const char* text = doc["text"] | "";
+  const char* err = doc["err"] | "";
+
+  if (strcmp(t, "asr") == 0) {
+    novaStateWithLock([&](NovaState& st) {
+      if (ok && hasNonWhitespace(text)) {
+        st.recState = 0;
+        st.chatDraftActive = true;
+        st.chatDraftId = id;
+        st.chatDraftStartMs = nowMs;
+        safeStrCopy(st.chatDraftText, sizeof(st.chatDraftText), text);
+        st.recErr[0] = '\0';
+
+        // 草稿卡必须锁定真实会话（A1）：未选或当前指向等待审批/已失效会话时，自动预选推荐会话。
+        const BoardSession* curTarget = novaBoardFind(st, st.boardTargetId);
+        if (!curTarget || curTarget->state == BoardSessState::WAIT) {
+          const BoardSession* def = novaBoardDefaultTarget(st);
+          if (def) {
+            safeStrCopy(st.boardTargetId, sizeof(st.boardTargetId), def->id);
+          } else {
+            st.boardTargetId[0] = '\0';
+          }
+        }
+      } else {
+        st.recState = 5;
+        st.chatDraftActive = false;
+        st.chatDraftText[0] = '\0';
+        safeStrCopy(st.recErr, sizeof(st.recErr),
+                    (err && err[0]) ? err : "未识别到语音");
+      }
+      st.recGen++;
+      st.chatGen++;
+      st.boardGen++;
+      st.lastMqttRxMs = nowMs;
+    });
+    return true;
+  }
+
+  if (strcmp(t, "delivery") == 0) {
+    const ChatDelivKind kind = parseDelivKind(doc["kind"] | "");
+    if (kind == ChatDelivKind::NONE) return false;
+    novaStateWithLock([&](NovaState& st) {
+      st.chatDelivery.kind = kind;
+      st.chatDelivery.id = id;
+      st.chatDelivery.queuePos = (uint8_t)(doc["pos"] | 0u);
+      st.chatDelivery.secs = doc["secs"] | (doc["ago"] | (uint32_t)0);
+      st.chatDelivery.updatedMs = nowMs;
+      const char* tgt = doc["target"] | "";
+      const char* tname = doc["name"] | "";
+      safeStrCopy(st.chatDelivery.targetId, sizeof(st.chatDelivery.targetId),
+                  tgt[0] ? tgt : st.boardTargetId);
+      if (tname[0]) {
+        safeStrCopy(st.chatDelivery.targetName, sizeof(st.chatDelivery.targetName), tname);
+      } else {
+        const BoardSession* bs = novaBoardFind(st, st.chatDelivery.targetId);
+        safeStrCopy(st.chatDelivery.targetName, sizeof(st.chatDelivery.targetName),
+                    bs ? bs->name : "");
+      }
+      const char* body = text[0] ? text : err;
+      safeStrCopy(st.chatDelivery.text, sizeof(st.chatDelivery.text), body);
+
+      st.boardExpandedId[0] = '\0';
+      if (kind == ChatDelivKind::SENT || kind == ChatDelivKind::RUN) {
+        st.chatWaitingReply = true;
+      } else {
+        st.chatWaitingReply = false;
+        if (kind == ChatDelivKind::REPLY && hasNonWhitespace(body)) {
+          novaChatAppend(st, false, id, body);
+          safeStrCopy(st.lastSayText, sizeof(st.lastSayText), body);
+          st.lastSayAgeSec = doc["ago"] | (uint32_t)0;
+          st.lastSayRxMs = nowMs;
+          st.recErr[0] = '\0';
+          if (st.recState == 5) st.recState = 0;
+        }
+      }
+      st.chatGen++;
+      st.boardGen++;
+      st.lastMqttRxMs = nowMs;
+    });
+    return true;
+  }
+
+  if (strcmp(t, "reply") == 0) {
+    novaStateWithLock([&](NovaState& st) {
+      st.chatWaitingReply = false;
+      st.boardExpandedId[0] = '\0';
+      st.chatDelivery.id = id;
+      st.chatDelivery.updatedMs = nowMs;
+      st.chatDelivery.secs = 0;
+      safeStrCopy(st.chatDelivery.targetId, sizeof(st.chatDelivery.targetId), st.boardTargetId);
+      const BoardSession* bs = novaBoardFind(st, st.boardTargetId);
+      safeStrCopy(st.chatDelivery.targetName, sizeof(st.chatDelivery.targetName), bs ? bs->name : "");
+
+      if (ok && hasNonWhitespace(text)) {
+        novaChatAppend(st, false, id, text);
+        st.chatDelivery.kind = ChatDelivKind::REPLY;
+        safeStrCopy(st.chatDelivery.text, sizeof(st.chatDelivery.text), text);
+        safeStrCopy(st.lastSayText, sizeof(st.lastSayText), text);
+        st.lastSayAgeSec = 0;
+        st.lastSayRxMs = nowMs;
+        st.recErr[0] = '\0';
+        if (st.recState == 5) st.recState = 0;
+      } else {
+        st.recState = 5;
+        const char* failTxt = (err && err[0]) ? err : "回复失败";
+        safeStrCopy(st.recErr, sizeof(st.recErr), failTxt);
+        st.chatDelivery.kind = ChatDelivKind::FAIL;
+        safeStrCopy(st.chatDelivery.text, sizeof(st.chatDelivery.text), failTxt);
+      }
+      st.chatGen++;
+      st.boardGen++;
+      st.recGen++;
+      st.lastMqttRxMs = nowMs;
+    });
+    return true;
+  }
+
+  return false;
+}
+
 // serializeJson 把缓冲写满时返回 cap 且不写结尾 NUL；调用方无法区分
 // "刚好写满" 和 "被截断"，所以统一在这里把截断转成明确的 0。
 size_t finishJson(JsonDocument& doc, char* buf, size_t cap) {
@@ -352,6 +569,7 @@ bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint
   if (err) return false;
 
   if (strcmp(suffix, "state") == 0)        return applyState(doc, nowMs);
+  if (strcmp(suffix, "sessions") == 0)     return applySessions(doc, nowMs);
   if (strcmp(suffix, "quota") == 0)        return applyQuota(doc, nowMs);
   if (strcmp(suffix, "rank") == 0)         return applyRank(doc, nowMs);
   if (strcmp(suffix, "tokens") == 0)       return applyTokens(doc, nowMs);
@@ -360,6 +578,8 @@ bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint
   if (strcmp(suffix, "time") == 0)         return applyTime(doc);
   if (strcmp(suffix, "choreo") == 0)       return applyChoreo(doc, nowMs);
   if (strcmp(suffix, "tts") == 0)          return applyTtsChunk(doc);
+  if (strcmp(suffix, "mic_ack") == 0)      return applyMicAck(doc);
+  if (strcmp(suffix, "chat") == 0)         return applyChat(doc, nowMs);
   return false;
 }
 
@@ -489,5 +709,25 @@ size_t protoBuildPrefs(char* buf, size_t cap, const NovaSettings& cfg) {
     if (d.kind == SettingKind::BOOL) doc[d.key] = (v != 0);
     else doc[d.key] = v;
   }
+  return finishJson(doc, buf, cap);
+}
+
+size_t protoBuildChatSend(char* buf, size_t cap, uint16_t id, const char* text,
+                          const char* target, const char* mode) {
+  if (!buf || cap == 0) return 0;
+  JsonDocument doc;
+  doc["evt"] = "chat_send";
+  doc["id"]  = id;
+  doc["text"] = text ? text : "";
+  if (target && target[0]) doc["target"] = target;
+  if (mode && mode[0]) doc["mode"] = mode;
+  return finishJson(doc, buf, cap);
+}
+
+size_t protoBuildChatTts(char* buf, size_t cap, const char* text) {
+  if (!buf || cap == 0) return 0;
+  JsonDocument doc;
+  doc["evt"] = "chat_tts";
+  doc["text"] = text ? text : "";
   return finishJson(doc, buf, cap);
 }

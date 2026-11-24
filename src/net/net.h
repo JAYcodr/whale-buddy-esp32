@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 enum class NetPsMode : uint8_t {
@@ -15,6 +16,13 @@ void netPublishDecision(const char* approvalId, bool accept, bool toPc);
 void netPublishPrefs();
 void netPublishSync();
 bool netPublishPowerEvent(const PowerEvent& ev);
+void netPublishChatSend(uint16_t id, const char* text,
+                        const char* target = nullptr, const char* mode = nullptr);
+void netPublishChatTts(const char* text);
+bool netStartMicUpload(const int16_t* pcm, size_t sampleCount, uint16_t clipId,
+                       uint8_t gainDb, uint32_t durMs, float peakDb,
+                       float rmsDb, uint16_t clipPermille);
+bool netIsMicUploading();
 void netSetPowerSave(NetPsMode mode);
 void netSetStatIntervalMs(uint32_t ms);   // 5..300s，0=回默认 30s
 void netSetPowerState(bool usbPresent);   // 电池下按 RSSI 降发射功率

@@ -55,6 +55,9 @@ static void legacyLoad(NovaSettings& s_cfg, const Preferences& prefs) {
   s_cfg.aodIdleSec = (aodIdle == 60 || aodIdle == 120 || aodIdle == 300) ? aodIdle : 120;
   uint8_t aodNight = prefs.getUChar("aod_night", 1);
   s_cfg.aodNightCap = (aodNight <= 2) ? aodNight : 1;
+  uint8_t micGain = prefs.getUChar("mic_gain", 24);
+  s_cfg.micGainDb = (micGain == 18 || micGain == 24 || micGain == 30 ||
+                     micGain == 36 || micGain == 42) ? micGain : 24;
   String host = prefs.getString("mqtt_host", "192.168.31.15");
   std::strncpy(s_cfg.brokerHost, host.c_str(), sizeof(s_cfg.brokerHost) - 1);
   s_cfg.brokerHost[sizeof(s_cfg.brokerHost) - 1] = '\0';
@@ -76,6 +79,7 @@ static const char* diffField(const NovaSettings& a, const NovaSettings& b) {
   if (a.aodMode != b.aodMode) return "aodMode";
   if (a.aodIdleSec != b.aodIdleSec) return "aodIdleSec";
   if (a.aodNightCap != b.aodNightCap) return "aodNightCap";
+  if (a.micGainDb != b.micGainDb) return "micGainDb";
   if (std::strcmp(a.brokerHost, b.brokerHost) != 0) return "brokerHost";
   if (a.brokerPort != b.brokerPort) return "brokerPort";
   return nullptr;
@@ -95,7 +99,7 @@ static const char* kStrPool[] = {
 
 static const char* kAllKeys[] = {
   "home", "pwr", "snd", "brt", "tts", "quiet", "choreo", "sleep_s",
-  "chg_lim", "chg_spd", "aod", "aod_idle", "aod_night",
+  "chg_lim", "chg_spd", "aod", "aod_idle", "aod_night", "mic_gain",
   "nva", "mqtt_host", "mqtt_port",
 };
 
@@ -144,6 +148,7 @@ int main() {
   CHECK(d.aodMode == aod::USB);
   CHECK(d.aodIdleSec == 120);
   CHECK(d.aodNightCap == 1);
+  CHECK(d.micGainDb == 24);
   CHECK(std::strcmp(d.brokerHost, "192.168.31.15") == 0);
   CHECK(d.brokerPort == 1883);
 

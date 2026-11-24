@@ -28,6 +28,7 @@ clang++ -std=c++17 -O2 -funsigned-char -DNOVA_HOST_SIM \
   "$ROOT/src/model/settings.cpp" \
   "$ROOT/src/model/state.cpp" \
   "$ROOT/src/ui/theme.cpp" \
+  "$ROOT/src/ui/icons_data.cpp" \
   "$ROOT/src/ui/page_home.cpp" \
   "$ROOT/src/ui/page_quota.cpp" \
   "$ROOT/src/ui/page_rank.cpp" \
@@ -35,6 +36,7 @@ clang++ -std=c++17 -O2 -funsigned-char -DNOVA_HOST_SIM \
   "$ROOT/src/ui/page_settings.cpp" \
   "$ROOT/src/ui/page_approval.cpp" \
   "$ROOT/src/ui/page_tokens.cpp" \
+  "$ROOT/src/ui/page_chat.cpp" \
   "$ROOT/src/ui/nav.cpp" \
   "$ROOT/src/ui/transition.cpp" \
   "$ROOT/tools/sim/main.cpp" \

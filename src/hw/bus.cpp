@@ -13,6 +13,7 @@ static portMUX_TYPE   s_snapMux = portMUX_INITIALIZER_UNLOCKED;
 static BusSnapshot    s_snap    = {};
 static QueueHandle_t  s_inputQ  = nullptr;
 static QueueHandle_t  s_rtcQ    = nullptr;
+static QueueHandle_t  s_micGainQ = nullptr;
 static TaskHandle_t   s_busTask = nullptr;
 static uint32_t       s_inputDrops = 0;
 
@@ -59,6 +60,11 @@ static void busTaskFn(void*) {
     if (s_rtcQ && xQueueReceive(s_rtcQ, &pendingRtc, 0) == pdTRUE) {
       hwRtcWrite(pendingRtc);
       tmOk = hwRtcRead(&tm);
+    }
+
+    uint8_t pendingGain = 0;
+    if (s_micGainQ && xQueueReceive(s_micGainQ, &pendingGain, 0) == pdTRUE) {
+      hwAudioApplyMicGainOnBus(pendingGain);
     }
 
     // 1. Poll input (touch, Key1, AXP PEK) every cycle (~20 ms or on touch IRQ).
@@ -145,9 +151,10 @@ static void busTaskFn(void*) {
 
 bool hwBusStart() {
   if (s_busTask) return true;
-  s_inputQ = xQueueCreate(32, sizeof(InputEvent));
-  s_rtcQ   = xQueueCreate(1, sizeof(HwTime));
-  if (!s_inputQ || !s_rtcQ) return false;
+  s_inputQ   = xQueueCreate(32, sizeof(InputEvent));
+  s_rtcQ     = xQueueCreate(1, sizeof(HwTime));
+  s_micGainQ = xQueueCreate(1, sizeof(uint8_t));
+  if (!s_inputQ || !s_rtcQ || !s_micGainQ) return false;
   BaseType_t ok = xTaskCreatePinnedToCore(
       busTaskFn, "task_bus", 4096, nullptr, 6, &s_busTask, 0);
   return ok == pdPASS;
@@ -169,6 +176,11 @@ bool hwBusPollInput(InputEvent* out) {
 bool hwBusRequestRtcWrite(const HwTime& t) {
   if (!s_rtcQ) return false;
   return xQueueOverwrite(s_rtcQ, &t) == pdTRUE;
+}
+
+bool hwBusRequestMicGain(uint8_t gainDb) {
+  if (!s_micGainQ) return false;
+  return xQueueOverwrite(s_micGainQ, &gainDb) == pdTRUE;
 }
 
 uint32_t hwBusInputDropCount() { return s_inputDrops; }

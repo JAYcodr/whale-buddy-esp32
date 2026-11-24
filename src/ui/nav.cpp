@@ -1,12 +1,13 @@
 #include "ui/nav.h"
 
 namespace {
-constexpr UiPage kPageRing[5] = {
+constexpr UiPage kPageRing[6] = {
   UiPage::TOKENS,
   UiPage::HOME,
   UiPage::QUOTA,
   UiPage::RANK,
   UiPage::DETAIL,
+  UiPage::CHAT,
 };
 
 UiPage homeToPage(HomePageKind h) {
@@ -20,10 +21,10 @@ UiPage homeToPage(HomePageKind h) {
 }  // namespace
 
 int uiPageRingIndex(UiPage p) {
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 6; i++) {
     if (kPageRing[i] == p) return i;
   }
-  return 5;
+  return 6;
 }
 
 void UiNav::init(HomePageKind home) {
@@ -49,11 +50,11 @@ UiAction UiNav::onSwipe(int16_t dx, int16_t dy) {
   if (adx < 48 || adx <= ady) return UiAction{};
 
   int idx = uiPageRingIndex(m_page);
-  if (idx < 0 || idx > 4) idx = 1;
+  if (idx < 0 || idx > 5) idx = 1;
   if (dx < 0) {
-    idx = (idx + 1) % 5;
+    idx = (idx + 1) % 6;
   } else {
-    idx = (idx + 4) % 5;
+    idx = (idx + 5) % 6;
   }
   m_page = kPageRing[idx];
   return UiAction{ UiAction::GO_PAGE, (int)m_page };
@@ -70,6 +71,7 @@ UiAction UiNav::onTap(int16_t x, int16_t y, const NovaState& st, const NovaSetti
     case UiPage::DETAIL:   return pageDetailTap(x, y);
     case UiPage::SETTINGS: return pageSettingsTap(x, y, cfg);
     case UiPage::TOKENS:   return pageTokensTap(x, y, st, st.nowMs);
+    case UiPage::CHAT:     return pageChatTap(x, y, st);
     default:               return UiAction{};
   }
 }
@@ -87,6 +89,7 @@ bool UiNav::pressedRect(int16_t x, int16_t y, const NovaState& st, const NovaSet
     case UiPage::DETAIL:   return pageDetailHitRect(x, y, st, cfg, out);
     case UiPage::SETTINGS: return pageSettingsHitRect(x, y, st, cfg, out);
     case UiPage::TOKENS:   return pageTokensHitRect(x, y, st, cfg, out);
+    case UiPage::CHAT:     return pageChatHitRect(x, y, st, cfg, out);
     default:               return false;
   }
 }
@@ -104,5 +107,6 @@ void UiNav::draw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
     case UiPage::DETAIL:   pageDetailDraw(c, st, cfg); break;
     case UiPage::SETTINGS: pageSettingsDraw(c, st, cfg); break;
     case UiPage::TOKENS:   pageTokensDraw(c, st, nowMs); break;
+    case UiPage::CHAT:     pageChatDraw(c, st); break;
   }
 }

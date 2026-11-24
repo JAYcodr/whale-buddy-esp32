@@ -73,7 +73,7 @@ enum RowKind : uint8_t { RK_GROUP, RK_CHOICE, RK_SLIDER, RK_TOGGLE, RK_ACT };
 enum RowId : uint8_t {
   R_GRP_SCR = 0, R_BRIGHT, R_SLEEP,
   R_GRP_AOD,     R_AOD, R_AOD_IDLE, R_AOD_NIGHT,
-  R_GRP_SND,     R_VOLUME, R_TTS, R_QUIET, R_TEST,
+  R_GRP_SND,     R_VOLUME, R_TTS, R_QUIET, R_MIC_GAIN, R_TEST,
   R_GRP_BAT,     R_CHGLIM, R_CHGSPD,
   R_GRP_BEH,     R_HOME, R_PWR, R_CHOREO,
   R_GRP_DEV,     R_REPROV, R_RESET,
@@ -100,18 +100,21 @@ const char* const kSpdLbl[]   = { "温和", "自动", "快速" };
 const uint16_t    kSpdVal[]   = { 0, 1, 2 };
 const char* const kHomeLbl[]  = { "宠物", "订阅", "榜单" };
 const uint16_t    kHomeVal[]  = { 0, 1, 2 };
-const char* const kPwrLbl[]   = { "自适应", "长续航", "灵动" };
-const uint16_t    kPwrVal[]   = { 0, 1, 2 };
+const char* const kPwrLbl[]     = { "自适应", "长续航", "灵动" };
+const uint16_t    kPwrVal[]     = { 0, 1, 2 };
+const char* const kMicGainLbl[] = { "18 dB", "24 dB", "30 dB", "36 dB", "42 dB" };
+const uint16_t    kMicGainVal[] = { 18, 24, 30, 36, 42 };
 
 constexpr ChoiceSet kSets[] = {
-  { kSleepLbl, kSleepVal, 4 },   // 0 息屏
-  { kAodLbl,   kAodVal,   3 },   // 1 熄屏显示
-  { kIdleLbl,  kIdleVal,  3 },   // 2 多久切表盘
-  { kNightLbl, kNightVal, 3 },   // 3 亮度保护
-  { kLimLbl,   kLimVal,   3 },   // 4 充电上限
-  { kSpdLbl,   kSpdVal,   3 },   // 5 充电速度
-  { kHomeLbl,  kHomeVal,  3 },   // 6 默认首页
-  { kPwrLbl,   kPwrVal,   3 },   // 7 功耗档
+  { kSleepLbl,   kSleepVal,   4 },   // 0 息屏
+  { kAodLbl,     kAodVal,     3 },   // 1 熄屏显示
+  { kIdleLbl,    kIdleVal,    3 },   // 2 多久切表盘
+  { kNightLbl,   kNightVal,   3 },   // 3 亮度保护
+  { kLimLbl,     kLimVal,     3 },   // 4 充电上限
+  { kSpdLbl,     kSpdVal,     3 },   // 5 充电速度
+  { kHomeLbl,    kHomeVal,    3 },   // 6 默认首页
+  { kPwrLbl,     kPwrVal,     3 },   // 7 功耗档
+  { kMicGainLbl, kMicGainVal, 5 },   // 8 麦克风增益
 };
 
 struct RowDef {
@@ -135,6 +138,7 @@ constexpr RowDef kRows[] = {
   { RK_SLIDER, R_VOLUME,    "音量",          0 },
   { RK_TOGGLE, R_TTS,       "语音播报",      0 },
   { RK_TOGGLE, R_QUIET,     "夜间静音 23-08", 0 },
+  { RK_CHOICE, R_MIC_GAIN,  "麦克风增益",    8 },
   { RK_ACT,    R_TEST,      "试听语音",      0 },
 
   { RK_GROUP,  R_GRP_BAT,   "电池",          0 },
@@ -223,6 +227,7 @@ uint16_t rowValue(const NovaSettings& cfg, uint8_t id) {
     case R_VOLUME:    return cfg.soundPct;
     case R_TTS:       return cfg.ttsEnabled ? 1 : 0;
     case R_QUIET:     return cfg.quietHours ? 1 : 0;
+    case R_MIC_GAIN:  return cfg.micGainDb;
     case R_CHGLIM:    return cfg.chargeLimitPct;
     case R_CHGSPD:    return (uint16_t)cfg.chargeSpeed;
     case R_HOME:      return (uint16_t)cfg.homePage;
@@ -242,6 +247,7 @@ UiAction::Kind rowActionKind(uint8_t id) {
     case R_VOLUME:    return UiAction::SET_SOUND;
     case R_TTS:       return UiAction::SET_TTS;
     case R_QUIET:     return UiAction::SET_QUIET;
+    case R_MIC_GAIN:  return UiAction::SET_MIC_GAIN;
     case R_CHGLIM:    return UiAction::SET_CHGLIMIT;
     case R_CHGSPD:    return UiAction::SET_CHGSPEED;
     case R_HOME:      return UiAction::SET_HOME;

@@ -4,6 +4,7 @@
 #include "ui/aafont.h"
 #include "ui/canvas.h"
 #include "ui/easing.h"
+#include "ui/icons.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -52,6 +53,11 @@ struct TextMetrics {
 TextMetrics measureText(NovaCanvas& c, const AaFont* font, const char* s);
 void drawText(NovaCanvas& c, const AaFont* font, int16_t x, int16_t baselineY,
               const char* s, uint16_t fg, uint16_t bg = COL_BG);
+void drawIcon(NovaCanvas& c, const AaIcon& icon, int16_t x, int16_t y, uint16_t fg);
+inline void drawIconCenteredInRect(NovaCanvas& c, const AaIcon& icon, Rect r, uint16_t fg) {
+  drawIcon(c, icon, (int16_t)(r.x + (r.w - (int16_t)icon.w) / 2),
+           (int16_t)(r.y + (r.h - (int16_t)icon.h) / 2), fg);
+}
 
 void aaFillCircle(NovaCanvas& c, int16_t cx, int16_t cy, int16_t r, uint16_t col);
 void aaDrawCircle(NovaCanvas& c, int16_t cx, int16_t cy, int16_t r, uint16_t col);
@@ -407,7 +413,7 @@ inline int16_t burnOffsetY(uint8_t step) {
   return DY[(step / 5) % 5];
 }
 
-inline void drawTopBar(NovaCanvas& c, const NovaState& st, int activeDot, int totalDots = 5) {
+inline void drawTopBar(NovaCanvas& c, const NovaState& st, int activeDot, int totalDots = 6) {
   c.fillRect(0, 0, UI_W, 60, COL_BG);
   const int16_t ox = burnOffsetX(st.burnInStep);
   const int16_t oy = burnOffsetY(st.burnInStep);

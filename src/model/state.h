@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 struct QuotaBar {
@@ -22,6 +23,60 @@ struct QuotaCard {
 constexpr int MAX_RANK_ROWS = 24;
 constexpr int MAX_CHOREO_STEPS = 6;
 constexpr int MAX_TOKEN_DAYS = 14;
+constexpr int MAX_CHAT_MSGS = 8;
+constexpr int MAX_BOARD_SESSIONS = 4;
+constexpr int MAX_SESS_STEPS = 3;
+
+enum class BoardSessState : uint8_t {
+  IDLE = 0,
+  RUN  = 1,
+  WAIT = 2,
+  ERR  = 3,
+};
+
+struct BoardStep {
+  char time[12];
+  char tool[16];
+  char arg[40];
+};
+
+struct BoardSession {
+  char           id[48];
+  char           name[44];
+  char           cwd[28];
+  BoardSessState state;
+  uint32_t       elapsedSec;
+  char           act[52];
+  char           note[64];
+  BoardStep      steps[MAX_SESS_STEPS];
+  uint8_t        nSteps;
+};
+
+enum class ChatDelivKind : uint8_t {
+  NONE  = 0,
+  SENT  = 1,
+  RUN   = 2,
+  REPLY = 3,
+  FAIL  = 4,
+  MUTE  = 5,
+};
+
+struct ChatDelivery {
+  ChatDelivKind kind;
+  uint16_t      id;
+  uint8_t       queuePos;
+  uint32_t      secs;
+  uint32_t      updatedMs;
+  char          targetId[48];
+  char          targetName[44];
+  char          text[160];
+};
+
+struct ChatMsg {
+  bool     isUser;
+  uint16_t id;
+  char     text[160];
+};
 
 struct TokenDay {
   char     date[8];
@@ -158,10 +213,57 @@ struct NovaState {
   float      tokenCachePct;
   uint32_t   tokenRxMs;
   uint32_t   tokenGen;
+
+  // Voice recording & WAV upload (CHAT page)
+  uint8_t    recState;         // 0=IDLE, 1=RECORDING, 2=UPLOADING, 3=SENT_WAIT_ACK, 4=SAVED, 5=ERR
+  uint8_t    recGainDb;        // 18 / 24 / 30 / 36 / 42
+  uint8_t    recLevel;         // 0..100 live input meter
+  uint8_t    recUploadPct;     // 0..100 MQTT chunk progress
+  bool       recHasClip;
+  uint16_t   recClipId;
+  uint16_t   recSavedCount;
+  uint32_t   recDurMs;
+  float      recPeakDb;
+  float      recRmsDb;
+  uint16_t   recClipPermille;
+  char       recLastFile[40];
+  char       recErr[32];
+  uint32_t   recGen;
+
+  // Multi-turn voice chat (CHAT page) & Command Block Mode (Session Board)
+  ChatMsg      chatMsgs[MAX_CHAT_MSGS];
+  uint8_t      nChatMsgs;
+  bool         chatDraftActive;
+  uint16_t     chatDraftId;
+  uint32_t     chatDraftStartMs;
+  char         chatDraftText[160];
+  bool         chatWaitingReply;
+  uint32_t     chatGen;
+
+  BoardSession boardSessions[MAX_BOARD_SESSIONS];
+  uint8_t      nBoardSessions;
+  uint32_t     boardRxMs;
+  uint32_t     boardGen;
+  char         boardTargetId[48];
+  char         boardExpandedId[48];
+  bool         boardHoldCancel;
+  char         boardToast[40];
+  uint32_t     boardToastStartMs;
+  char         lastSayText[160];
+  uint32_t     lastSayAgeSec;
+  uint32_t     lastSayRxMs;
+  ChatDelivery chatDelivery;
+  char         apSessName[44];
+  char         apNote[64];
 };
 
 void novaStateInit(const char* devId, const char* fwVer);
 void novaStateRead(NovaState* out);
+void novaSafeUtf8Copy(char* dst, size_t cap, const char* src);
+void novaChatAppend(NovaState& st, bool isUser, uint16_t id, const char* text);
+const BoardSession* novaBoardFind(const NovaState& st, const char* id);
+const BoardSession* novaBoardDefaultTarget(const NovaState& st);
+const BoardSession* novaBoardCycleTarget(const NovaState& st, const char* curId);
 
 template <typename Fn>
 void novaStateWithLock(Fn&& fn);

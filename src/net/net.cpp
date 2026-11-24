@@ -42,6 +42,22 @@ NetPsMode       s_appliedPs = NetPsMode::PERFORMANCE;
 bool            s_portalActive = false;
 uint32_t        s_pubDrops = 0;
 
+struct MicUploadJob {
+  const int16_t* pcm;
+  size_t   sampleCount;
+  uint16_t clipId;
+  uint8_t  gainDb;
+  uint32_t durMs;
+  float    peakDb;
+  float    rmsDb;
+  uint16_t clipPermille;
+};
+portMUX_TYPE     s_micUpMux = portMUX_INITIALIZER_UNLOCKED;
+MicUploadJob     s_micJob = {};
+volatile bool    s_micUpPending = false;
+volatile bool    s_micUploading = false;
+volatile bool    s_mqttReady = false;
+
 char s_apName[24] = "Nova-0000";
 volatile uint32_t s_statIntervalMs = 30000;
 volatile bool    s_usbPresent = true;
@@ -135,13 +151,117 @@ void onMqttMessage(String& topic, String& payload) {
 
 void subscribeTopics() {
   static const char* SUFFIXES[] = {
-    "state", "quota", "rank", "tokens", "approval", "approval_end", "time", "choreo", "tts"
+    "state", "sessions", "quota", "rank", "tokens", "approval", "approval_end",
+    "time", "choreo", "tts", "mic_ack", "chat"
   };
   char topic[48];
   for (const char* sfx : SUFFIXES) {
     snprintf(topic, sizeof(topic), "%s/%s", s_topicPrefix, sfx);
     s_mqtt.subscribe(topic, 1);
   }
+}
+
+void runPendingMicUpload() {
+  if (!s_micUpPending) return;
+  MicUploadJob job;
+  taskENTER_CRITICAL(&s_micUpMux);
+  job = s_micJob;
+  s_micUpPending = false;
+  taskEXIT_CRITICAL(&s_micUpMux);
+
+  if (!job.pcm || job.sampleCount == 0 || !s_mqtt.connected()) {
+    novaStateWithLock([](NovaState& st) {
+      st.recState = 5;
+      snprintf(st.recErr, sizeof(st.recErr), "MQTT未连接");
+      st.recGen++;
+    });
+    s_micUploading = false;
+    return;
+  }
+
+  static constexpr size_t kChunkBytes = 2048;
+  static uint8_t pkt[6 + kChunkBytes];
+
+  const size_t totalBytes = job.sampleCount * sizeof(int16_t);
+  const uint16_t totalChunks = (uint16_t)((totalBytes + kChunkBytes - 1) / kChunkBytes);
+
+  char topic[48];
+  char meta[256];
+  snprintf(topic, sizeof(topic), "%s/mic/start", s_topicPrefix);
+  int mLen = snprintf(
+      meta, sizeof(meta),
+      "{\"id\":%u,\"sr\":16000,\"ch\":1,\"bits\":16,\"bytes\":%u,\"chunks\":%u,"
+      "\"gain\":%u,\"durMs\":%lu,\"peakDb\":%.1f,\"rmsDb\":%.1f,\"clip\":%u}",
+      (unsigned)job.clipId, (unsigned)totalBytes, (unsigned)totalChunks,
+      (unsigned)job.gainDb, (unsigned long)job.durMs,
+      job.peakDb, job.rmsDb, (unsigned)job.clipPermille);
+  if (mLen <= 0 || mLen >= (int)sizeof(meta) ||
+      !s_mqtt.publish(topic, meta, mLen, false, 1)) {
+    novaStateWithLock([](NovaState& st) {
+      st.recState = 5;
+      snprintf(st.recErr, sizeof(st.recErr), "发送头失败");
+      st.recGen++;
+    });
+    s_micUploading = false;
+    return;
+  }
+  s_mqtt.loop();
+
+  snprintf(topic, sizeof(topic), "%s/mic/chunk", s_topicPrefix);
+  bool aborted = false;
+  for (uint16_t seq = 0; seq < totalChunks; seq++) {
+    const size_t off = (size_t)seq * kChunkBytes;
+    const size_t part = (totalBytes - off < kChunkBytes) ? (totalBytes - off) : kChunkBytes;
+    pkt[0] = (uint8_t)(job.clipId & 0xFF);
+    pkt[1] = (uint8_t)((job.clipId >> 8) & 0xFF);
+    pkt[2] = (uint8_t)(seq & 0xFF);
+    pkt[3] = (uint8_t)((seq >> 8) & 0xFF);
+    pkt[4] = (uint8_t)(totalChunks & 0xFF);
+    pkt[5] = (uint8_t)((totalChunks >> 8) & 0xFF);
+    memcpy(pkt + 6, ((const uint8_t*)job.pcm) + off, part);
+
+    if (!s_mqtt.connected() || !s_mqtt.publish(topic, (const char*)pkt, (int)(6 + part), false, 0)) {
+      aborted = true;
+      break;
+    }
+    s_mqtt.loop();
+    const uint8_t pct = (uint8_t)(((uint32_t)(seq + 1) * 100u) / totalChunks);
+    novaStateWithLock([&](NovaState& st) {
+      st.recUploadPct = pct;
+      st.recGen++;
+    });
+    vTaskDelay(pdMS_TO_TICKS(6));
+  }
+
+  if (aborted) {
+    novaStateWithLock([](NovaState& st) {
+      st.recState = 5;
+      snprintf(st.recErr, sizeof(st.recErr), "MQTT断开");
+      st.recGen++;
+    });
+    s_micUploading = false;
+    return;
+  }
+
+  snprintf(topic, sizeof(topic), "%s/mic/end", s_topicPrefix);
+  int eLen = snprintf(meta, sizeof(meta),
+                      "{\"id\":%u,\"chunks\":%u,\"bytes\":%u}",
+                      (unsigned)job.clipId, (unsigned)totalChunks, (unsigned)totalBytes);
+  bool endOk = (eLen > 0 && eLen < (int)sizeof(meta)) &&
+               s_mqtt.publish(topic, meta, eLen, false, 1);
+  s_mqtt.loop();
+
+  novaStateWithLock([&](NovaState& st) {
+    if (!endOk) {
+      st.recState = 5;
+      snprintf(st.recErr, sizeof(st.recErr), "结束包失败");
+    } else if (st.recState == 2) {
+      st.recState = 3;  // SENT_WAIT_ACK
+      st.recUploadPct = 100;
+    }
+    st.recGen++;
+  });
+  s_micUploading = false;
 }
 
 void publishHello(bool online) {
@@ -274,6 +394,7 @@ void netTaskFn(void*) {
         st.rssi = 0;
       }
       st.mqttConnected = s_mqtt.connected();
+      s_mqttReady = st.mqttConnected;
     });
 
     if (wifiUp && !s_portalActive) {
@@ -298,6 +419,7 @@ void netTaskFn(void*) {
             subscribeTopics();
             publishHello(true);
             applyTxPower(s_usbPresent, (int8_t)WiFi.RSSI());
+            s_mqttReady = true;
             novaStateWithLock([&](NovaState& st) {
               st.mqttConnected = true;
               st.lastMqttRxMs = now;
@@ -310,6 +432,7 @@ void netTaskFn(void*) {
         }
       } else {
         s_mqtt.loop();
+        runPendingMicUpload();
 
         // Drain outbound queue
         NetTxMsg tx;
@@ -444,6 +567,72 @@ bool netPublishPowerEvent(const PowerEvent& ev) {
   tx.retained = false;
   tx.qos = 1;
   return xQueueSend(s_txQ, &tx, 0) == pdTRUE;
+}
+
+void netPublishChatSend(uint16_t id, const char* text, const char* target, const char* mode) {
+  if (!s_txQ || !s_topicPrefix[0] || !text || !text[0]) return;
+  NetTxMsg tx{};
+  snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
+  tx.len = (uint16_t)protoBuildChatSend(tx.payload, sizeof(tx.payload), id, text, target, mode);
+  if (tx.len == 0) {
+    NOVA_LOG(E, "net", "chat_send payload overflow\n");
+    return;
+  }
+  tx.retained = false;
+  tx.qos = 1;
+  if (xQueueSend(s_txQ, &tx, 0) != pdTRUE) {
+    s_pubDrops++;
+    NOVA_LOG(W, "net", "tx queue full, drop chat_send\n");
+  }
+}
+
+void netPublishChatTts(const char* text) {
+  if (!s_txQ || !s_topicPrefix[0] || !text || !text[0]) return;
+  NetTxMsg tx{};
+  snprintf(tx.topic, sizeof(tx.topic), "%s/up", s_topicPrefix);
+  tx.len = (uint16_t)protoBuildChatTts(tx.payload, sizeof(tx.payload), text);
+  if (tx.len == 0) {
+    NOVA_LOG(E, "net", "chat_tts payload overflow\n");
+    return;
+  }
+  tx.retained = false;
+  tx.qos = 1;
+  if (xQueueSend(s_txQ, &tx, 0) != pdTRUE) {
+    s_pubDrops++;
+    NOVA_LOG(W, "net", "tx queue full, drop chat_tts\n");
+  }
+}
+
+bool netStartMicUpload(const int16_t* pcm, size_t sampleCount, uint16_t clipId,
+                       uint8_t gainDb, uint32_t durMs, float peakDb,
+                       float rmsDb, uint16_t clipPermille) {
+  if (!pcm || sampleCount == 0) {
+    novaStateWithLock([](NovaState& st) {
+      st.recState = 5;
+      snprintf(st.recErr, sizeof(st.recErr), "无有效音频");
+      st.recGen++;
+    });
+    return false;
+  }
+  if (!s_mqttReady || s_micUploading || s_micUpPending) {
+    const bool busy = s_mqttReady;
+    novaStateWithLock([&](NovaState& st) {
+      st.recState = 5;
+      snprintf(st.recErr, sizeof(st.recErr), busy ? "正在上传中" : "MQTT未连接");
+      st.recGen++;
+    });
+    return false;
+  }
+  taskENTER_CRITICAL(&s_micUpMux);
+  s_micJob = { pcm, sampleCount, clipId, gainDb, durMs, peakDb, rmsDb, clipPermille };
+  s_micUploading = true;
+  s_micUpPending = true;
+  taskEXIT_CRITICAL(&s_micUpMux);
+  return true;
+}
+
+bool netIsMicUploading() {
+  return s_micUploading || s_micUpPending;
 }
 
 uint32_t netPublishQueueDropCount() { return s_pubDrops; }

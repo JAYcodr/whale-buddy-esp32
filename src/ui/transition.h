@@ -21,7 +21,7 @@ constexpr uint32_t kSlideTransMs = 180u;
 struct TransPillOpts {
   int8_t  fromDot   = -1;
   int8_t  toDot     = -1;
-  uint8_t totalDots = 5;
+  uint8_t totalDots = 6;
   int16_t ox        = 0;
   int16_t oy        = 0;
 };

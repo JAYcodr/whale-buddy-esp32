@@ -23,6 +23,7 @@ constexpr ActionMap kActionMap[] = {
   { UiAction::SET_AOD_MODE,  10 },
   { UiAction::SET_AOD_IDLE,  11 },
   { UiAction::SET_AOD_NIGHT, 12 },
+  { UiAction::SET_MIC_GAIN,  13 },
 };
 
 }  // namespace

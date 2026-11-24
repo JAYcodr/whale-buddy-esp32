@@ -364,6 +364,141 @@ static void mutateAodNoTime(NovaState& st, NovaSettings& cfg) {
   st.timeValid = false;
 }
 
+static void seedBoardSessions(NovaState& st) {
+  st.recState = 0;
+  st.recGainDb = 24;
+  st.boardRxMs = st.nowMs;
+  st.nBoardSessions = 3;
+
+  std::memset(st.boardSessions, 0, sizeof(st.boardSessions));
+  std::strcpy(st.boardSessions[0].id, "s1");
+  std::strcpy(st.boardSessions[0].name, "电量估算四改");
+  std::strcpy(st.boardSessions[0].cwd, "nova-buddy");
+  st.boardSessions[0].state = BoardSessState::RUN;
+  st.boardSessions[0].elapsedSec = 252;
+  std::strcpy(st.boardSessions[0].act, "cargo test");
+  std::strcpy(st.boardSessions[0].note, "2 个断言失败");
+  st.boardSessions[0].nSteps = 3;
+  std::strcpy(st.boardSessions[0].steps[0].time, "4:02");
+  std::strcpy(st.boardSessions[0].steps[0].tool, "bash");
+  std::strcpy(st.boardSessions[0].steps[0].arg, "cargo test --release");
+  std::strcpy(st.boardSessions[0].steps[1].time, "3:40");
+  std::strcpy(st.boardSessions[0].steps[1].tool, "edit");
+  std::strcpy(st.boardSessions[0].steps[1].arg, "battery_model.h");
+  std::strcpy(st.boardSessions[0].steps[2].time, "2:10");
+  std::strcpy(st.boardSessions[0].steps[2].tool, "read");
+  std::strcpy(st.boardSessions[0].steps[2].arg, "power_probe.mjs");
+
+  std::strcpy(st.boardSessions[1].id, "s2");
+  std::strcpy(st.boardSessions[1].name, "ASR 会话桥接");
+  std::strcpy(st.boardSessions[1].cwd, "nova-buddy");
+  st.boardSessions[1].state = BoardSessState::WAIT;
+  std::strcpy(st.boardSessions[1].act, "bash · rm -rf ./recordings");
+  std::strcpy(st.boardSessions[1].note, "会删 6 个录音");
+
+  std::strcpy(st.boardSessions[2].id, "s3");
+  std::strcpy(st.boardSessions[2].name, "DS-Bot 调研");
+  std::strcpy(st.boardSessions[2].cwd, "ds-bot");
+  st.boardSessions[2].state = BoardSessState::IDLE;
+  std::strcpy(st.boardSessions[2].act, "已停下");
+  std::strcpy(st.boardSessions[2].note, "8 分钟前停下");
+
+  std::strcpy(st.lastSayText, "单测还剩 2 个失败，都在 fixtures 的时区断言上。");
+  st.lastSayAgeSec = 240;
+  st.lastSayRxMs = st.nowMs;
+}
+
+static void mutateChatThread(NovaState& st, NovaSettings&) {
+  seedBoardSessions(st);
+  st.boardGen = 1;
+}
+
+static void mutateChatSelected(NovaState& st, NovaSettings&) {
+  seedBoardSessions(st);
+  std::strcpy(st.boardTargetId, "s1");
+  std::strcpy(st.boardExpandedId, "s1");
+  st.boardGen = 2;
+}
+
+static void mutateChatRec(NovaState& st, NovaSettings& cfg) {
+  mutateChatThread(st, cfg);
+  st.recState = 1;
+  st.recGainDb = 24;
+  st.recLevel = 72;
+  st.recDurMs = 4200;
+  st.boardHoldCancel = false;
+  st.chatGen = 2;
+}
+
+static void mutateChatRecCancel(NovaState& st, NovaSettings& cfg) {
+  mutateChatRec(st, cfg);
+  st.boardHoldCancel = true;
+}
+
+static void mutateChatDraft(NovaState& st, NovaSettings& cfg) {
+  mutateChatThread(st, cfg);
+  st.recState = 0;
+  std::strcpy(st.boardTargetId, "s3");
+  st.chatDraftActive = true;
+  st.chatDraftId = 13;
+  st.chatDraftStartMs = st.nowMs - 550u;
+  std::snprintf(st.chatDraftText, sizeof(st.chatDraftText), "总结一下刚才查到的认证流程");
+  st.chatGen = 3;
+}
+
+static void mutateChatDraftRun(NovaState& st, NovaSettings& cfg) {
+  mutateChatThread(st, cfg);
+  st.recState = 0;
+  std::strcpy(st.boardTargetId, "s1");
+  st.chatDraftActive = true;
+  st.chatDraftId = 14;
+  st.chatDraftStartMs = st.nowMs - 550u;
+  std::snprintf(st.chatDraftText, sizeof(st.chatDraftText), "接着弄电量那个，把测试跑完");
+  st.chatGen = 4;
+}
+
+static void mutateChatRun(NovaState& st, NovaSettings& cfg) {
+  mutateChatThread(st, cfg);
+  std::strcpy(st.boardTargetId, "s1");
+  st.chatDelivery.kind = ChatDelivKind::RUN;
+  st.chatDelivery.id = 14;
+  st.chatDelivery.secs = 4;
+  st.chatDelivery.updatedMs = st.nowMs;
+  std::strcpy(st.chatDelivery.targetId, "s1");
+  std::strcpy(st.chatDelivery.targetName, "电量估算四改");
+}
+
+static void mutateChatReply(NovaState& st, NovaSettings& cfg) {
+  mutateChatThread(st, cfg);
+  std::strcpy(st.boardTargetId, "s1");
+  st.chatDelivery.kind = ChatDelivKind::REPLY;
+  st.chatDelivery.id = 14;
+  st.chatDelivery.secs = 4;
+  st.chatDelivery.updatedMs = st.nowMs;
+  std::strcpy(st.chatDelivery.targetId, "s1");
+  std::strcpy(st.chatDelivery.targetName, "电量估算四改");
+  std::strcpy(st.chatDelivery.text, "单测还剩 2 个失败，都在 fixtures 的时区断言上。");
+}
+
+static void mutateChatFail(NovaState& st, NovaSettings& cfg) {
+  mutateChatThread(st, cfg);
+  std::strcpy(st.boardTargetId, "s1");
+  st.chatDelivery.kind = ChatDelivKind::FAIL;
+  st.chatDelivery.id = 15;
+  st.chatDelivery.updatedMs = st.nowMs;
+  std::strcpy(st.chatDelivery.targetId, "s1");
+  std::strcpy(st.chatDelivery.text, "目标会话已换段，需要重选");
+}
+
+static void mutateChatMute(NovaState& st, NovaSettings& cfg) {
+  mutateChatThread(st, cfg);
+  std::strcpy(st.boardTargetId, "s1");
+  st.chatDelivery.kind = ChatDelivKind::MUTE;
+  st.chatDelivery.id = 16;
+  st.chatDelivery.updatedMs = st.nowMs;
+  std::strcpy(st.chatDelivery.targetId, "s1");
+}
+
 int main(int argc, char** argv) {
   std::string outDir = (argc > 1) ? argv[1] : "tools/sim/out";
   Arduino_Canvas canvas(UI_W, UI_H, nullptr);
@@ -401,7 +536,7 @@ int main(int argc, char** argv) {
     { "settings_sound", UiPage::SETTINGS, false, 2, 6500, nullptr, nullptr },
     { "settings_open", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr, false, 1 },   // 1 = R_BRIGHT
     { "settings_opts", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr, false, 2 },   // 2 = R_SLEEP
-    { "settings_confirm", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr, false, 0, 21 },  // 21 = R_RESET
+    { "settings_confirm", UiPage::SETTINGS, false, 0, 6500, nullptr, nullptr, false, 0, 22 },  // 22 = R_RESET
     { "approval", UiPage::HOME, true, 0, 6500, nullptr, nullptr },
     { "home_dock", UiPage::HOME, false, 0, 6500, mutateDockDetail, nullptr },
     { "home_dock_err", UiPage::HOME, false, 0, 6500, mutateDockError, nullptr },
@@ -428,6 +563,16 @@ int main(int argc, char** argv) {
     { "aod", UiPage::HOME, false, 0, 6500, mutateAodTime, nullptr, true },
     { "aod_idle", UiPage::HOME, false, 0, 6500, mutateAodIdle, nullptr, true },
     { "aod_nolock", UiPage::HOME, false, 0, 6500, mutateAodNoTime, nullptr, true },
+    { "chat", UiPage::CHAT, false, 0, 6500, mutateChatThread, nullptr },
+    { "chat_selected", UiPage::CHAT, false, 0, 6500, mutateChatSelected, nullptr },
+    { "chat_rec", UiPage::CHAT, false, 0, 6500, mutateChatRec, nullptr },
+    { "chat_rec_cancel", UiPage::CHAT, false, 0, 6500, mutateChatRecCancel, nullptr },
+    { "chat_draft", UiPage::CHAT, false, 0, 6500, mutateChatDraft, nullptr },
+    { "chat_draft_run", UiPage::CHAT, false, 0, 6500, mutateChatDraftRun, nullptr },
+    { "chat_run", UiPage::CHAT, false, 0, 6500, mutateChatRun, nullptr },
+    { "chat_reply", UiPage::CHAT, false, 0, 6500, mutateChatReply, nullptr },
+    { "chat_fail", UiPage::CHAT, false, 0, 6500, mutateChatFail, nullptr },
+    { "chat_mute", UiPage::CHAT, false, 0, 6500, mutateChatMute, nullptr },
   };
 
   for (const auto& cs : cases) {

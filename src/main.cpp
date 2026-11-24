@@ -12,6 +12,7 @@
 
 #include "anim/nva.h"
 #include "audio/sfx.h"
+#include "hw/audio.h"
 #include "hw/bus.h"
 #include "hw/hw.h"
 #include "model/settings.h"
@@ -174,6 +175,7 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             else if (strcmp(p, "settings_power") == 0 || strcmp(p, "settings_batt") == 0) { pageSettingsSetTab(3); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "settings_display") == 0 || strcmp(p, "settings_aod") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
             else if (strcmp(p, "tokens") == 0)   { pageTokensOnEnter(millis()); nav.setPage(UiPage::TOKENS); needFull = true; }
+            else if (strcmp(p, "chat") == 0)     { nav.setPage(UiPage::CHAT); needFull = true; }
             s_pendingInteract = true;
           } else if (strcmp(cmd, "tap") == 0) {
             // 真机验收用：把手动戳屏变成可重放的命令。
@@ -277,6 +279,7 @@ void uiTaskFn(void*) {
   int16_t tpStartX = 0, tpStartY = 0, tpLastY = 0;
   bool    tpActive = false, tpDraggedV = false;
   bool    settingsGrab = false;   // 设置页里按下的那个滑块
+  bool    chatHoldActive = false; // 命令方块页按住说话手势锁
   enum class PressPhase : uint8_t { NONE, FADE_IN, HELD, FADE_OUT };
   constexpr uint32_t kPressInMs     = 60u;
   constexpr uint32_t kPressOutMs    = 120u;
@@ -308,7 +311,19 @@ void uiTaskFn(void*) {
   uint32_t lastRankGen = 0;
   uint32_t lastChoreoGen = 0;
   uint32_t lastTokenGen = 0;
+  uint32_t lastRecGen = 0;
+  uint32_t lastChatGen = 0;
+  uint32_t lastBoardGen = 0;
+  uint32_t lastRecMeterDrawMs = 0;
+  uint32_t lastChatSecDrawMs = 0;
+  uint8_t  lastRecLiveLevel = 255;
+  uint32_t lastRecLiveDurBucket = 0;
   uint16_t lastRunCount = 0;
+
+  novaStateWithLock([](NovaState& s) {
+    s.recGainDb = settingsGet().micGainDb;
+  });
+  hwBusRequestMicGain(settingsGet().micGainDb);
   uint8_t  tapVoiceIdx = 0;
   bool     lastWifiUp = false;
   bool     lastApMode = false;
@@ -503,6 +518,133 @@ void uiTaskFn(void*) {
     static NovaState st;
     novaStateRead(&st);
 
+    const HwRecSnapshot recSnap = hwAudioRecSnapshot();
+    if (recSnap.recording) {
+      lastInteractMs = nowMs;
+      novaStateWithLock([&](NovaState& s) {
+        s.recState = 1;
+        s.recLevel = recSnap.liveLevel;
+        s.recDurMs = recSnap.durMs;
+        s.recPeakDb = recSnap.peakDb;
+        s.recRmsDb = recSnap.rmsDb;
+        s.recClipPermille = recSnap.clipPermille;
+      });
+      st.recState = 1;
+      st.recLevel = recSnap.liveLevel;
+      st.recDurMs = recSnap.durMs;
+      st.recPeakDb = recSnap.peakDb;
+      st.recRmsDb = recSnap.rmsDb;
+      st.recClipPermille = recSnap.clipPermille;
+      const uint32_t durBucket = recSnap.durMs / 100u;
+      if (!aodActive && !screenOff && !dimmedForNap && !st.approvalActive &&
+          nav.currentPage() == UiPage::CHAT &&
+          (uint32_t)(nowMs - lastRecMeterDrawMs) >= 83u &&
+          (recSnap.liveLevel != lastRecLiveLevel || durBucket != lastRecLiveDurBucket)) {
+        lastRecMeterDrawMs = nowMs;
+        lastRecLiveLevel = recSnap.liveLevel;
+        lastRecLiveDurBucket = durBucket;
+        needFull = true;
+      }
+    } else if (recSnap.clipReady) {
+      hwAudioRecConsumeReady();
+      lastInteractMs = nowMs;
+      novaStateWithLock([&](NovaState& s) {
+        s.recHasClip = true;
+        s.recClipId = recSnap.clipId;
+        s.recDurMs = recSnap.durMs;
+        s.recPeakDb = recSnap.peakDb;
+        s.recRmsDb = recSnap.rmsDb;
+        s.recClipPermille = recSnap.clipPermille;
+        s.recState = 2;  // UPLOADING
+        s.recUploadPct = 0;
+        s.recErr[0] = '\0';
+        s.recGen++;
+      });
+      novaStateRead(&st);
+      if (!netStartMicUpload(recSnap.pcmData, recSnap.sampleCount, recSnap.clipId,
+                             recSnap.gainDb, recSnap.durMs, recSnap.peakDb,
+                             recSnap.rmsDb, recSnap.clipPermille)) {
+        novaStateRead(&st);
+      }
+      sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+      needFull = true;
+    }
+
+    auto setChatToast = [&](const char* msg) {
+      novaStateWithLock([&](NovaState& s) {
+        novaSafeUtf8Copy(s.boardToast, sizeof(s.boardToast), msg);
+        s.boardToastStartMs = nowMs;
+        s.boardGen++;
+      });
+    };
+
+    auto confirmAndSendChatDraft = [&](const char* mode) {
+      uint16_t did = 0;
+      char dtext[160] = {};
+      char targetId[48] = {};
+      bool sent = false;
+      novaStateWithLock([&](NovaState& s) {
+        if (!s.chatDraftActive) return;
+        const BoardSession* target = novaBoardFind(s, s.boardTargetId);
+        if (!target || target->state == BoardSessState::WAIT) {
+          target = novaBoardDefaultTarget(s);
+        }
+        if (!target) {
+          novaSafeUtf8Copy(s.boardToast, sizeof(s.boardToast), "请先选可用会话");
+          s.boardToastStartMs = nowMs;
+          s.boardGen++;
+          return;
+        }
+        did = s.chatDraftId;
+        novaSafeUtf8Copy(dtext, sizeof(dtext), s.chatDraftText);
+        novaSafeUtf8Copy(targetId, sizeof(targetId), target->id);
+        novaSafeUtf8Copy(s.boardTargetId, sizeof(s.boardTargetId), target->id);
+        if (dtext[0]) {
+          novaChatAppend(s, true, did, dtext);
+          s.chatWaitingReply = true;
+          s.recErr[0] = '\0';
+          if (s.recState == 5) s.recState = 0;
+          s.chatDelivery.kind = ChatDelivKind::SENT;
+          s.chatDelivery.id = did;
+          s.chatDelivery.queuePos = 1;
+          s.chatDelivery.secs = 0;
+          s.chatDelivery.updatedMs = nowMs;
+          novaSafeUtf8Copy(s.chatDelivery.targetId, sizeof(s.chatDelivery.targetId), target->id);
+          novaSafeUtf8Copy(s.chatDelivery.targetName, sizeof(s.chatDelivery.targetName), target->name);
+          s.chatDelivery.text[0] = '\0';
+          s.boardExpandedId[0] = '\0';
+          sent = true;
+        }
+        s.chatDraftActive = false;
+        s.chatDraftText[0] = '\0';
+        s.chatGen++;
+        s.boardGen++;
+      });
+      if (sent && dtext[0]) {
+        netPublishChatSend(did, dtext, targetId, mode ? mode : "queue");
+        sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+      } else {
+        sfxPlay(SfxKind::DENY, cfg.soundPct);
+      }
+      novaStateRead(&st);
+      needFull = true;
+    };
+
+    const bool chatBusy = (st.recState == 1) || (st.recState == 2) ||
+                          (st.recState == 3) || st.chatDraftActive ||
+                          st.chatWaitingReply;
+    if (chatBusy) {
+      lastInteractMs = nowMs;
+    }
+    if (st.boardToast[0] && nowMs >= st.boardToastStartMs &&
+        (uint32_t)(nowMs - st.boardToastStartMs) >= 1500u) {
+      novaStateWithLock([](NovaState& s) {
+        s.boardToast[0] = '\0';
+        s.boardGen++;
+      });
+      novaStateRead(&st);
+    }
+
     // ── AOD（熄屏待机）状态机 ────────────────────────────────────────
     // 闲置只看端侧输入（触摸/按键/PEK）。宿主的运行会话不参与判定：
     // 一个跑五六个小时的任务也该在 N 分钟后进表盘，不能亮一整天。
@@ -660,7 +802,7 @@ void uiTaskFn(void*) {
 
     // CPU Dynamic Frequency Scaling (DFS via PLL 240/160/80 MHz, keeping APB >= 80 MHz).
     bool activeDemand = st.approvalActive || st.run > 0 || st.wait > 0 ||
-                        ((nowMs - lastInteractMs) < 10000u);
+                        chatBusy || ((nowMs - lastInteractMs) < 10000u);
     uint32_t wantMhz = 240;
     if (aodActive) {
       wantMhz = 80;   // 静止画面 + 4fps 轮询，80MHz 足够
@@ -690,10 +832,10 @@ void uiTaskFn(void*) {
     auto makeSlidePillOpts = [&](UiPage fromP, UiPage toP, TransPillOpts* out) -> const TransPillOpts* {
       const int fromDot = uiPageRingIndex(fromP);
       const int toDot   = uiPageRingIndex(toP);
-      if (fromDot < 0 || fromDot >= 5 || toDot < 0 || toDot >= 5 || fromDot == toDot) {
+      if (fromDot < 0 || fromDot >= 6 || toDot < 0 || toDot >= 6 || fromDot == toDot) {
         return nullptr;
       }
-      *out = { (int8_t)fromDot, (int8_t)toDot, 5,
+      *out = { (int8_t)fromDot, (int8_t)toDot, 6,
                ui::burnOffsetX(st.burnInStep), ui::burnOffsetY(st.burnInStep) };
       return out;
     };
@@ -760,8 +902,9 @@ void uiTaskFn(void*) {
       }
     }
 
-    // Raise WiFi power mode during approval or active interaction.
-    bool needLowLatencyNet = st.approvalActive || st.wifiApMode || ((nowMs - lastInteractMs) < 5000);
+    // Raise WiFi power mode during approval, mic recording/upload/chat, or active interaction.
+    bool needLowLatencyNet = st.approvalActive || st.wifiApMode ||
+                             chatBusy || ((nowMs - lastInteractMs) < 5000);
     netSetPowerSave(needLowLatencyNet ? NetPsMode::PERFORMANCE : NetPsMode::LOW_POWER);
 
     auto handleAction = [&](const UiAction& act, int slideDir = 0, int swipeOrigin = -1) {
@@ -908,6 +1051,143 @@ void uiTaskFn(void*) {
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           needFull = true;
           break;
+        case UiAction::CHAT_REC_TOGGLE:
+          if (st.recState == 2) {
+            needFull = false;
+          } else if (st.recState == 1) {
+            hwAudioRecStop();
+          } else {
+            uint8_t g = st.recGainDb ? st.recGainDb : 24;
+            if (hwAudioRecStart(g)) {
+              novaStateWithLock([&](NovaState& s) {
+                s.recState = 1;
+                s.recLevel = 0;
+                s.recDurMs = 0;
+                s.recErr[0] = '\0';
+                s.chatDraftActive = false;
+                s.chatDraftText[0] = '\0';
+                s.recGen++;
+                s.chatGen++;
+              });
+              novaStateRead(&st);
+            }
+          }
+          break;
+        case UiAction::CHAT_GAIN_CYCLE:
+          if (st.recState != 1) {
+            static constexpr uint8_t kGains[5] = { 18, 24, 30, 36, 42 };
+            uint8_t cur = st.recGainDb ? st.recGainDb : 24;
+            uint8_t next = 24;
+            for (int i = 0; i < 5; i++) {
+              if (kGains[i] == cur) { next = kGains[(i + 1) % 5]; break; }
+            }
+            novaStateWithLock([&](NovaState& s) {
+              s.recGainDb = next;
+              s.recGen++;
+            });
+            hwBusRequestMicGain(next);
+            sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+          }
+          break;
+        case UiAction::CHAT_PLAY_TTS:
+          needFull = false;
+          if (act.value >= 0 && act.value < (int)st.nChatMsgs && !st.chatMsgs[act.value].isUser) {
+            netPublishChatTts(st.chatMsgs[act.value].text);
+            sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          }
+          break;
+        case UiAction::CHAT_DRAFT_CANCEL:
+          novaStateWithLock([](NovaState& s) {
+            s.chatDraftActive = false;
+            s.chatDraftText[0] = '\0';
+            s.chatGen++;
+            s.boardGen++;
+          });
+          novaStateRead(&st);
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          needFull = true;
+          break;
+        case UiAction::CHAT_DRAFT_SEND:
+          confirmAndSendChatDraft("queue");
+          break;
+        case UiAction::CHAT_DRAFT_SEND_MODE:
+          confirmAndSendChatDraft(act.value == 1 ? "steer" : "queue");
+          break;
+        case UiAction::CHAT_DRAFT_CYCLE_TARGET:
+          novaStateWithLock([](NovaState& s) {
+            const BoardSession* next = novaBoardCycleTarget(s, s.boardTargetId);
+            if (next) {
+              novaSafeUtf8Copy(s.boardTargetId, sizeof(s.boardTargetId), next->id);
+              s.boardGen++;
+            }
+          });
+          novaStateRead(&st);
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          needFull = true;
+          break;
+        case UiAction::CHAT_SELECT_SESS: {
+          bool waitClicked = false;
+          novaStateWithLock([&](NovaState& s) {
+            if (act.value < 0 || act.value >= (int)s.nBoardSessions || act.value >= MAX_BOARD_SESSIONS) {
+              return;
+            }
+            const BoardSession& bs = s.boardSessions[act.value];
+            if (bs.state == BoardSessState::WAIT) {
+              waitClicked = true;
+              novaSafeUtf8Copy(s.boardExpandedId, sizeof(s.boardExpandedId), bs.id);
+              s.boardGen++;
+              return;
+            }
+            if (strcmp(s.boardTargetId, bs.id) == 0 && strcmp(s.boardExpandedId, bs.id) == 0) {
+              s.boardTargetId[0] = '\0';
+              s.boardExpandedId[0] = '\0';
+            } else {
+              novaSafeUtf8Copy(s.boardTargetId, sizeof(s.boardTargetId), bs.id);
+              novaSafeUtf8Copy(s.boardExpandedId, sizeof(s.boardExpandedId), bs.id);
+              s.chatDelivery.kind = ChatDelivKind::NONE;
+            }
+            s.boardGen++;
+          });
+          if (waitClicked && !st.approvalActive) {
+            setChatToast("请回电脑端确认此审批");
+          }
+          novaStateRead(&st);
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          needFull = true;
+          break;
+        }
+        case UiAction::CHAT_DELIVERY_DISMISS:
+          novaStateWithLock([](NovaState& s) {
+            s.chatDelivery.kind = ChatDelivKind::NONE;
+            s.boardGen++;
+          });
+          novaStateRead(&st);
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          needFull = true;
+          break;
+        case UiAction::CHAT_REPLAY_LAST:
+          needFull = false;
+          if (act.value == 0 && st.chatDelivery.kind == ChatDelivKind::REPLY && st.chatDelivery.text[0]) {
+            netPublishChatTts(st.chatDelivery.text);
+            setChatToast("播报中...");
+            sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+            needFull = true;
+          } else if (st.lastSayText[0]) {
+            netPublishChatTts(st.lastSayText);
+            setChatToast("播报中...");
+            sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+            needFull = true;
+          }
+          break;
+        case UiAction::CHAT_OPEN_APPROVAL:
+          if (!st.approvalActive) {
+            setChatToast("等待审批同步中...");
+            needFull = true;
+          }
+          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          break;
+        case UiAction::CHAT_QUICK_SEND:
+          break;
         default:
           if (settingsApplyAction(act.kind, act.value)) {
             switch (act.kind) {
@@ -937,6 +1217,16 @@ void uiTaskFn(void*) {
               case UiAction::SET_AOD_NIGHT:
                 bright.invalidate();
                 needFull = true;
+                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+                break;
+              case UiAction::SET_MIC_GAIN:
+                needFull = false;
+                needSettingsList = true;
+                novaStateWithLock([](NovaState& s) {
+                  s.recGainDb = settingsGet().micGainDb;
+                  s.recGen++;
+                });
+                hwBusRequestMicGain(settingsGet().micGainDb);
                 sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               default:
@@ -999,6 +1289,31 @@ void uiTaskFn(void*) {
           settingsGrab = pageSettingsTouchDown(ev.x, ev.y, ev.tsMs);
           if (settingsGrab) needSettingsList = true;
         }
+        if (!st.approvalActive && nav.currentPage() == UiPage::CHAT &&
+            !swallowTap && pageChatIsHoldBtn(ev.x, ev.y, st)) {
+          cancelPress();
+          if (pageChatCanStartHold(st)) {
+            uint8_t g = settingsGet().micGainDb ? settingsGet().micGainDb : 24;
+            if (hwAudioRecStart(g)) {
+              chatHoldActive = true;
+              novaStateWithLock([&](NovaState& s) {
+                s.recState = 1;
+                s.recLevel = 0;
+                s.recDurMs = 0;
+                s.recGainDb = g;
+                s.recErr[0] = '\0';
+                s.boardHoldCancel = false;
+                s.chatDraftActive = false;
+                s.chatDraftText[0] = '\0';
+                s.recGen++;
+                s.chatGen++;
+              });
+              novaStateRead(&st);
+              needFull = true;
+            }
+          }
+          continue;
+        }
         ui::Rect hitRect{ 0, 0, 0, 0 };
         if (!swallowTap && !dimmedForNap && canvas &&
             nav.pressedRect(ev.x, ev.y, st, cfg, &hitRect)) {
@@ -1008,6 +1323,16 @@ void uiTaskFn(void*) {
         }
       } else if (ev.type == InputEvtType::TOUCH_MOVE && tpActive) {
         wakeScreen();
+        if (chatHoldActive) {
+          const bool wantCancel = (tpStartY - ev.y) > 55;
+          if (wantCancel != st.boardHoldCancel) {
+            novaStateWithLock([&](NovaState& s) { s.boardHoldCancel = wantCancel; });
+            st.boardHoldCancel = wantCancel;
+            needFull = true;
+          }
+          tpLastY = ev.y;
+          continue;
+        }
         int16_t adx = ev.x > tpStartX ? (ev.x - tpStartX) : (tpStartX - ev.x);
         int16_t ady = ev.y > tpStartY ? (ev.y - tpStartY) : (tpStartY - ev.y);
         if ((pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::HELD) &&
@@ -1038,6 +1363,16 @@ void uiTaskFn(void*) {
             if (tpDraggedV && pageSettingsScrollTouchMove(ev.y, ev.tsMs)) needSettingsList = true;
           }
         }
+        if (!st.approvalActive && nav.currentPage() == UiPage::CHAT &&
+            tpStartY >= 90 && tpStartY < (st.chatDraftActive ? 200 : 332)) {
+          if (!tpDraggedV && ady >= 10 && ady > adx) {
+            tpDraggedV = true;
+            cancelPress();
+          }
+          if (tpDraggedV && pageChatScrollTouchMove(ev.y, ev.tsMs, st)) {
+            needFull = true;
+          }
+        }
         tpLastY = ev.y;
       } else if (ev.type == InputEvtType::TOUCH_UP && tpActive) {
         tpActive = false;
@@ -1045,6 +1380,39 @@ void uiTaskFn(void*) {
         if (swallowTap) {
           swallowTap = false;
           cancelPress();
+          continue;
+        }
+        if (chatHoldActive) {
+          chatHoldActive = false;
+          const HwRecSnapshot curRec = hwAudioRecSnapshot();
+          const bool cancelled = st.boardHoldCancel;
+          novaStateWithLock([](NovaState& s) { s.boardHoldCancel = false; });
+          if (curRec.recording) {
+            if (cancelled) {
+              hwAudioRecCancel();
+              novaStateWithLock([&](NovaState& s) {
+                s.recState = 0;
+                novaSafeUtf8Copy(s.boardToast, sizeof(s.boardToast), "已取消");
+                s.boardToastStartMs = nowMs;
+                s.recGen++;
+                s.boardGen++;
+              });
+            } else if (curRec.durMs < 350u) {
+              hwAudioRecCancel();
+              novaStateWithLock([&](NovaState& s) {
+                s.recState = 0;
+                novaSafeUtf8Copy(s.boardToast, sizeof(s.boardToast), "说得太短了");
+                s.boardToastStartMs = nowMs;
+                s.recGen++;
+                s.boardGen++;
+              });
+              sfxPlay(SfxKind::DENY, cfg.soundPct);
+            } else {
+              hwAudioRecStop();
+            }
+          }
+          novaStateRead(&st);
+          needFull = true;
           continue;
         }
         if (settingsGrab) {
@@ -1076,6 +1444,12 @@ void uiTaskFn(void*) {
               needFull = true;
             }
           }
+          if (!st.approvalActive && nav.currentPage() == UiPage::CHAT) {
+            pageChatScrollTouchUp(ev.tsMs, st);
+            if (!pageChatIsFlinging()) {
+              needFull = true;
+            }
+          }
           continue;
         }
         if (!st.approvalActive && nav.currentPage() == UiPage::RANK) {
@@ -1084,12 +1458,17 @@ void uiTaskFn(void*) {
         if (!st.approvalActive && nav.currentPage() == UiPage::SETTINGS) {
           pageSettingsScrollCancel();
         }
+        if (!st.approvalActive && nav.currentPage() == UiPage::CHAT) {
+          pageChatScrollCancel();
+        }
         int16_t dx = ev.x - tpStartX;
         int16_t dy = ev.y - tpStartY;
         int16_t adx = dx < 0 ? -dx : dx;
         int16_t ady = dy < 0 ? -dy : dy;
         UiPage prevPage = nav.currentPage();
-        UiAction act = st.approvalActive ? UiAction{} : nav.onSwipe(dx, dy);
+        const bool blockSwipe = st.approvalActive ||
+                                (prevPage == UiPage::CHAT && st.recState == 1);
+        UiAction act = blockSwipe ? UiAction{} : nav.onSwipe(dx, dy);
         if (act.kind != UiAction::NONE) {
           int slideDir = (prevPage == UiPage::SETTINGS && dy >= 60 && dy > adx)
                            ? 0
@@ -1261,6 +1640,8 @@ void uiTaskFn(void*) {
     // Detect state / heartbeat / burn-in pixel shift changes requiring a full redraw.
     if (st.stateGen != lastStateGen || st.quotaGen != lastQuotaGen || st.rankGen != lastRankGen ||
         st.choreoGen != lastChoreoGen || st.tokenGen != lastTokenGen ||
+        (nav.currentPage() == UiPage::CHAT &&
+         (st.recGen != lastRecGen || st.chatGen != lastChatGen || st.boardGen != lastBoardGen)) ||
         st.wifiConnected != lastWifiUp || st.wifiApMode != lastApMode ||
         st.mqttConnected != lastMqttUp || st.minute != lastMinute ||
         battChanged || powerStateChanged || detailPowerChanged ||
@@ -1272,6 +1653,9 @@ void uiTaskFn(void*) {
       lastRankGen       = st.rankGen;
       lastChoreoGen     = st.choreoGen;
       lastTokenGen      = st.tokenGen;
+      lastRecGen        = st.recGen;
+      lastChatGen       = st.chatGen;
+      lastBoardGen      = st.boardGen;
       lastWifiUp        = st.wifiConnected;
       lastApMode        = st.wifiApMode;
       lastMqttUp        = st.mqttConnected;
@@ -1291,6 +1675,17 @@ void uiTaskFn(void*) {
       lastBurnStep      = burnStep;
       lastSleepState    = curSleepState;
       needFull          = true;
+    }
+    if (!aodActive && !screenOff && !dimmedForNap && !st.approvalActive &&
+        nav.currentPage() == UiPage::CHAT && st.recState != 1 && !st.chatDraftActive) {
+      bool hasRunning = (st.chatDelivery.kind == ChatDelivKind::RUN);
+      for (uint8_t i = 0; !hasRunning && i < st.nBoardSessions && i < MAX_BOARD_SESSIONS; i++) {
+        if (st.boardSessions[i].state == BoardSessState::RUN) hasRunning = true;
+      }
+      if (hasRunning && (uint32_t)(nowMs - lastChatSecDrawMs) >= 1000u) {
+        lastChatSecDrawMs = nowMs;
+        needFull = true;
+      }
     }
     if (st.approvalActive && !screenOff && !dimmedForNap) {
       if (st.second != lastSecond) {
@@ -1411,6 +1806,14 @@ void uiTaskFn(void*) {
       wasRankFlinging = false;
     }
 
+    if (!st.approvalActive && nav.currentPage() == UiPage::CHAT) {
+      if (pageChatTick(nowMs, st)) {
+        needFull = true;
+      }
+    } else if (pageChatIsFlinging()) {
+      pageChatScrollCancel();
+    }
+
     // Frame rate target depends on active page & power profile.
     // 异常详情浮层开着时不能走舞台局部重绘：pageHomeDrawStage 只重画宠物那一块，
     // 浮层画完立刻会被动画覆盖（真机实测：宠物和气泡压在浮层上）。
@@ -1456,7 +1859,7 @@ void uiTaskFn(void*) {
 
     bool pressAnimating = (pressPhase == PressPhase::FADE_IN || pressPhase == PressPhase::FADE_OUT);
     bool interactive = tpActive || pageRankIsFlinging() || pageSettingsIsAnimating() ||
-                       pressAnimating || (aodFade != AodFade::NONE) || uiAnimating;
+                       pageChatIsFlinging() || pressAnimating || (aodFade != AodFade::NONE) || uiAnimating;
     // TOKENS 页一帧要搬 63 KB（368×88）@ 实测 2.7 MB/s ≈ 23 ms，喂不到 60；
     // 鱼又是 ±2.6px / 4s 的慢速微动，30 fps 和 60 fps 肉眼没差别，锁 30 换稳定。
     const uint8_t baseFps = settingsEffectiveFps(snap.battery.usbPresent);

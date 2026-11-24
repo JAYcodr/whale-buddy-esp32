@@ -285,6 +285,193 @@ int main() {
     CHECK(protoBuildPowerEvent(pwrBuf, 96, maxEv) == 0);
   }
 
+  // ── 6. 录音回传确认载荷（mic_ack）────────────────────────────────
+  {
+    novaStateInit("testdev", "0.5.0");
+    const char* okAck = "{\"id\":101,\"ok\":true,\"file\":\"rec_001_24dB_3.4s.wav\",\"missing\":0}";
+    CHECK(protoApplyMessage("mic_ack", okAck, std::strlen(okAck), 3000));
+    NovaState st;
+    novaStateRead(&st);
+    CHECK(st.recState == 4);
+    CHECK(st.recSavedCount == 1);
+    CHECK(std::strcmp(st.recLastFile, "rec_001_24dB_3.4s.wav") == 0);
+    CHECK(st.recErr[0] == '\0');
+
+    // Duplicate clipId does not double-count recSavedCount.
+    CHECK(protoApplyMessage("mic_ack", okAck, std::strlen(okAck), 3100));
+    novaStateRead(&st);
+    CHECK(st.recSavedCount == 1);
+
+    const char* badAck = "{\"id\":102,\"ok\":false,\"missing\":3}";
+    CHECK(protoApplyMessage("mic_ack", badAck, std::strlen(badAck), 3200));
+    novaStateRead(&st);
+    CHECK(st.recState == 5);
+    CHECK(std::strstr(st.recErr, "3") != nullptr);
+  }
+
+  // ── 7. 多轮对话协议（chat asr/reply + chat_send/chat_tts 构造）───
+  {
+    novaStateInit("testdev", "0.5.0");
+    NovaState st;
+    novaStateRead(&st);
+    CHECK(st.recGainDb == 24);
+    CHECK(st.nChatMsgs == 0);
+    CHECK(!st.chatDraftActive);
+
+    // 7a. ASR 成功
+    const char* asrOk = "{\"t\":\"asr\",\"id\":42,\"ok\":true,\"text\":\"查一下当前状态\",\"ms\":610}";
+    CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 4000));
+    novaStateRead(&st);
+    CHECK(st.recState == 0);
+    CHECK(st.chatDraftActive);
+    CHECK(st.chatDraftId == 42);
+    CHECK(st.chatDraftStartMs == 4000);
+    CHECK(std::strcmp(st.chatDraftText, "查一下当前状态") == 0);
+    CHECK(st.recErr[0] == '\0');
+    CHECK(st.recGen == 1);
+    CHECK(st.chatGen == 1);
+
+    // 7b. ASR 空文本 / 失败
+    const char* asrEmpty = "{\"t\":\"asr\",\"id\":43,\"ok\":true,\"text\":\"   \"}";
+    CHECK(protoApplyMessage("chat", asrEmpty, std::strlen(asrEmpty), 4100));
+    novaStateRead(&st);
+    CHECK(st.recState == 5);
+    CHECK(!st.chatDraftActive);
+    CHECK(std::strcmp(st.recErr, "未识别到语音") == 0);
+
+    const char* asrFail = "{\"t\":\"asr\",\"id\":44,\"ok\":false,\"err\":\"识别超时\"}";
+    CHECK(protoApplyMessage("chat", asrFail, std::strlen(asrFail), 4200));
+    novaStateRead(&st);
+    CHECK(st.recState == 5);
+    CHECK(std::strcmp(st.recErr, "识别超时") == 0);
+
+    // 7c. Reply 成功 + 队列左移（超过 MAX_CHAT_MSGS = 8）
+    novaStateWithLock([](NovaState& s) {
+      s.chatWaitingReply = true;
+      for (int i = 0; i < MAX_CHAT_MSGS; i++) {
+        char msg[24];
+        std::snprintf(msg, sizeof(msg), "msg-%d", i);
+        novaChatAppend(s, (i % 2) == 0, (uint16_t)(i + 1), msg);
+      }
+    });
+    const char* replyOk = "{\"t\":\"reply\",\"id\":99,\"ok\":true,\"text\":\"当前一切正常\"}";
+    CHECK(protoApplyMessage("chat", replyOk, std::strlen(replyOk), 4300));
+    novaStateRead(&st);
+    CHECK(!st.chatWaitingReply);
+    CHECK(st.nChatMsgs == MAX_CHAT_MSGS);
+    CHECK(std::strcmp(st.chatMsgs[0].text, "msg-1") == 0);
+    CHECK(!st.chatMsgs[MAX_CHAT_MSGS - 1].isUser);
+    CHECK(st.chatMsgs[MAX_CHAT_MSGS - 1].id == 99);
+    CHECK(std::strcmp(st.chatMsgs[MAX_CHAT_MSGS - 1].text, "当前一切正常") == 0);
+    CHECK(st.recErr[0] == '\0');
+
+    // 7d. Reply 失败
+    novaStateWithLock([](NovaState& s) { s.chatWaitingReply = true; });
+    const char* replyFail = "{\"t\":\"reply\",\"id\":100,\"ok\":false,\"err\":\"回复超时\"}";
+    CHECK(protoApplyMessage("chat", replyFail, std::strlen(replyFail), 4400));
+    novaStateRead(&st);
+    CHECK(!st.chatWaitingReply);
+    CHECK(st.recState == 5);
+    CHECK(std::strcmp(st.recErr, "回复超时") == 0);
+
+    // 7e. protoBuildChatSend / protoBuildChatTts（含引号与 UTF-8 + 448B 容量）
+    char chatBuf[448] = {};
+    const char* tricky = "请看 \"quote\" 和 \\slash\n还有中文";
+    size_t csLen = protoBuildChatSend(chatBuf, sizeof(chatBuf), 123, tricky);
+    CHECK(csLen > 0 && csLen < sizeof(chatBuf));
+    CHECK(std::strstr(chatBuf, "\"evt\":\"chat_send\"") != nullptr);
+    CHECK(std::strstr(chatBuf, "\"id\":123") != nullptr);
+    CHECK(std::strstr(chatBuf, "\\\"quote\\\"") != nullptr);
+    CHECK(protoBuildChatSend(chatBuf, 12, 123, tricky) == 0);
+
+    size_t ctLen = protoBuildChatTts(chatBuf, sizeof(chatBuf), tricky);
+    CHECK(ctLen > 0 && ctLen < sizeof(chatBuf));
+    CHECK(std::strstr(chatBuf, "\"evt\":\"chat_tts\"") != nullptr);
+    CHECK(std::strstr(chatBuf, "\\\"quote\\\"") != nullptr);
+    CHECK(protoBuildChatTts(chatBuf, 12, tricky) == 0);
+
+    // 159-byte UTF-8 text fits within NetTxMsg::payload[448].
+    char maxText[160];
+    std::memset(maxText, 'a', 159);
+    maxText[159] = '\0';
+    CHECK(protoBuildChatSend(chatBuf, 448, 65535, maxText) > 0);
+    CHECK(protoBuildChatTts(chatBuf, 448, maxText) > 0);
+  }
+
+  // ── 8. 命令方块模式：sessions 看板 + 自动锁目标 + delivery 回执 ───
+  {
+    novaStateInit("testdev", "0.5.0");
+    const char* sessJson =
+      "{\"t\":\"sessions\",\"lastSay\":\"单测通过\",\"lastAgo\":120,"
+      "\"items\":["
+        "{\"id\":\"s2\",\"name\":\"审批会话\",\"cwd\":\"nova\",\"st\":\"wait\",\"el\":15,\"act\":\"bash rm\",\"note\":\"删文件\"},"
+        "{\"id\":\"s1\",\"name\":\"电量四改\",\"cwd\":\"nova-buddy\",\"st\":\"run\",\"el\":252,\"act\":\"cargo test\",\"note\":\"2 个失败\","
+          "\"steps\":[{\"t\":\"4:02\",\"s\":\"bash\",\"a\":\"cargo test\"}]},"
+        "{\"id\":\"s3\",\"name\":\"DS-Bot\",\"cwd\":\"ds-bot\",\"st\":\"idle\",\"el\":480,\"act\":\"已停下\",\"note\":\"8分钟前\"}"
+      "]}";
+    CHECK(protoApplyMessage("sessions", sessJson, std::strlen(sessJson), 5000));
+    NovaState st;
+    novaStateRead(&st);
+    CHECK(st.nBoardSessions == 3);
+    CHECK(st.boardSessions[0].state == BoardSessState::WAIT);
+    CHECK(st.boardSessions[1].state == BoardSessState::RUN);
+    CHECK(st.boardSessions[1].nSteps == 1);
+    CHECK(std::strcmp(st.lastSayText, "单测通过") == 0);
+    CHECK(st.lastSayAgeSec == 120);
+
+    // 未手动选目标时，ASR 成功应跳过 WAIT，优先锁定 IDLE 会话 (s3)
+    const char* asrOk = "{\"t\":\"asr\",\"id\":7,\"ok\":true,\"text\":\"继续弄\"}";
+    CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 5100));
+    novaStateRead(&st);
+    CHECK(st.chatDraftActive);
+    CHECK(std::strcmp(st.boardTargetId, "s3") == 0);
+
+    // 若用户原本就指向 s1 (RUN)，ASR 后保持用户选择不覆盖
+    novaStateWithLock([](NovaState& s) {
+      std::strcpy(s.boardTargetId, "s1");
+      s.chatDraftActive = false;
+    });
+    CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 5200));
+    novaStateRead(&st);
+    CHECK(std::strcmp(st.boardTargetId, "s1") == 0);
+
+    // 若用户原本指向 wait 会话 s2，ASR 后自动改锁可用会话
+    novaStateWithLock([](NovaState& s) {
+      std::strcpy(s.boardTargetId, "s2");
+      s.chatDraftActive = false;
+    });
+    CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 5300));
+    novaStateRead(&st);
+    CHECK(std::strcmp(st.boardTargetId, "s3") == 0);
+
+    // delivery: sent -> run -> reply -> mute -> fail
+    const char* dSent = "{\"t\":\"delivery\",\"id\":7,\"kind\":\"sent\",\"pos\":1,\"target\":\"s1\",\"name\":\"电量四改\"}";
+    CHECK(protoApplyMessage("chat", dSent, std::strlen(dSent), 5400));
+    novaStateRead(&st);
+    CHECK(st.chatWaitingReply);
+    CHECK(st.chatDelivery.kind == ChatDelivKind::SENT);
+    CHECK(st.chatDelivery.queuePos == 1);
+
+    const char* dReply = "{\"t\":\"delivery\",\"id\":7,\"kind\":\"reply\",\"target\":\"s1\",\"text\":\"还剩 2 个断言失败\"}";
+    CHECK(protoApplyMessage("chat", dReply, std::strlen(dReply), 5500));
+    novaStateRead(&st);
+    CHECK(!st.chatWaitingReply);
+    CHECK(st.chatDelivery.kind == ChatDelivKind::REPLY);
+    CHECK(std::strcmp(st.lastSayText, "还剩 2 个断言失败") == 0);
+
+    const char* dMute = "{\"t\":\"delivery\",\"id\":8,\"kind\":\"mute\",\"target\":\"s1\"}";
+    CHECK(protoApplyMessage("chat", dMute, std::strlen(dMute), 5600));
+    novaStateRead(&st);
+    CHECK(!st.chatWaitingReply);
+    CHECK(st.chatDelivery.kind == ChatDelivKind::MUTE);
+
+    char chatBuf[448] = {};
+    size_t n = protoBuildChatSend(chatBuf, sizeof(chatBuf), 88, "跑测试", "s1", "steer");
+    CHECK(n > 0 && n < sizeof(chatBuf));
+    CHECK(std::strstr(chatBuf, "\"target\":\"s1\"") != nullptr);
+    CHECK(std::strstr(chatBuf, "\"mode\":\"steer\"") != nullptr);
+  }
+
   std::printf("%d checks, %d failed\n", g_checks, g_fail);
   return g_fail ? 1 : 0;
 }
