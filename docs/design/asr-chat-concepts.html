@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nova Buddy · ASR 人声对话 UI 三方向对比与技术方案</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#07080a; --panel:#0d1117; --panel2:#111824; --line:#1b2330;
+    --txt:#e8edf6; --dim:#8b9ab0; --muted:#4d5d75;
+    --accent:#48c6ff; --mint:#40e6b0; --violet:#a88cff; --red:#ff586c;
+  }
+  body{
+    background:var(--bg); color:var(--txt);
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    font-size:15px; line-height:1.65;
+    padding:56px 40px 120px;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+
+  /* ---------- 页头 ---------- */
+  .kicker{font-size:11px;letter-spacing:.22em;color:var(--muted);text-transform:uppercase;margin-bottom:12px}
+  h1{font-size:40px;line-height:1.15;font-weight:600;letter-spacing:-.015em;margin-bottom:14px}
+  h1 em{font-style:normal;color:var(--accent)}
+  .lede{font-size:16.5px;color:var(--dim);max-width:780px;line-height:1.7}
+  .lede b{color:var(--txt);font-weight:500}
+  .meta{margin-top:20px;display:flex;gap:9px;flex-wrap:wrap}
+  .chip{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:4px 12px}
+
+  /* ---------- 章节标题 ---------- */
+  .sec{margin-top:68px}
+  .sec-hd{display:flex;align-items:baseline;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+  .num{font-size:12px;font-variant-numeric:tabular-nums;color:var(--muted);letter-spacing:.1em}
+  .sec-hd h2{font-size:22px;font-weight:600;letter-spacing:-.01em}
+  .tag{margin-left:auto;font-size:11px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+
+  /* ---------- 三方案并排预览卡 ---------- */
+  .cards{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:24px;
+    margin-top:28px;
+  }
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:16px;
+    padding:18px; display:flex; flex-direction:column; gap:16px;
+    transition:border-color .15s ease, transform .15s ease;
+  }
+  .card:hover{border-color:#2a3c59;transform:translateY(-2px)}
+  .card-hd{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .card-badge{
+    font-size:11px; font-weight:600; letter-spacing:.08em;
+    padding:3px 9px; border-radius:99px;
+    background:#101c2d; border:1px solid #1e304e; color:var(--accent);
+  }
+  .card-badge.mint{color:var(--mint);border-color:rgba(64,230,176,.35);background:#0c221d}
+  .card-badge.violet{color:var(--violet);border-color:rgba(168,140,255,.35);background:#17132c}
+  .card-cost{font-size:11.5px;color:var(--muted)}
+  .card-title{font-size:19px;font-weight:600;color:var(--txt);line-height:1.3}
+  .card-pitch{font-size:13.5px;color:var(--dim);line-height:1.6;min-height:44px}
+
+  /* 缩略 OLED 屏预览框（368×448 等比缩放到 0.68× = 250×305） */
+  .thumb-wrap{
+    width:250px; height:305px; margin:0 auto;
+    border-radius:10px; overflow:hidden; position:relative;
+    background:#000; box-shadow:0 0 0 1px #20293a, 0 16px 36px -14px #000;
+  }
+  .thumb-screen{
+    width:368px; height:448px; position:absolute; left:0; top:0;
+    transform-origin:0 0; transform:scale(.6793);
+    background:#000; color:#f2f6ff; overflow:hidden;
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    display:flex; flex-direction:column; user-select:none;
+  }
+
+  .card-foot{margin-top:auto;display:flex;gap:10px;align-items:center}
+  .launch-btn{
+    flex:1; height:40px; border-radius:10px;
+    background:#122436; border:1px solid rgba(72,198,255,.45);
+    color:var(--accent); font-size:13.5px; font-weight:600;
+    text-decoration:none; display:flex; align-items:center; justify-content:center;
+    transition:all .14s ease;
+  }
+  .launch-btn:hover{background:var(--accent);color:#04121c}
+
+  /* 缩略图内组件（复用 368×448 真机像素语言） */
+  .m-top{
+    height:50px; padding:10px 16px 0; display:flex; align-items:center; justify-content:space-between;
+    font-size:18px; font-weight:600; font-variant-numeric:tabular-nums;
+  }
+  .m-pill{
+    font-size:12px; color:#f2f6ff; background:#0c121e; border:1px solid #48c6ff;
+    border-radius:99px; padding:3px 10px; display:inline-flex; align-items:center; gap:5px;
+  }
+  .m-pill i{width:6px;height:6px;border-radius:50%;background:#48c6ff;display:block}
+  .m-batt{font-size:13px;color:#40e6b0}
+
+  /* 缩略图 A：诺瓦 + 字幕 */
+  .ma-stage{
+    flex:1; position:relative; display:flex; align-items:center; justify-content:center;
+  }
+  .ma-ring{
+    position:absolute; width:166px; height:166px; border-radius:50%;
+    border:2.5px solid rgba(72,198,255,.55);
+    box-shadow:0 0 28px rgba(72,198,255,.22), inset 0 0 24px rgba(72,198,255,.15);
+  }
+  .ma-nova{
+    width:143px; height:162px; position:relative; z-index:2;
+    background-image:url('../../assets/pets/nova/idle_preview.png');
+    background-size:858px 162px; background-position:0 0; background-repeat:no-repeat;
+  }
+  .ma-card{
+    margin:0 16px 10px; background:#0c121e; border:1px solid rgba(72,198,255,.45);
+    border-radius:16px; padding:10px 14px;
+  }
+  .ma-tag{font-size:11px;font-weight:600;color:#48c6ff;margin-bottom:2px}
+  .ma-tag.mint{color:#40e6b0;margin-top:6px}
+  .ma-txt{font-size:16.5px;line-height:1.3;color:#f2f6ff}
+  .ma-ptt{
+    margin:0 16px 12px; height:42px; border-radius:21px; background:#48c6ff; color:#04121c;
+    font-size:15px; font-weight:600; display:flex; align-items:center; justify-content:center;
+  }
+
+  /* 缩略图 B：独立多轮消息流 */
+  .mb-list{flex:1;padding:8px 16px;display:flex;flex-direction:column;gap:9px;overflow:hidden}
+  .mb-msg{max-width:86%;padding:9px 12px;border-radius:14px;font-size:15.5px;line-height:1.35}
+  .mb-u{align-self:flex-end;background:rgba(72,198,255,.14);border:1px solid rgba(72,198,255,.4);color:#f2f6ff}
+  .mb-a{align-self:flex-start;background:#0c121e;border:1px solid #1e304e;color:#f2f6ff}
+  .mb-draft{
+    margin:0 16px 8px; background:#121e33; border:1px solid #48c6ff;
+    border-radius:14px; padding:9px 12px;
+  }
+  .mb-draft-hd{display:flex;justify-content:space-between;font-size:11.5px;color:#48c6ff;margin-bottom:4px}
+  .mb-draft-txt{font-size:16px;color:#f2f6ff;margin-bottom:6px}
+  .mb-bar{height:3px;border-radius:2px;background:#1e304e;overflow:hidden}
+  .mb-bar i{display:block;width:68%;height:100%;background:#48c6ff}
+  .mb-ptt{
+    margin:0 16px 12px; height:42px; border-radius:14px; background:#162238; border:1px solid #1e304e;
+    color:#f2f6ff; font-size:15px; font-weight:600; display:flex; align-items:center; justify-content:center;
+  }
+
+  /* 缩略图 C：全局对讲浮层 */
+  .mc-bg{
+    position:absolute; inset:0; width:368px; height:448px;
+    background-image:url('../previews/page_home.png');
+    background-size:368px 448px; opacity:.28; filter:blur(1.5px);
+  }
+  .mc-sheet{
+    position:absolute; left:12px; right:12px; bottom:12px; top:76px;
+    background:#0c121e; border:1.5px solid #48c6ff; border-radius:22px;
+    padding:12px 14px; display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .mc-hd{display:flex;justify-content:space-between;align-items:center}
+  .mc-seg{display:flex;background:#070c14;border-radius:9px;padding:2px;gap:2px;font-size:12px}
+  .mc-seg span{padding:3px 10px;border-radius:7px;color:#8294b4}
+  .mc-seg span.on{background:#48c6ff;color:#04121c;font-weight:600}
+  .mc-bars{display:flex;align-items:center;justify-content:center;gap:5px;height:42px}
+  .mc-bars i{width:6px;border-radius:3px;background:#48c6ff;display:block}
+  .mc-asr{font-size:18px;line-height:1.35;color:#f2f6ff;text-align:center}
+  .mc-ans{
+    background:#162238;border-left:3px solid #40e6b0;border-radius:10px;
+    padding:8px 10px;font-size:14px;color:#f2f6ff;line-height:1.38;
+  }
+  .mc-circle{
+    width:62px;height:62px;border-radius:50%;margin:0 auto;
+    background:#48c6ff;color:#04121c;font-size:12px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 0 24px rgba(72,198,255,.45);
+  }
+
+  /* ---------- 四轴对比表 ---------- */
+  .cmp{width:100%;border-collapse:collapse;margin-top:26px;font-size:13.5px}
+  .cmp th{
+    text-align:left; font-size:11px; letter-spacing:.1em; color:var(--muted);
+    font-weight:600; padding:0 14px 12px 0; border-bottom:1px solid var(--line);
+    text-transform:uppercase;
+  }
+  .cmp td{
+    padding:14px 14px 14px 0; border-bottom:1px solid var(--line);
+    color:var(--dim); vertical-align:top; line-height:1.58;
+  }
+  .cmp td:first-child{color:var(--txt);width:110px;font-weight:500}
+  .cmp td strong{color:var(--txt);font-weight:500}
+  .pill-tag{
+    display:inline-block; font-size:11px; padding:2px 8px; border-radius:6px; font-weight:600;
+  }
+  .pill-tag.low{background:#12261f;color:var(--mint)}
+  .pill-tag.mid{background:#122436;color:var(--accent)}
+
+  /* ---------- 工程实施路线图 ---------- */
+  .roadmap{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:20px;
+    margin-top:26px;
+  }
+  .step-box{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:18px 18px 20px; display:flex; flex-direction:column; gap:10px;
+  }
+  .step-num{
+    font-size:11px; letter-spacing:.14em; font-weight:600;
+    color:var(--accent); text-transform:uppercase;
+  }
+  .step-box.warn .step-num{color:var(--mint)}
+  .step-box.trig .step-num{color:var(--violet)}
+  .step-title{font-size:17px;font-weight:600;color:var(--txt);line-height:1.35}
+  .step-body{font-size:13.5px;color:var(--dim);line-height:1.68}
+  .step-body b{color:var(--txt);font-weight:500}
+  .step-body code{
+    background:#101722; border:1px solid #1a2534; border-radius:4px;
+    padding:1px 5px; font-size:11.5px; color:#9fb0c6;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  .step-list{list-style:none;display:flex;flex-direction:column;gap:7px;margin-top:4px}
+  .step-list li{
+    font-size:13px; color:var(--dim); padding-left:14px; position:relative; line-height:1.55;
+  }
+  .step-list li:before{
+    content:"→"; position:absolute; left:0; top:0; color:var(--muted); font-size:12px;
+  }
+
+  .foot{
+    margin-top:56px; padding-top:22px; border-top:1px solid var(--line);
+    font-size:13px; color:var(--muted); display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px;
+  }
+
+  @media (max-width:1040px){
+    .cards{grid-template-columns:1fr}
+    .roadmap{grid-template-columns:1fr}
+  }
+  @media (max-width:720px){
+    body{padding:36px 18px 80px}
+    h1{font-size:30px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">NOVA BUDDY · ESP32-S3-TOUCH-AMOLED-1.8 · ASR &amp; VOICE INTERACTION</div>
+    <h1>人声识别与对话 UI，<em>三个方向</em></h1>
+    <p class="lede">
+      围绕 <b>Waveshare ESP32-S3-Touch-AMOLED-1.8（368×448）</b> 与尚未摸底的 <b>ES8311 板载麦克风</b>，下面给出 3 套在概念、组织、交互与视觉上互斥的交互原型，外加第 0 步先测麦、云端中转与触发双工的落地路线。
+    </p>
+    <div class="meta">
+      <span class="chip">368 × 448 AMOLED</span>
+      <span class="chip">ES8311 Codec · PIN_I2S_DI=10</span>
+      <span class="chip">现有 NVAD 16kHz ADPCM 链路</span>
+      <span class="chip">纯黑省电 · 无黄系主色</span>
+    </div>
+  </header>
+
+  <!-- ======================= 01 三方案缩略卡 ======================= -->
+  <section class="sec">
+    <div class="sec-hd">
+      <span class="num">01</span>
+      <h2>三套互斥方案（点击进入真机缩放交互 Demo）</h2>
+      <span class="tag">CONCEPTS A / B / C</span>
+    </div>
+
+    <div class="cards">
+      <!-- 方案 A -->
+      <article class="card">
+        <div class="card-hd">
+          <span class="card-badge">方案 A</span>
+          <span class="card-cost">改造成本：低</span>
+        </div>
+        <div class="card-title">诺瓦在场 · 实时字幕舞台</div>
+        <p class="card-pitch">诺瓦居中不变，声波光环表达收音/思考/播报，下方用 17.5px 大字幕单轮展示你说与诺瓦答。</p>
+
+        <div class="thumb-wrap" aria-hidden="true">
+          <div class="thumb-screen">
+            <div class="m-top">
+              <span>21:04</span>
+              <span class="m-pill"><i></i>收音中</span>
+              <span class="m-batt">88%</span>
+            </div>
+            <div class="ma-stage">
+              <div class="ma-ring"></div>
+              <div class="ma-nova"></div>
+            </div>
+            <div class="ma-card">
+              <div class="ma-tag">你说（实时转写）</div>
+              <div class="ma-txt">帮我看看 DSH 现在几个任务在跑？</div>
+              <div class="ma-tag mint">诺瓦答</div>
+              <div class="ma-txt" style="color:#8294b4">等待松手后送入云端确认…</div>
+            </div>
+            <div class="ma-ptt">正在听… 松开结束</div>
+          </div>
+        </div>
+
+        <div class="card-foot">
+          <a class="launch-btn" href="asr-concept-a-pet-stage.html">打开方案 A 交互 Demo →</a>
+        </div>
+      </article>
+
+      <!-- 方案 B -->
+      <article class="card">
+        <div class="card-hd">
+          <span class="card-badge violet">方案 B</span>
+          <span class="card-cost">改造成本：中</span>
+        </div>
+        <div class="card-title">独立对话页 · 极简多轮消息流</div>
+        <p class="card-pitch">新增第 6 页常驻多轮对话，无头像宽气泡 + 快捷指令条，松手后 1.5s 确认缓冲防麦噪误发指令。</p>
+
+        <div class="thumb-wrap" aria-hidden="true">
+          <div class="thumb-screen">
+            <div class="m-top">
+              <span>21:04</span>
+              <span class="m-pill">发给 DSH ⇄</span>
+              <span class="m-batt">88%</span>
+            </div>
+            <div class="mb-list">
+              <div class="mb-msg mb-u">查一下今天构建测试跑完没</div>
+              <div class="mb-msg mb-a">已完成 14 项单测，全部通过，暂无异常。</div>
+              <div class="mb-msg mb-u">把失败的那个再跑一遍</div>
+            </div>
+            <div class="mb-draft">
+              <div class="mb-draft-hd"><span>即将发送至 DSH</span><span>1.2s</span></div>
+              <div class="mb-draft-txt">继续跑下一组回归测试</div>
+              <div class="mb-bar"><i></i></div>
+            </div>
+            <div class="mb-ptt">按住说话</div>
+          </div>
+        </div>
+
+        <div class="card-foot">
+          <a class="launch-btn" href="asr-concept-b-thread-chat.html">打开方案 B 交互 Demo →</a>
+        </div>
+      </article>
+
+      <!-- 方案 C -->
+      <article class="card">
+        <div class="card-hd">
+          <span class="card-badge mint">方案 C</span>
+          <span class="card-cost">改造成本：低</span>
+        </div>
+        <div class="card-title">全局对讲浮层 · 随时呼出 + 麦质自测</div>
+        <p class="card-pitch">不增页面，任何页面按 KEY1 或顶栏即可弹出对讲浮层；内置 3 秒收音自测与本机回放。</p>
+
+        <div class="thumb-wrap" aria-hidden="true">
+          <div class="thumb-screen">
+            <div class="mc-bg"></div>
+            <div class="mc-sheet">
+              <div class="mc-hd">
+                <div class="mc-seg">
+                  <span class="on">对讲</span>
+                  <span>收音自测</span>
+                </div>
+                <span style="font-size:12px;color:#48c6ff">● 收音中</span>
+              </div>
+              <div class="mc-bars">
+                <i style="height:14px"></i><i style="height:26px"></i><i style="height:36px"></i>
+                <i style="height:22px"></i><i style="height:40px"></i><i style="height:30px"></i>
+                <i style="height:18px"></i><i style="height:34px"></i><i style="height:24px"></i>
+              </div>
+              <div class="mc-asr">把当前工作区报错的那个测试修一下</div>
+              <div class="mc-ans">已转交 DSH 处理并准备复跑验证。</div>
+              <div class="mc-circle">对讲中</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-foot">
+          <a class="launch-btn" href="asr-concept-c-walkie-sheet.html">打开方案 C 交互 Demo →</a>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ======================= 02 四轴与工程对比 ======================= -->
+  <section class="sec">
+    <div class="sec-hd">
+      <span class="num">02</span>
+      <h2>四轴设计对比</h2>
+      <span class="tag">4-AXIS COMPARISON</span>
+    </div>
+
+    <table class="cmp">
+      <thead>
+        <tr>
+          <th>维度</th>
+          <th>方案 A · 诺瓦字幕舞台</th>
+          <th>方案 B · 独立对话流</th>
+          <th>方案 C · 全局对讲浮层</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>概念</td>
+          <td><strong>桌面宠物提词器</strong>：把语音对话直接变成诺瓦主舞台的实时字幕与光环互动。</td>
+          <td><strong>微型语音终端页</strong>：在 5 页圆环外独立开第 6 页，承接连续多轮指令与历史回溯。</td>
+          <td><strong>全局对讲机模态卡</strong>：对齐 <code>page_approval</code> 弹窗语法，随时呼出、说完即走。</td>
+        </tr>
+        <tr>
+          <td>内容组织</td>
+          <td>172px 诺瓦舞台 + 单轮大字幕卡（可切最近 2 轮）+ 底部全宽 PTT 键。</td>
+          <td>顶栏对象切换/麦健康点 + 86% 宽无头像消息流 + 快捷芯片 + 底部 PTT。</td>
+          <td>底层页面压暗透视 + 模态浮层内「对讲 / 收音自测」双标签 + 简短答复卡。</td>
+        </tr>
+        <tr>
+          <td>交互模型</td>
+          <td>在主屏直接按住说话，无需跳页；适合“问一句、听一句”的轻量桌面交互。</td>
+          <td>支持上下拖拽翻历史、点气泡重播 TTS；松手先停 1.5s 确认草稿防误发。</td>
+          <td>任意页面长按 KEY1 或点顶栏麦克风呼出；不说话时零占位；自测支持 3s 采样+回放。</td>
+        </tr>
+        <tr>
+          <td>视觉语法</td>
+          <td>青/紫/薄荷三色环形声波光环环绕诺瓦，角色与语音态情绪合二为一。</td>
+          <td>气泡边框区分 DSH（青）与诺瓦（薄荷），高信息可读性（16.5px 字号）。</td>
+          <td>粗粒度 16 柱垂直频谱 + 72px 圆形物理感按键，直接兼容审批弹窗动效。</td>
+        </tr>
+        <tr>
+          <td>麦克风容错</td>
+          <td>右上角实时 dB 徽章 + 可展开 12 段 SNR 诊断条，收音过轻立即标红。</td>
+          <td>顶栏红点告警 + 1.5s 取消重说缓冲，能有效拦截识别错字导致的误操作。</td>
+          <td>直接内置<strong>「收音自测」模式</strong>（Peak / 底噪 / SNR / 削波% + 本机回放），最适合摸底阶段。</td>
+        </tr>
+        <tr>
+          <td>固件改造量</td>
+          <td><span class="pill-tag low">低</span> 复用 <code>animPage</code> 局部脏矩形与现成 <code>.nva</code>。</td>
+          <td><span class="pill-tag mid">中</span> 需新增 <code>page_chat.cpp</code>、PSRAM 队列与拖拽滚动。</td>
+          <td><span class="pill-tag low">低</span> 复用 <code>POP_IN/OUT</code> 浮层框架，甚至无需改页面环。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ======================= 03 工程落地路线图 ======================= -->
+  <section class="sec">
+    <div class="sec-hd">
+      <span class="num">03</span>
+      <h2>配套技术落地方案（从零风险测麦到云端识别）</h2>
+      <span class="tag">ENGINEERING ROADMAP</span>
+    </div>
+
+    <div class="roadmap">
+      <div class="step-box warn">
+        <span class="step-num">STEP 0 · 先摸底硬件麦质</span>
+        <div class="step-title">ES8311 RX 回环 + USB 导 WAV 实测</div>
+        <p class="step-body">
+          板卡已接好 <code>PIN_I2S_DI=10</code>（见 <code>board_waveshare_esp32s3_touch_amoled_1_8.h</code>），当前 <code>src/hw/audio.cpp</code> 仅安装了 <code>I2S_MODE_TX</code> 且关着 ADC。先不接聊天 UI，花最小代价做一次硬件体检：
+        </p>
+        <ul class="step-list">
+          <li>改为 <code>I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX</code> 并开启 ES8311 MIC 通路与 PGA 增益调节。</li>
+          <li>加一条串口调试命令 <code>{"cmd":"mic_test","sec":5}</code>：录 5 秒 16kHz/16bit 单声道 PCM 进 PSRAM（仅 ~160 KB）。</li>
+          <li>端侧直接计算峰值/底噪/SNR，通过 <code>PIN_PA_CTRL=46</code> 喇叭回放听人声/底噪，同时串口导出 WAV 丢进你现成云端 ASR 实测 <b>30cm / 60cm / 1m</b> 真实字错率。</li>
+        </ul>
+      </div>
+
+      <div class="step-box">
+        <span class="step-num">STEP 1 · 云端识别链路</span>
+        <div class="step-title">推荐走局域网 host-plugin 中转</div>
+        <p class="step-body">
+          既然你已有现成云端 ASR，优先推荐 <b>ESP32 → 局域网 host-plugin → 云端 ASR → DSH / 回复</b>，而非 ESP32 直接建 HTTPS/WSS 连公网云端：
+        </p>
+        <ul class="step-list">
+          <li><b>省 RAM &amp; 零密钥上板</b>：避开 ESP32 端侧多路 TLS 握手内存开销，API Key/Token 全留宿主机 <code>host-plugin</code>。</li>
+          <li><b>复用现有编解码</b>：上行可走 HTTP 分块流或 WebSocket 传 16kHz PCM / 4-bit IMA-ADPCM（<code>adpcm.js</code> 已有同款 <code>NVAD</code> 格式）；下行继续复用现有 TTS（注意 <code>applyTtsChunk</code> 单条 98304B / ~40 汉字上限）。</li>
+          <li><b>备选直连</b>：若脱离电脑独立走 Wi-Fi，再退回 ESP32 直连云端网关（需要处理 TLS 证书与唤醒鉴权）。</li>
+        </ul>
+      </div>
+
+      <div class="step-box trig">
+        <span class="step-num">STEP 2 · 触发与双工策略</span>
+        <div class="step-title">半双工 PTT 起步，先避开无 AEC 深坑</div>
+        <p class="step-body">
+          在 ES8311 麦克风与腔体声学耦合尚未标定前，切忌一上来做全双工或常驻唤醒词（Wake Word）：
+        </p>
+        <ul class="step-list">
+          <li><b>按键/触屏 PTT 先行</b>：按住屏幕按钮或物理 <code>KEY1</code>（当前短按回主屏、长按 800ms 进设置）开始录音，松手即止。</li>
+          <li><b>天然无回声</b>：开始收音时拉低 <code>PIN_PA_CTRL</code> 静音功放，播报 TTS 时停止采集，完全不需要吃算力的软件 AEC。</li>
+          <li><b>推荐组合</b>：若先验证麦质 + 快速可用，<b>方案 C（全局对讲浮层）</b>直接自带自测与回放闭环；定型后可按需留作全局入口，或再补 <b>方案 A / B</b> 的常驻界面。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>Nova Buddy · ASR UI 概念对比页 · 368×448 真机约束</span>
+    <span>建议流程：先选界面方向（A / B / C）→ 烧录 Step 0 测麦固件摸底 ES8311 → 接通 host-plugin 云端识别</span>
+  </footer>
+
+</div>
+</body>
+</html>

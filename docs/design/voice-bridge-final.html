@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nova Buddy · 语音桥接最终形态 Demo</title>
+<style>
+  :root{
+    --bg:#000000; --card:#0c121e; --card-hi:#162238; --border:#1e304e;
+    --track:#121c2e; --text:#f2f6ff; --dim:#8294b4; --muted:#4a5c7c;
+    --accent:#48c6ff; --mint:#40e6b0; --amber:#ffc44c; --red:#ff586c;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0; background:#05070b; color:#dfe7f5;
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;}
+  body{display:flex; flex-direction:column; align-items:center; gap:20px; padding:30px 20px 70px;}
+
+  .caption{font-size:12px; color:#4d5a6d; letter-spacing:.6px}
+
+  /* ---------- 设备外壳 ---------- */
+  .device{
+    position:relative; width:596px; height:718px; border-radius:40px;
+    background:linear-gradient(160deg,#16181d,#0a0b0e 40%,#101216);
+    box-shadow:0 0 0 1px #262a32, 0 30px 80px -20px #000, inset 0 1px 0 #3a3f48;
+    padding:18px; flex:none;
+  }
+  .screen-wrap{width:560px; height:682px; overflow:hidden; border-radius:26px; background:#000; position:relative}
+  .screen{
+    width:368px; height:448px; background:var(--bg); color:var(--text);
+    transform:scale(1.52); transform-origin:top left; position:absolute; top:0; left:0;
+    font-size:14px; line-height:1.45; overflow:hidden; user-select:none;
+    cursor:default;
+  }
+  .layer{position:absolute; inset:0; display:flex; flex-direction:column}
+
+  /* ---------- 通用 ---------- */
+  .dot{width:8px;height:8px;border-radius:50%;flex:none;transition:opacity .2s}
+  .dot.run{background:var(--accent); box-shadow:0 0 8px var(--accent); animation:pulse 1.6s infinite}
+  .dot.wait{background:var(--amber); box-shadow:0 0 10px var(--amber); animation:pulse .9s infinite}
+  .dot.idle{background:var(--muted)}
+  .dot.ok{background:var(--mint)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  .statusbar{height:30px; padding:0 16px; display:flex; align-items:center; justify-content:space-between;
+    font-size:11px; color:var(--dim); letter-spacing:.3px; flex:none}
+
+  .header{padding:2px 16px 10px; display:flex; align-items:center; justify-content:space-between; flex:none}
+  .h-title{font-size:19px; font-weight:600; letter-spacing:.5px}
+  .h-sub{font-size:11px; color:var(--dim); margin-top:1px}
+  .badge{font-size:10px; padding:3px 8px; border-radius:20px; border:1px solid var(--border); color:var(--dim)}
+  .badge.warn{color:var(--amber); border-color:rgba(255,196,76,.4)}
+
+  .scroll{flex:1; min-height:0; overflow-y:auto; overflow-x:hidden}
+  .scroll::-webkit-scrollbar{width:0}
+
+  .list{padding:2px 14px 0; display:flex; flex-direction:column; gap:7px}
+  .sess{
+    background:var(--card); border:1px solid var(--border); border-radius:14px;
+    padding:9px 12px; cursor:pointer; transition:background .15s, border-color .15s;
+    position:relative; overflow:hidden;
+  }
+  .sess:hover{background:var(--card-hi)}
+  .sess.active{border-color:var(--accent); background:#1a2a44;
+    box-shadow:0 0 0 1px rgba(72,198,255,.35), 0 0 18px -6px rgba(72,198,255,.5)}
+  .sess.active::after{content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--accent)}
+  .sess .tick{position:absolute; right:11px; top:10px; width:17px; height:17px; border-radius:50%;
+    background:var(--accent); color:#00131f; font-size:11px; font-weight:800;
+    display:none; align-items:center; justify-content:center; line-height:1}
+  .sess.active .tick{display:flex; animation:popin .18s ease-out}
+  @keyframes popin{from{transform:scale(.5); opacity:0}to{transform:scale(1); opacity:1}}
+  .sess.active .s-top{padding-right:22px}
+  .sess.waiting{border-color:rgba(255,196,76,.55)}
+  .sess.waiting::before{content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--amber)}
+  .s-top{display:flex; align-items:center; gap:8px}
+  .s-name{font-size:15px; font-weight:600; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .s-time{font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums}
+  .s-act{font-size:12px; color:var(--dim); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .s-act code{color:var(--accent); font-family:ui-monospace,Menlo,monospace; font-size:11.5px}
+  .s-meta{font-size:10.5px; color:var(--muted); margin-top:1px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .sess.mini{padding:7px 12px; opacity:.85}
+  .sess.mini:hover{opacity:1}
+  .sess.mini .s-name{font-size:13.5px; font-weight:500; color:var(--dim)}
+  .sess.mini .s-time{font-size:10.5px}
+  .sess .sel{display:none}
+  .detail{background:var(--track); border-radius:11px; margin:7px 0 1px; padding:7px 10px}
+  .step{font-size:11.5px; color:var(--dim); display:flex; gap:7px; margin:2px 0}
+  .step b{color:var(--text); font-weight:500}
+  .step .t{color:var(--muted); font-variant-numeric:tabular-nums}
+
+  .fold{font-size:10.5px; color:var(--muted); padding:6px 4px 0; text-align:center; cursor:pointer}
+  .fold:hover{color:var(--dim)}
+
+  .lastsay{margin:9px 14px 0; padding:8px 11px; border-radius:11px;
+    background:rgba(18,28,46,.5); border:1px dashed rgba(30,48,78,.9)}
+  .lastsay .k{font-size:9.5px; color:var(--muted); letter-spacing:.6px}
+  .lastsay .v{font-size:12px; color:var(--dim); margin-top:2px; line-height:1.4;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+
+  /* ---------- dock ---------- */
+  .dock{flex:none; height:74px; padding:8px 16px 14px; display:flex; align-items:flex-end; gap:10px;
+    background:linear-gradient(180deg,rgba(0,0,0,0),#000 38%)}
+  .hold{
+    flex:1; height:44px; border-radius:22px; border:1px solid rgba(72,198,255,.5);
+    background:rgba(72,198,255,.09); color:var(--accent); font-size:14px; font-weight:600;
+    display:flex; align-items:center; justify-content:center; gap:8px; cursor:pointer;
+    transition:transform .1s, background .15s, border-color .15s; font-family:inherit;
+    touch-action:none;
+  }
+  .hold:hover{background:rgba(72,198,255,.16)}
+  .hold:active{transform:scale(.98); background:rgba(72,198,255,.24)}
+  .mic{width:14px;height:14px;position:relative;flex:none}
+  .mic::before{content:""; position:absolute; left:4px; top:0; width:6px; height:9px; border-radius:3px; background:currentColor}
+  .mic::after{content:""; position:absolute; left:1px; top:8px; width:12px; height:6px;
+    border:1.4px solid currentColor; border-top:none; border-radius:0 0 6px 6px}
+
+  /* ---------- 录音层（常驻，不参与重绘） ---------- */
+  .rec{position:absolute; inset:0; display:none; flex-direction:column; align-items:center;
+    justify-content:center; gap:14px; background:rgba(0,0,0,.965); z-index:20;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px)}
+  .screen.recording .rec{display:flex}
+  .rec .wave{display:flex; align-items:center; gap:3px; height:46px}
+  .rec .wave i{width:3px; border-radius:2px; background:var(--accent); height:8px; transition:height .09s ease-out}
+  .rec .rec-t{font-size:27px; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:1px; color:var(--text)}
+  .rec .rec-h{font-size:11.5px; color:var(--dim); transition:color .15s}
+  .screen.cancelling .rec .wave i{background:var(--red)}
+  .screen.cancelling .rec .rec-h{color:var(--red)}
+  .rec .hint-c{font-size:10px; color:var(--muted); margin-top:-6px}
+
+  /* ---------- 草稿卡 ---------- */
+  .draft{margin:6px 14px 0; background:#121e30; border:1px solid rgba(72,198,255,.45);
+    border-radius:16px; padding:12px 13px; animation:pop .18s ease-out}
+  @keyframes pop{from{transform:translateY(10px); opacity:0}to{transform:none; opacity:1}}
+  .d-label{font-size:10.5px; color:var(--accent); letter-spacing:.5px}
+  .d-text{font-size:15px; margin:6px 0 9px; line-height:1.42; min-height:21px}
+  .d-text .cursor{display:inline-block; width:1.5px; height:15px; background:var(--accent);
+    vertical-align:-2px; animation:blink 1s steps(1) infinite; margin-left:1px}
+  @keyframes blink{50%{opacity:0}}
+  .d-to{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim);
+    padding:6px 9px; background:var(--track); border-radius:9px}
+  .d-to b{color:var(--text); font-weight:600}
+  .d-to .chg{margin-left:auto; color:var(--accent); font-size:11px; cursor:pointer; padding:2px 4px}
+  .d-bar{height:3px; background:var(--track); border-radius:2px; margin:10px 0 9px; overflow:hidden}
+  .d-bar i{display:block; height:100%; background:var(--accent); width:100%}
+  .d-actions{display:flex; gap:8px}
+  .btn{flex:1; height:34px; border-radius:10px; border:1px solid var(--border); background:var(--card-hi);
+    color:var(--text); font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit;
+    transition:filter .12s}
+  .btn:hover{filter:brightness(1.18)}
+  .btn:active{transform:scale(.98)}
+  .btn.pri{background:var(--accent); border-color:var(--accent); color:#00131f}
+  .btn.warn{background:rgba(255,88,108,.12); border-color:rgba(255,88,108,.55); color:var(--red)}
+  .btn.ghost{background:transparent; color:var(--dim)}
+  .d-note{font-size:10.5px; color:var(--muted); margin-top:8px; line-height:1.35}
+
+  /* ---------- 回执 + 回复（单卡） ---------- */
+  .rsp{margin:9px 14px 0; border-radius:14px; border:1px solid var(--border);
+    background:var(--card); padding:11px 13px; animation:pop .2s}
+  .rsp.sent{border-color:rgba(72,198,255,.42)}
+  .rsp.run{border-color:rgba(255,196,76,.45)}
+  .rsp.fail{border-color:rgba(255,88,108,.5)}
+  .rsp.mute{border-color:rgba(74,92,124,.5)}
+  .rsp-top{display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--muted)}
+  .rsp-top b{font-weight:600; color:var(--text); font-size:12.5px; letter-spacing:.2px}
+  .rsp-top .rsp-ago{margin-left:auto; font-size:10.5px; color:var(--muted)}
+  .rsp-ic{width:16px; height:16px; border-radius:50%; flex:none; display:flex;
+    align-items:center; justify-content:center; font-size:9.5px; font-weight:800; line-height:1}
+  .rsp.sent .rsp-ic{background:rgba(72,198,255,.2); color:var(--accent)}
+  .rsp.run  .rsp-ic{background:rgba(255,196,76,.2); color:var(--amber)}
+  .rsp.fail .rsp-ic{background:rgba(255,88,108,.2); color:var(--red)}
+  .rsp.mute .rsp-ic{background:rgba(74,92,124,.3); color:var(--dim)}
+  .card-sub{font-size:11.5px; color:var(--dim); margin-top:7px; line-height:1.4}
+  .card-body{font-size:14.5px; line-height:1.45; margin-top:9px}
+  .rsp .play{display:flex; align-items:center; gap:5px; margin-top:9px;
+    font-size:10.5px; color:var(--muted)}
+  .rsp .play .tri{width:0;height:0;border-left:6px solid var(--accent);
+    border-top:4px solid transparent;border-bottom:4px solid transparent}
+
+  /* ---------- 审批 ---------- */
+  .appr{margin:4px 14px 0; border:1px solid rgba(255,196,76,.6); background:rgba(255,196,76,.07);
+    border-radius:16px; padding:13px; position:relative; overflow:hidden; animation:pop .2s}
+  .appr-t{font-size:10.5px; color:var(--amber); letter-spacing:.8px; font-weight:600}
+  .appr-cmd{font-family:ui-monospace,Menlo,monospace; font-size:12.5px; color:var(--text);
+    background:rgba(0,0,0,.45); border-radius:8px; padding:8px 10px; margin:9px 0 4px;
+    word-break:break-all; border:1px solid rgba(255,196,76,.2)}
+  .appr-sub{font-size:11px; color:var(--dim)}
+  .appr-bar{height:3px; background:rgba(255,196,76,.15); border-radius:2px; margin:10px 0; overflow:hidden}
+  .appr-bar i{display:block; height:100%; background:var(--amber); width:100%}
+
+  /* ---------- 页面控制 ---------- */
+  .ctrl{display:flex; flex-wrap:wrap; gap:8px; justify-content:center; max-width:760px}
+  .ctrl button{background:#10151f; color:#9fb0c9; border:1px solid #24303f; border-radius:9px;
+    padding:8px 13px; font-size:12.5px; cursor:pointer; font-family:inherit; transition:.15s}
+  .ctrl button:hover{background:#18202c; color:#dfe7f5; border-color:#35465c}
+  .hint{max-width:700px; font-size:12.5px; color:#66758c; line-height:1.75; text-align:center}
+  .hint b{color:#9fb0c9; font-weight:600}
+  .toast{position:absolute; left:50%; top:52px; transform:translateX(-50%) translateY(-6px);
+    background:rgba(20,30,46,.96); border:1px solid var(--border); color:var(--text);
+    font-size:11.5px; padding:6px 12px; border-radius:16px; opacity:0; pointer-events:none;
+    transition:opacity .18s, transform .18s; z-index:30; white-space:nowrap}
+  .screen.show-toast .toast{opacity:1; transform:translateX(-50%) translateY(0)}
+
+  .hint .k{display:inline-block; padding:1px 6px; border:1px solid #2c3849; border-radius:5px;
+    font-size:11px; color:#8fa2bd; background:#0d131c}
+</style>
+</head>
+<body>
+
+<div class="caption">Nova Buddy · 368 × 448 · 点、按住、上滑，都能用</div>
+
+<div class="device">
+  <div class="screen-wrap">
+    <div class="screen" id="screen">
+      <div class="layer" id="layer"></div>
+      <div class="toast" id="toast"></div>
+      <div class="rec" id="rec">
+        <div class="wave" id="wave"></div>
+        <div class="rec-t" id="recT">0.0</div>
+        <div class="rec-h" id="recH">松开发送 · 上滑取消</div>
+        <div class="hint-c">最长 10 秒</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="ctrl" id="ctrl">
+  <button data-go="board">看板</button>
+  <button data-go="approval">审批</button>
+  <button data-go="draft">草稿·空</button>
+  <button data-go="draft-run">草稿·跑</button>
+  <button data-go="run">在跑</button>
+  <button data-go="reply">回复</button>
+  <button data-go="fail">未送达</button>
+  <button data-go="mute">没说完</button>
+</div>
+
+<div class="hint">
+  <span class="k">点卡片</span> 展开三步并设为投递目标 ·
+  <span class="k">按住底部条</span> 录音，松开发送，<b>上滑取消</b> ·
+  <span class="k">目标在跑</span> 时不自动倒计时，改「排队 / 打断」
+</div>
+
+<script>
+/* ============================================================
+   数据
+   ============================================================ */
+const SESSIONS = [
+  { id:'s1', name:'电量估算四改', cwd:'nova-buddy', state:'run',
+    elapsed:252, act:'cargo test', sub:'2 个断言失败', note:'2 个断言失败',
+    steps:[{t:'4:02',s:'bash',a:'cargo test --release'},
+           {t:'3:40',s:'edit',a:'battery_model.h'},
+           {t:'2:10',s:'read',a:'power_probe.mjs'}]},
+  { id:'s2', name:'ASR 会话桥接', cwd:'nova-buddy', state:'wait', act:'等审批',
+    sub:'bash · rm -rf ./recordings', note:'会删 6 个录音', approval:true,
+    steps:[{t:'1:20',s:'bash',a:'rm -rf ./recordings'},
+           {t:'0:50',s:'edit',a:'bridge.js'}]},
+  { id:'s3', name:'DS-Bot 调研', cwd:'ds-bot', state:'idle', act:'已停下',
+    sub:'8 分钟前 · 输出：评审综合', note:'8 分钟前停下',
+    steps:[{t:'8m',s:'read',a:'channel.js'},
+           {t:'9m',s:'grep',a:'sessionController'}]},
+];
+
+const ASR_TEXT = '接着弄电量那个，把测试跑完';
+const REPLY_TEXT = '单测还剩 2 个失败，都在 fixtures 的时区断言上。';
+
+/* ============================================================
+   状态（单一真源）
+   ============================================================ */
+const S = {
+  view: 'board',            // board | draft | approval
+  target: null,             // 投递目标 session id
+  expanded: null,           // 展开详情的 session id
+  delivery: null,           // null | {kind:'sent'|'run'|'reply'|'fail'|'mute', secs?, text?}
+  asr: ASR_TEXT,
+  // 草稿
+  draft: { auto: true, left: 2.5, total: 2.5 },
+  // 审批
+  approve: { left: 20, total: 20 },
+  // 录音（不触发重绘）
+  rec: { active:false, t0:0, cancel:false, raf:0, done:false },
+};
+
+/* 发送后状态机的时间轴（毫秒） */
+const TIMELINE = { sent:900, runToReply:4200 };
+
+/* ============================================================
+   DOM
+   ============================================================ */
+const screenEl = document.getElementById('screen');
+const layerEl  = document.getElementById('layer');
+const recT     = document.getElementById('recT');
+const recH     = document.getElementById('recH');
+const waveEl   = document.getElementById('wave');
+
+/* 波形条常驻，避免每次录音重建 */
+const BARS = 15;
+waveEl.innerHTML = Array.from({length:BARS},()=>'<i></i>').join('');
+const bars = [...waveEl.children];
+
+/* ============================================================
+   工具
+   ============================================================ */
+const $ = (id) => document.getElementById(id);
+const now = () => performance.now();
+function fmt(sec){ const m=Math.floor(sec/60), s=Math.floor(sec%60);
+  return m+':'+String(s).padStart(2,'0'); }
+function dotClass(s){ return s==='run'?'run': s==='wait'?'wait': s==='err'?'idle':'idle'; }
+function sessionOf(id){ return SESSIONS.find(x=>x.id===id) || null; }
+function targetName(){ const t=sessionOf(S.target); return t ? t.name : '全局'; }
+
+/* 只更新文本，不重绘 */
+function setText(id, txt){ const n=$(id); if(n && n.textContent!==txt) n.textContent=txt; }
+function setWidth(id, pct){ const n=$(id); if(n) n.style.width=Math.max(0,Math.min(100,pct))+'%'; }
+
+/* ============================================================
+   视图
+   ============================================================ */
+function statusbar(){
+  const d = new Date();
+  return '<div class="statusbar">'+
+    '<span>'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+'</span>'+
+    '<span>▮▮ 87%</span></div>';
+}
+
+function header(sub, badge){
+  return '<div class="header"><div>'+
+    '<div class="h-title">诺瓦</div>'+
+    '<div class="h-sub">'+sub+'</div></div>'+
+    (badge||'')+'</div>';
+}
+
+function dock(){
+  return '<div class="dock"><button class="hold" data-act="hold"><span class="mic"></span>按住说话</button></div>';
+}
+
+function deliveryCard(){
+  const d = S.delivery;
+  if(!d) return '';
+
+  if(d.kind==='reply'){
+    return '<div class="rsp sent">'+
+      '<div class="rsp-top"><span class="rsp-ic">✓</span><b>已送达</b>'+
+      '<span class="rsp-ago">4 秒前</span></div>'+
+      '<div class="card-body">'+d.text+'</div>'+
+      '<div class="play"><span class="tri"></span>播报</div>'+
+      '</div>';
+  }
+  if(d.kind==='run'){
+    return '<div class="rsp run">'+
+      '<div class="rsp-top"><span class="rsp-ic">●</span><b>在跑 · <span id="runSecs">'+d.secs+'</span> 秒</b></div>'+
+      '<div class="card-sub">它正在处理这句话，等它说完</div>'+
+      '</div>';
+  }
+  if(d.kind==='fail'){
+    return '<div class="rsp fail">'+
+      '<div class="rsp-top"><span class="rsp-ic">✗</span><b>未送达</b></div>'+
+      '<div class="card-sub">目标会话已换段，需要重选。这是三种里唯一会真丢东西的</div>'+
+      '</div>';
+  }
+  if(d.kind==='mute'){
+    return '<div class="rsp mute">'+
+      '<div class="rsp-top"><span class="rsp-ic">◌</span><b>它没说完</b></div>'+
+      '<div class="card-sub">这轮没有可播报的内容，不是网络问题</div>'+
+      '</div>';
+  }
+  return '<div class="rsp sent">'+
+    '<div class="rsp-top"><span class="rsp-ic">✓</span><b>已送达</b></div>'+
+    '<div class="card-sub">排队第 1 位</div>'+
+    '</div>';
+}
+
+function viewBoard(){
+  const hasDeliv = !!S.delivery;
+  const pool = hasDeliv
+    ? (SESSIONS.filter(s=>s.id===S.target).length ? SESSIONS.filter(s=>s.id===S.target) : SESSIONS.slice(0,1))
+    : SESSIONS;
+  const hiddenN = SESSIONS.length - pool.length;
+
+  const anyOpen = !!S.expanded && !hasDeliv;
+  const cards = pool.map(s=>{
+    const isT = S.target===s.id;
+    const open = S.expanded===s.id && !hasDeliv;
+    if(anyOpen && !open){
+      return '<div class="sess mini" data-sess="'+s.id+'">'+
+        '<div class="s-top"><span class="dot '+dotClass(s.state)+'"></span>'+
+        '<span class="s-name">'+s.name+'</span>'+
+        '<span class="s-time">'+(s.state==='run'?'跑着 '+fmt(s.elapsed): s.state==='wait'?'等审批':'停着')+'</span></div>'+
+        '</div>';
+    }
+    const detail = open ? '<div class="detail">'+s.steps.map(st=>
+      '<div class="step"><span class="t">'+st.t+'</span><span><b>'+st.s+'</b> '+st.a+'</span></div>'
+    ).join('')+'</div>' : '';
+    return '<div class="sess '+(s.state==='wait'?'waiting':'')+' '+(isT?'active':'')+'" data-sess="'+s.id+'">'+
+      '<div class="s-top"><span class="dot '+dotClass(s.state)+'"></span>'+
+      '<span class="s-name">'+s.name+'</span>'+
+      '<span class="s-time">'+(s.state==='run'?'跑着 '+fmt(s.elapsed): s.state==='wait'?'等审批':'停着')+'</span></div>'+
+      '<div class="s-act">'+(s.state==='wait'?'<code>'+s.sub+'</code>':s.act)+'</div>'+
+      '<div class="s-meta">'+s.cwd+' · '+s.note+'</div>'+
+      detail + (isT?'<div class="tick">✓</div>':'')+
+      '</div>';
+  }).join('');
+
+  const lastSay = (S.delivery || S.expanded) ? '' :
+    '<div class="lastsay" data-act="replay"><div class="k">上次播报 · 4 分钟前 · 点按重播</div>'+
+    '<div class="v">'+REPLY_TEXT+'</div></div>';
+
+  const waitN = SESSIONS.filter(s=>s.state==='wait').length;
+
+  return statusbar()+
+    header(S.target ? '发往 · '+targetName() : '全局 · 只读巡检',
+           '<div class="badge '+(waitN?'warn':'')+'">'+(waitN?waitN+' 项待批':'空闲')+'</div>')+
+    '<div class="scroll"><div class="list">'+cards+'</div>'+
+      (hiddenN>0?'<div class="fold" data-act="unfold">另外 '+hiddenN+' 个在跑 · 点开</div>':'')+
+      lastSay + deliveryCard() + '</div>'+
+    dock();
+}
+
+function viewDraft(){
+  return statusbar()+
+    header('说完了 · 确认一下')+
+    '<div class="scroll"><div class="draft">'+
+      '<div class="d-label">识别到</div>'+
+      '<div class="d-text">'+S.asr+'</div>'+
+      '<div class="d-to"><span>发往</span><b>'+targetName()+'</b>'+
+        '<span class="chg" data-act="cycle-target">换一个 ›</span></div>'+
+      '<div class="d-actions" style="margin-top:10px">'+
+        '<button class="btn ghost" data-act="cancel-draft">取消重说</button>'+
+        '<button class="btn pri" data-act="send">发送</button>'+
+      '</div>'+
+    '</div></div>'+
+    dock();
+}
+
+function viewApproval(){
+  return statusbar()+
+    header('有一件事等你点头','<div class="badge warn"><span id="apprLeft">20</span>s</div>')+
+    '<div class="scroll"><div class="appr">'+
+      '<div class="appr-t">需要你批准 · 工具调用</div>'+
+      '<div class="appr-cmd">bash rm -rf ./recordings</div>'+
+      '<div class="appr-sub">ASR 会话桥接 · 会删除 6 个测试录音</div>'+
+      '<div class="appr-bar"><i id="apprBar"></i></div>'+
+      '<div class="d-actions">'+
+        '<button class="btn warn" data-act="deny">拒绝</button>'+
+        '<button class="btn pri" data-act="allow">允许</button>'+
+      '</div>'+
+    '</div>'+
+    '<div class="list" style="margin-top:12px">'+
+      '<div class="sess"><div class="s-top"><span class="dot run"></span>'+
+      '<span class="s-name">电量估算四改</span><span class="s-time">跑着 4:12</span></div>'+
+      '<div class="s-act">cargo test</div>'+
+      '<div class="s-meta">nova-buddy · 审批不阻塞它</div></div>'+
+    '</div></div>'+
+    dock();
+}
+
+/* ============================================================
+   渲染（只在切换视图时调用）
+   ============================================================ */
+function render(){
+  if(S.view==='draft')      layerEl.innerHTML = viewDraft();
+  else if(S.view==='approval') layerEl.innerHTML = viewApproval();
+  else                      layerEl.innerHTML = viewBoard();
+  const sc = layerEl.querySelector('.scroll');
+  if(sc) sc.scrollTop = 0;
+}
+
+/* 草稿不再自动发送，无需倒计时同步 */
+
+/* ============================================================
+   事件委托（绑一次，永不失效）
+   ============================================================ */
+screenEl.addEventListener('click', (e)=>{
+  const t = e.target.closest('[data-act], [data-sess]');
+  if(!t) return;
+  if(t.dataset.sess) return onSessTap(t.dataset.sess);
+  const act = t.dataset.act;
+  if(act==='hold'){ /* 由 pointerdown 处理 */ return; }
+  onAct(act);
+});
+
+screenEl.addEventListener('pointerdown', onHoldDown);
+window.addEventListener('pointerup', onHoldUp);
+window.addEventListener('pointercancel', onHoldUp);
+window.addEventListener('blur', onHoldUp);
+screenEl.addEventListener('pointermove', onHoldMove);
+
+/* ============================================================
+   行为
+   ============================================================ */
+function onSessTap(id){
+  const s = sessionOf(id);
+  if(!s) return;
+  if(s.approval){ enterApproval(); return; }
+  S.target = (S.target===id) ? null : id;
+  S.expanded = (S.expanded===id) ? null : id;
+  render();
+}
+
+function onAct(act){
+  switch(act){
+    case 'unfold':      S.delivery=null; render(); break;
+    case 'replay':      flashTip('重播中…'); break;
+    case 'cancel-draft':S.view='board'; render(); break;
+    case 'cycle-target': cycleTarget(); break;
+    case 'send':        send(); break;
+    case 'cycle-target': cycleTarget(); break;
+    case 'allow':       decide(true); break;
+    case 'deny':        decide(false); break;
+  }
+}
+
+function cycleTarget(){
+  const ids = SESSIONS.map(s=>s.id);
+  const i = ids.indexOf(S.target);
+  S.target = ids[(i+1) % ids.length] || ids[0];
+  S.draft.left = S.draft.total;
+  render();
+}
+
+let toastTimer = null;
+function flashTip(msg){
+  const t = document.getElementById('toast');
+  if(!t) return;
+  t.textContent = msg;
+  screenEl.classList.add('show-toast');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>screenEl.classList.remove('show-toast'), 1300);
+}
+
+/* ---------------- 录音 ---------------- */
+function onHoldDown(e){
+  const btn = e.target.closest('[data-act="hold"]');
+  if(!btn || S.rec.active) return;
+  e.preventDefault();
+  S.rec = { active:true, t0:now(), cancel:false, raf:0, done:false };
+  screenEl.classList.add('recording');
+  screenEl.classList.remove('cancelling');
+  recT.textContent = '0.0';
+  recH.textContent = '松开发送 · 上滑取消';
+  recLoop();
+}
+
+function recLoop(){
+  if(!S.rec.active) return;
+  const dt = (now() - S.rec.t0)/1000;
+  recT.textContent = dt.toFixed(1);
+
+  // 波形：伪随机振幅，越久越稳
+  const seed = Math.floor(dt*7);
+  for(let i=0;i<BARS;i++){
+    const v = 10 + Math.abs(Math.sin((i*1.7)+(seed*0.9))) * 34
+            + Math.abs(Math.cos((i*0.6)+(seed*1.3))) * 8;
+    bars[i].style.height = Math.min(46, v).toFixed(0)+'px';
+  }
+
+  if(dt >= 10){ endRec(true); return; }   // 到顶自动发
+  S.rec.raf = requestAnimationFrame(recLoop);
+}
+
+function onHoldMove(e){
+  if(!S.rec.active || S.downY===undefined) return;
+  const up = S.downY - e.clientY;
+  const willCancel = up > 55;
+  if(willCancel !== S.rec.cancel){
+    S.rec.cancel = willCancel;
+    screenEl.classList.toggle('cancelling', willCancel);
+    recH.textContent = willCancel ? '松开取消' : '松开发送 · 上滑取消';
+  }
+}
+
+function onHoldUp(e){
+  if(!S.rec.active) return;
+  endRec(false);
+}
+
+function endRec(auto){
+  if(!S.rec.active || S.rec.done) return;
+  S.rec.done = true;
+  S.rec.active = false;
+  cancelAnimationFrame(S.rec.raf);
+
+  const dt = (now() - S.rec.t0)/1000;
+  const cancelled = S.rec.cancel;
+  screenEl.classList.remove('recording','cancelling');
+  recH.textContent = '松开发送 · 上滑取消';
+
+  if(cancelled) return;                       // 取消 → 回原位
+  if(dt < 0.35){ flashTip('说得太短了'); return; }
+
+  // 进入草稿
+  S.view='draft';
+  S.asr = ASR_TEXT;
+  render();
+}
+
+/* 记录按下时的 y，用于上滑判定 */
+screenEl.addEventListener('pointerdown', (e)=>{
+  if(!e.target.closest('[data-act="hold"]')) return;
+  S.downY = e.clientY;
+}, true);
+
+/* ---------------- 发送 ---------------- */
+function send(){
+  S.view='board';
+  S.delivery = { kind:'sent' };
+  render();
+
+  const t1 = setTimeout(()=>{
+    S.delivery = { kind:'run', secs:0 };
+    render();
+  }, TIMELINE.sent);
+
+  const t2 = setTimeout(()=>{
+    S.delivery = { kind:'reply', text: REPLY_TEXT };
+    render();
+  }, TIMELINE.runToReply);
+
+  pushTimer(t1); pushTimer(t2);
+}
+
+/* 在跑秒数：只改文本 */
+let runTick = null;
+function startRunTick(){
+  stopRunTick();
+  runTick = setInterval(()=>{
+    if(S.delivery && S.delivery.kind==='run'){
+      S.delivery.secs++;
+      setText('runSecs', String(S.delivery.secs));
+    } else stopRunTick();
+  }, 1000);
+}
+function stopRunTick(){ if(runTick){ clearInterval(runTick); runTick=null; } }
+
+/* ---------------- 审批 ---------------- */
+function enterApproval(){
+  S.view='approval';
+  S.approve.left = S.approve.total;
+  render();
+}
+function decide(allow){
+  S.view='board';
+  S.delivery = allow ? {kind:'sent'} : {kind:'mute'};
+  render();
+  if(allow){
+    setTimeout(()=>{ S.delivery={kind:'reply', text:'已授权，它开始删旧录音了。'}; render(); }, 1200);
+  }
+}
+
+/* ============================================================
+   统一心跳（只更新数值，不重绘）
+   ============================================================ */
+let lastTick = now();
+setInterval(()=>{
+  const t = now();
+  const dt = (t - lastTick)/1000;
+  lastTick = t;
+
+  // 看板：会话运行时长（仅文本）
+  if(S.view==='board' && !S.delivery){
+    SESSIONS.forEach(s=>{ if(s.state==='run') s.elapsed += dt; });
+    const n = document.querySelector('[data-sess="s1"] .s-time');
+    if(n){ const s=sessionOf('s1'); n.textContent = '跑着 '+fmt(s.elapsed); }
+  }
+
+  // 审批倒计时
+  if(S.view==='approval'){
+    S.approve.left -= dt;
+    setText('apprLeft', String(Math.max(0,Math.ceil(S.approve.left))));
+    setWidth('apprBar', (S.approve.left/S.approve.total)*100);
+    if(S.approve.left <= 0.001){ decide(false); }
+  }
+
+  // 发送后状态机
+  if(S.delivery && S.delivery.kind==='run' && !runTick) startRunTick();
+  if(!S.delivery && runTick) stopRunTick();
+}, 100);
+
+/* ============================================================
+   顶部控制条
+   ============================================================ */
+document.getElementById('ctrl').addEventListener('click',(e)=>{
+  const b = e.target.closest('button'); if(!b) return;
+  resetRun();
+  const go = b.dataset.go;
+  S.delivery = null;
+  S.view = 'board';
+  if(go==='board'){ render(); }
+  if(go==='approval'){ enterApproval(); }
+  if(go==='draft'){ S.view='draft'; render(); }
+  if(go==='run'){ S.target='s1'; S.delivery={kind:'run',secs:4}; render(); }
+  if(go==='reply'){ S.target='s1'; S.delivery={kind:'reply',text:REPLY_TEXT}; render(); }
+  if(go==='fail'){ S.target='s1'; S.delivery={kind:'fail'}; render(); }
+  if(go==='mute'){ S.target='s1'; S.delivery={kind:'mute'}; render(); }
+});
+
+function resetRun(){ stopRunTick(); }
+
+/* 启动 */
+render();
+</script>
+</body>
+</html>

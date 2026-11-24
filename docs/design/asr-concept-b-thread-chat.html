@@ -1,0 +1,1203 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nova Buddy · 方案 B · 独立对话页：极简多轮消息流</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#07080a; --panel:#0d1117; --line:#1b2330;
+    --txt:#e8edf6; --dim:#8b9ab0; --muted:#4d5d75;
+    --accent:#48c6ff; --mint:#40e6b0; --violet:#a88cff; --red:#ff586c;
+    --z:1.5;
+  }
+  body{
+    background:var(--bg); color:var(--txt);
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    font-size:15px; line-height:1.62;
+    padding:56px 40px 120px;
+  }
+  .wrap{max-width:1160px;margin:0 auto}
+
+  /* ---------- 展示页外壳 ---------- */
+  .kicker{font-size:11px;letter-spacing:.22em;color:var(--muted);text-transform:uppercase;margin-bottom:12px}
+  h1{font-size:38px;line-height:1.15;font-weight:600;letter-spacing:-.015em;margin-bottom:14px}
+  h1 em{font-style:normal;color:var(--accent)}
+  .lede{font-size:16px;color:var(--dim);max-width:720px;line-height:1.7}
+  .lede b{color:var(--txt);font-weight:500}
+  .meta{margin-top:20px;display:flex;gap:9px;flex-wrap:wrap}
+  .chip{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:4px 12px}
+  .zoomctl{display:flex;align-items:center;gap:7px;margin-top:22px;font-size:12px;color:var(--muted)}
+  .zoomctl button{
+    background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
+    padding:4px 11px;font-size:12px;cursor:pointer;font-family:inherit;transition:all .12s
+  }
+  .zoomctl button:hover{border-color:#2d3d55;color:var(--txt)}
+  .zoomctl button.on{background:var(--accent);border-color:var(--accent);color:#04121c;font-weight:600}
+
+  /* ---------- 两栏主布局 ---------- */
+  .split{display:flex;gap:52px;align-items:flex-start;margin-top:36px}
+  .devside{display:flex;flex-direction:column;gap:14px;flex:none}
+  .devbox{
+    width:calc(368px * var(--z)); height:calc(448px * var(--z));
+    position:relative; border-radius:calc(6px * var(--z)); overflow:hidden; flex:none;
+    box-shadow:0 0 0 1px #20293a, 0 24px 60px -22px #000; background:#000;
+  }
+  .screen{
+    width:368px; height:448px; position:absolute; top:0; left:0;
+    transform-origin:0 0; transform:scale(var(--z));
+    background:#000000; overflow:hidden; color:#f2f6ff;
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    font-weight:500; -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column; user-select:none;
+  }
+
+  .states{
+    display:flex; flex-wrap:wrap; gap:6px;
+    max-width:calc(368px * var(--z));
+  }
+  .states button{
+    flex:1 1 auto; white-space:nowrap;
+    background:#0f1622; border:1px solid var(--line); color:var(--dim);
+    border-radius:8px; padding:8px 10px; font-size:12px;
+    cursor:pointer; font-family:inherit; transition:all .12s;
+  }
+  .states button:hover{background:#16203a;color:var(--txt);border-color:#2c3d58}
+  .states button.on{background:#122436;border-color:var(--accent);color:var(--accent);font-weight:500}
+  .devcap{font-size:12px;color:var(--muted);line-height:1.6;max-width:calc(368px * var(--z))}
+
+  /* ---------- 右栏说明 ---------- */
+  .notes{flex:1;min-width:0;padding-top:2px}
+  .quote{
+    font-size:18.5px; line-height:1.65; color:#cfd9e8;
+    border-left:2px solid var(--accent); padding-left:16px;
+  }
+  .quote b{color:#fff;font-weight:500}
+  .axesless{margin-top:24px;border-top:1px solid var(--line)}
+  .arow{
+    display:grid; grid-template-columns:76px 1fr; gap:14px;
+    padding:12px 0; border-bottom:1px solid var(--line); font-size:13.5px;
+  }
+  .arow span{color:var(--muted)}
+  .arow b{color:#cfd9e8;font-weight:400;line-height:1.58}
+  .arow b i{font-style:normal;color:var(--accent)}
+
+  .tradeoff{display:grid;grid-template-columns:1fr 1fr;gap:12px 32px;margin-top:24px;font-size:13.5px}
+  .tradeoff .col-h{
+    font-size:10.5px;letter-spacing:.14em;color:var(--muted);
+    margin-bottom:8px;text-transform:uppercase
+  }
+  .tradeoff li{
+    list-style:none;color:var(--dim);padding-left:14px;
+    position:relative;margin-bottom:8px;line-height:1.55
+  }
+  .tradeoff li:before{
+    content:"";position:absolute;left:0;top:8px;width:5px;height:5px;border-radius:50%;
+    background:#2b3a4e
+  }
+  .tradeoff .pro li:before{background:var(--mint)}
+  .tradeoff .con li:before{background:var(--red)}
+
+  .impl{
+    margin-top:24px; border-top:1px solid var(--line); padding-top:18px;
+  }
+  .impl-h{
+    font-size:10.5px;letter-spacing:.14em;color:var(--muted);
+    margin-bottom:10px;text-transform:uppercase
+  }
+  .costbox{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--dim);margin-bottom:10px}
+  .lvl{font-size:10.5px;letter-spacing:.08em;padding:3px 9px;border-radius:5px;font-weight:500}
+  .lvl.mid{background:#112338;color:var(--accent);border:1px solid #1e3b5c}
+  .impl code{
+    background:var(--panel);border:1px solid var(--line);border-radius:5px;
+    padding:2px 7px;font-size:11.5px;color:#9fb0c6;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace
+  }
+  .impl p{font-size:13px;color:var(--dim);line-height:1.68;margin-top:6px}
+
+  /* =====================================================================
+     368×448 OLED 屏幕内部样式（严格遵循 OLED 黑底 + 青/薄荷/紫/珊瑚红）
+     ===================================================================== */
+  .oled-top{
+    height:56px; flex:none; padding:10px 16px 6px;
+    display:flex; flex-direction:column; justify-content:space-between;
+    background:#000000; border-bottom:1px solid #121c2e;
+    position:relative; z-index:4;
+  }
+  .top-row{
+    display:flex; align-items:center; justify-content:space-between; height:26px;
+  }
+  .top-clock{
+    font-size:13px; font-weight:600; color:#f2f6ff;
+    font-variant-numeric:tabular-nums; letter-spacing:.02em; width:48px;
+  }
+  .top-center{
+    display:flex; align-items:center; gap:7px;
+  }
+  .target-pill{
+    display:inline-flex; align-items:center; gap:5px;
+    height:24px; padding:0 10px; border-radius:99px;
+    background:#0c121e; border:1px solid #1e304e;
+    color:#48c6ff; font-size:12.5px; font-weight:600;
+    cursor:pointer; font-family:inherit; transition:all .14s;
+  }
+  .target-pill.nova{
+    color:#40e6b0; border-color:rgba(64,230,176,.4); background:rgba(64,230,176,.09);
+  }
+  .target-pill:active{transform:scale(.96)}
+  .target-swap{font-size:11px;opacity:.75}
+
+  .mic-dot-btn{
+    width:24px; height:24px; border-radius:99px;
+    background:#0c121e; border:1px solid #1e304e;
+    display:inline-flex; align-items:center; justify-content:center;
+    cursor:pointer; position:relative; transition:all .14s;
+  }
+  .mic-dot-btn:hover{border-color:#2f4a73}
+  .mic-dot{
+    width:8px; height:8px; border-radius:50%;
+    background:#40e6b0; box-shadow:0 0 8px rgba(64,230,176,.7);
+    transition:all .15s;
+  }
+  .mic-dot-btn.rec .mic-dot{background:#48c6ff;box-shadow:0 0 10px #48c6ff}
+  .mic-dot-btn.warn .mic-dot{
+    background:#ff586c; box-shadow:0 0 10px #ff586c;
+    animation:pulseDot 1s ease-in-out infinite;
+  }
+  @keyframes pulseDot{
+    0%,100%{transform:scale(1);opacity:1}
+    50%{transform:scale(1.3);opacity:.65}
+  }
+
+  .top-batt{
+    width:54px; display:flex; align-items:center; justify-content:flex-end; gap:5px;
+    font-size:12.5px; color:#8294b4; font-variant-numeric:tabular-nums;
+  }
+  .batt-icon{
+    width:18px; height:10px; border:1.3px solid #8294b4; border-radius:2.5px;
+    padding:1.5px; position:relative; display:flex; align-items:center;
+  }
+  .batt-icon:after{
+    content:""; position:absolute; right:-3px; top:2.5px;
+    width:1.8px; height:3.5px; background:#8294b4; border-radius:0 1px 1px 0;
+  }
+  .batt-fill{width:88%;height:100%;background:#40e6b0;border-radius:1px}
+
+  .page-dots{
+    display:flex; align-items:center; justify-content:center; gap:5px; height:8px;
+  }
+  .page-dots i{
+    display:block; width:4px; height:4px; border-radius:99px; background:#1e304e;
+  }
+  .page-dots i.on{
+    width:16px; background:#48c6ff;
+  }
+
+  /* ---------- 诊断/告警横幅（可折叠，不遮挡内容） ---------- */
+  .diag-banner{
+    margin:8px 16px 0; padding:8px 11px; border-radius:10px;
+    background:#0c121e; border:1px solid #1e304e;
+    display:none; align-items:center; justify-content:space-between; gap:8px;
+    font-size:13px; line-height:1.35; flex:none;
+  }
+  .diag-banner.show{display:flex}
+  .diag-banner.snr{border-color:rgba(72,198,255,.38);background:rgba(72,198,255,.08)}
+  .diag-banner.warn{
+    border-color:rgba(255,88,108,.55); background:rgba(255,88,108,.12);
+    color:#f2f6ff;
+  }
+  .diag-txt{flex:1;min-width:0;font-variant-numeric:tabular-nums}
+  .diag-txt b{font-weight:600}
+  .diag-banner.warn .diag-txt b{color:#ff586c}
+  .diag-banner.snr .diag-txt b{color:#48c6ff}
+  .diag-btn{
+    flex:none; border-radius:7px; padding:4px 9px; font-size:12.5px; font-weight:600;
+    cursor:pointer; font-family:inherit; border:1px solid transparent;
+  }
+  .diag-banner.warn .diag-btn{
+    background:rgba(255,88,108,.22); border-color:rgba(255,88,108,.55); color:#f2f6ff;
+  }
+  .diag-banner.snr .diag-btn{
+    background:#162238; border-color:#1e304e; color:#8294b4;
+  }
+
+  /* ---------- 中部可拖拽多轮消息流 ---------- */
+  .thread{
+    flex:1; min-height:0; overflow-y:auto; overflow-x:hidden;
+    padding:10px 16px 12px; display:flex; flex-direction:column; gap:10px;
+    scrollbar-width:none; cursor:grab; touch-action:pan-y;
+  }
+  .thread::-webkit-scrollbar{display:none}
+  .thread.dragging{cursor:grabbing}
+
+  .msg-row{display:flex;flex-direction:column;max-width:86%}
+  .msg-row.user{align-self:flex-end;align-items:flex-end}
+  .msg-row.bot{align-self:flex-start;align-items:flex-start}
+
+  .bubble{
+    padding:10px 13px; border-radius:14px;
+    font-size:16.5px; line-height:1.42; color:#f2f6ff;
+    word-break:break-word; position:relative;
+  }
+  .msg-row.user .bubble{
+    background:rgba(72,198,255,.14);
+    border:1px solid rgba(72,198,255,.38);
+    border-bottom-right-radius:4px;
+  }
+  .msg-row.user.nova .bubble{
+    background:rgba(64,230,176,.13);
+    border-color:rgba(64,230,176,.38);
+  }
+  .msg-row.bot .bubble{
+    background:#0c121e;
+    border:1px solid #1e304e;
+    border-bottom-left-radius:4px;
+    cursor:pointer; transition:border-color .14s, background .14s;
+  }
+  .msg-row.bot .bubble:hover{background:#121c2e;border-color:#2a436b}
+  .msg-row.bot .bubble.playing{
+    background:#162238; border-color:#48c6ff;
+  }
+
+  .msg-meta{
+    margin-top:4px; font-size:11.5px; color:#4a5c7c;
+    display:flex; align-items:center; gap:6px;
+    font-variant-numeric:tabular-nums; padding:0 2px;
+  }
+  .msg-row.bot .msg-meta{color:#8294b4}
+  .tts-pill{
+    display:inline-flex; align-items:center; gap:5px;
+    margin-top:7px; padding:4px 8px; border-radius:7px;
+    background:#121c2e; border:1px solid #1e304e;
+    font-size:12px; color:#8294b4;
+  }
+  .bubble.playing .tts-pill{
+    background:rgba(72,198,255,.14); border-color:rgba(72,198,255,.45);
+    color:#48c6ff;
+  }
+  .tts-bars{display:inline-flex;align-items:flex-end;gap:2px;height:11px}
+  .tts-bars i{
+    display:block; width:2.5px; height:4px; border-radius:1px; background:currentColor;
+  }
+  .bubble.playing .tts-bars i:nth-child(1){animation:ttsBar .55s ease-in-out infinite}
+  .bubble.playing .tts-bars i:nth-child(2){animation:ttsBar .55s .15s ease-in-out infinite}
+  .bubble.playing .tts-bars i:nth-child(3){animation:ttsBar .55s .3s ease-in-out infinite}
+  @keyframes ttsBar{
+    0%,100%{height:3px}
+    50%{height:11px}
+  }
+
+  /* 流式回复指示 + Nova 思考精灵（149x167 原比例缩放，零拉伸） */
+  .stream-head{
+    display:flex; align-items:center; gap:7px; margin-bottom:5px;
+    font-size:12.5px; color:#40e6b0;
+  }
+  .nova-sprite-box{
+    width:24px; height:27px; overflow:hidden; position:relative; flex:none;
+  }
+  .nova-thinking-sprite{
+    width:149px; height:167px;
+    background-image:url('../../assets/pets/nova/thinking_preview.png');
+    background-size:894px 167px; background-repeat:no-repeat;
+    background-position:0 0;
+    transform:scale(0.161); transform-origin:0 0;
+    animation:novaThink .72s steps(6) infinite;
+  }
+  @keyframes novaThink{
+    from{background-position:0 0}
+    to{background-position:-894px 0}
+  }
+  .cursor-blink{
+    display:inline-block; width:2px; height:16px; background:#48c6ff;
+    vertical-align:text-bottom; margin-left:3px;
+    animation:blinkCursor .7s steps(2) infinite;
+  }
+  @keyframes blinkCursor{0%{opacity:1}50%{opacity:0}}
+
+  /* ---------- 底部操作区：待发送确认卡 + 快捷指令 + 按住说话 ---------- */
+  .oled-dock{
+    flex:none; padding:8px 16px 14px;
+    background:linear-gradient(180deg, rgba(0,0,0,0) 0%, #000000 14px);
+    border-top:1px solid #121c2e;
+    display:flex; flex-direction:column; gap:8px;
+    position:relative; z-index:4;
+  }
+
+  /* 1.5s 缓冲确认卡片 */
+  .draft-card{
+    display:none; flex-direction:column; gap:8px;
+    padding:10px 12px; border-radius:12px;
+    background:#162238; border:1px solid rgba(72,198,255,.55);
+  }
+  .draft-card.show{display:flex}
+  .draft-head{
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:12px; color:#8294b4; font-variant-numeric:tabular-nums;
+  }
+  .draft-head b{color:#48c6ff;font-weight:600}
+  .draft-head.nova b{color:#40e6b0}
+  .draft-text{
+    font-size:17px; line-height:1.38; font-weight:600; color:#f2f6ff;
+  }
+  .draft-bar-track{
+    width:100%; height:4px; border-radius:99px; background:#121c2e; overflow:hidden;
+  }
+  .draft-bar-fill{
+    width:100%; height:100%; background:#48c6ff; border-radius:99px;
+    transition:width .05s linear;
+  }
+  .draft-actions{display:flex;gap:8px}
+  .draft-btn{
+    flex:1; height:36px; border-radius:9px; font-size:15px; font-weight:600;
+    cursor:pointer; font-family:inherit; border:1px solid transparent;
+    transition:transform .1s;
+  }
+  .draft-btn:active{transform:scale(.97)}
+  .draft-btn.cancel{
+    background:rgba(255,88,108,.14); border-color:rgba(255,88,108,.45); color:#ff586c;
+  }
+  .draft-btn.send{
+    background:#48c6ff; color:#04121c;
+  }
+
+  /* 实时语音识别气泡（按住说话期间显示） */
+  .asr-live-card{
+    display:none; flex-direction:column; gap:7px;
+    padding:10px 12px; border-radius:12px;
+    background:#0c121e; border:1px solid #48c6ff;
+  }
+  .asr-live-card.show{display:flex}
+  .asr-live-top{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    font-size:12px; color:#48c6ff; font-variant-numeric:tabular-nums;
+  }
+  .wave-bars{display:flex;align-items:center;gap:2.5px;height:18px}
+  .wave-bars i{
+    display:block; width:3px; height:4px; border-radius:2px;
+    background:#48c6ff; transition:height .07s ease;
+  }
+  .asr-live-txt{
+    font-size:17px; line-height:1.38; font-weight:600; color:#f2f6ff; min-height:24px;
+  }
+
+  /* 快捷指令条 */
+  .chips-row{display:flex;gap:8px}
+  .chip-cmd{
+    flex:1; height:32px; border-radius:9px;
+    background:#0c121e; border:1px solid #1e304e; color:#f2f6ff;
+    font-size:15px; font-weight:500; cursor:pointer; font-family:inherit;
+    transition:all .12s;
+  }
+  .chip-cmd:hover{background:#162238;border-color:#48c6ff;color:#48c6ff}
+  .chip-cmd:active{transform:scale(.96)}
+
+  /* 按住说话按钮 */
+  .ptt-btn{
+    width:100%; height:46px; border-radius:13px;
+    background:#162238; border:1px solid #1e304e; color:#f2f6ff;
+    font-size:16px; font-weight:600; cursor:pointer; font-family:inherit;
+    display:flex; align-items:center; justify-content:center; gap:9px;
+    transition:all .12s; touch-action:none;
+  }
+  .ptt-btn:hover{border-color:#345687}
+  .ptt-btn.holding{
+    background:rgba(72,198,255,.22); border-color:#48c6ff; color:#48c6ff;
+    box-shadow:0 0 18px rgba(72,198,255,.24);
+  }
+  .ptt-mic-ico{
+    width:10px; height:14px; border:1.8px solid currentColor; border-radius:5px;
+    position:relative; flex:none;
+  }
+  .ptt-mic-ico:after{
+    content:""; position:absolute; left:50%; bottom:-5px; transform:translateX(-50%);
+    width:8px; height:2px; background:currentColor;
+  }
+
+  @media (max-width:1020px){
+    body{padding:36px 20px 80px}
+    h1{font-size:30px}
+    .split{flex-direction:column;gap:34px}
+    .tradeoff{grid-template-columns:1fr}
+    :root{--z:1.2}
+  }
+  @media (max-width:560px){
+    :root{--z:.92}
+    body{padding:28px 14px 70px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">NOVA BUDDY · ASR + VOICE UI · CONCEPT B</div>
+    <h1>方案 B · <em>独立对话页</em>：极简多轮消息流</h1>
+    <p class="lede">在水平 5 页之后新增第 6 页专用对话流，把语音输入、DSH 指令派发与 <b>1.5s 误触发撤回缓冲</b> 收进同一屏。</p>
+    <div class="meta">
+      <span class="chip">368 × 448 OLED</span>
+      <span class="chip">16px 安全边距</span>
+      <span class="chip">1.5s 自动发送缓冲</span>
+      <span class="chip">ES8311 麦克风 SNR 监测</span>
+    </div>
+    <div class="zoomctl">
+      <span>预览缩放</span>
+      <button data-z="1">1×</button>
+      <button data-z="1.5" class="on">1.5×</button>
+      <button data-z="2">2×</button>
+      <span style="margin-left:8px;color:#4d5d75">1× 为 1.8 寸屏物理像素比例</span>
+    </div>
+  </header>
+
+  <section class="split">
+    <!-- 左栏：真机尺寸交互原型 -->
+    <div class="devside">
+      <div class="devbox">
+        <div class="screen" id="screen">
+          <!-- 顶部状态栏 56px -->
+          <div class="oled-top">
+            <div class="top-row">
+              <span class="top-clock" id="topClock">21:04</span>
+              <div class="top-center">
+                <button class="target-pill" id="targetPill" title="点击切换发送对象">
+                  <span id="targetLabel">发给 DSH</span>
+                  <span class="target-swap">⇄</span>
+                </button>
+                <button class="mic-dot-btn" id="micDotBtn" title="点击查看麦克风 SNR 诊断">
+                  <span class="mic-dot"></span>
+                </button>
+              </div>
+              <div class="top-batt">
+                <span class="batt-icon"><i class="batt-fill"></i></span>
+                <span>88%</span>
+              </div>
+            </div>
+            <div class="page-dots" aria-label="第 6 页 / 共 6 页">
+              <i></i><i></i><i></i><i></i><i></i><i class="on"></i>
+            </div>
+          </div>
+
+          <!-- 可折叠麦克风 SNR 诊断条 / 麦噪过大告警条 -->
+          <div class="diag-banner snr" id="snrBanner">
+            <div class="diag-txt"><b>MIC 正常</b> · 底噪 <span id="snrNoise">-58</span> dBFS · SNR <span id="snrVal">+24</span> dB</div>
+            <button class="diag-btn" id="snrCloseBtn">收起</button>
+          </div>
+
+          <div class="diag-banner warn" id="warnBanner">
+            <div class="diag-txt"><b>底噪过高 -28 dBFS</b> · 建议靠近麦克风或重试</div>
+            <button class="diag-btn" id="warnRetryBtn">重试收音</button>
+          </div>
+
+          <!-- 中部可拖拽滚动消息流 -->
+          <div class="thread" id="thread"></div>
+
+          <!-- 底部控制区 -->
+          <div class="oled-dock">
+            <!-- 按住说话实时转写卡 -->
+            <div class="asr-live-card" id="asrLiveCard">
+              <div class="asr-live-top">
+                <span>正在听你说话 · <b id="liveDb">-19 dBFS</b></span>
+                <div class="wave-bars" id="waveBars">
+                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                </div>
+              </div>
+              <div class="asr-live-txt" id="asrLiveTxt"></div>
+            </div>
+
+            <!-- 1.5s 识别确认缓冲卡 -->
+            <div class="draft-card" id="draftCard">
+              <div class="draft-head" id="draftHead">
+                <span>即将发送至 <b id="draftTargetName">DSH</b></span>
+                <span id="draftTimerText">1.5s 后自动发送</span>
+              </div>
+              <div class="draft-text" id="draftText"></div>
+              <div class="draft-bar-track">
+                <div class="draft-bar-fill" id="draftBarFill"></div>
+              </div>
+              <div class="draft-actions">
+                <button class="draft-btn cancel" id="draftCancelBtn">取消重说</button>
+                <button class="draft-btn send" id="draftSendBtn">立即发送</button>
+              </div>
+            </div>
+
+            <!-- 快捷指令条 -->
+            <div class="chips-row" id="chipsRow">
+              <button class="chip-cmd" data-cmd="继续">继续</button>
+              <button class="chip-cmd" data-cmd="查进度">查进度</button>
+              <button class="chip-cmd" data-cmd="停一下">停一下</button>
+            </div>
+
+            <!-- 按住说话主按钮 -->
+            <button class="ptt-btn" id="pttBtn">
+              <span class="ptt-mic-ico"></span>
+              <span id="pttLabel">按住说话</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5 个核心状态切换按钮 -->
+      <div class="states" id="stateBtns">
+        <button data-state="browse" class="on">对话浏览</button>
+        <button data-state="holding">按住说话</button>
+        <button data-state="confirm">识别确认(1.5s缓冲)</button>
+        <button data-state="streaming">流式回复中</button>
+        <button data-state="micwarn">麦噪过大告警</button>
+      </div>
+      <div class="devcap">
+        交互提示：可鼠标/手指上下拖拽消息区；点击任一左侧回复卡重放 TTS 播报；按住底部按钮（或轻点）触发 ASR 转写与 1.5s 确认缓冲；点顶部 <code>发给 DSH ⇄</code> 与绿点切换对象或查看麦噪诊断。
+      </div>
+    </div>
+
+    <!-- 右栏：设计拆解与 ESP32-S3 实现评估 -->
+    <div class="notes">
+      <p class="quote">
+        在现有 5 页横向圆环中新增第 6 页<b>独立多轮语音对话页</b>，把 DSH 指令派发与诺瓦闲聊放进无头像的宽气泡消息流，并用 <b>1.5s 识别确认缓冲</b>拦截口误与误识别指令。
+      </p>
+
+      <div class="axesless">
+        <div class="arow">
+          <span>概念</span>
+          <b>从“全局弹窗打断当前页”转为<i>独立第 6 页常驻对话空间</i>，保留上下文历史与状态回执，避免小屏反复跳页丢失前文。</b>
+        </div>
+        <div class="arow">
+          <span>内容组织</span>
+          <b>顶栏 56px 承载时钟、对象切换与麦克风健康点；中部全幅气泡（86% 最大宽度，无头像列浪费）混排多轮上下文；底栏固定快捷芯片与 46px 按住说话键。</b>
+        </div>
+        <div class="arow">
+          <span>交互模型</span>
+          <b>支持拖拽浏览历史、轻点回复气泡重放 TTS；<i>按住说话 → 实时流式上字 → 松手进入 1.5s 倒计时草稿</i>，无操作自动发出，误识别一键“取消重说”。</b>
+        </div>
+        <div class="arow">
+          <span>视觉语法</span>
+          <b>纯黑 OLED 省电基底，用户指令用青色（DSH）或薄荷绿（诺瓦）微透边框区分目标；助手卡用深海蓝底 <code>#0c121e</code>，麦噪告警严格使用珊瑚红 <code>#ff586c</code>。</b>
+        </div>
+      </div>
+
+      <div class="tradeoff">
+        <div class="pro">
+          <div class="col-h">优势</div>
+          <ul>
+            <li>多轮连续追问不需要重复唤醒，上一句报错和这一句指令同屏可见。</li>
+            <li>1.5s 缓冲期给用户“最后一秒刹车”机会，防止 DSH 误执行高风险命令。</li>
+            <li>省掉头像栏后气泡有效宽度达 290px，16.5px–17px 中文字号每行可读 15 字。</li>
+            <li>顶栏麦克风微点 + 内联条在不打断对话流的前提下暴露 ES8311 底噪异常。</li>
+          </ul>
+        </div>
+        <div class="con">
+          <div class="col-h">代价与限制</div>
+          <ul>
+            <li>需要用户在横向页面环中滑到第 6 页（或通过长按按键直达）才能开口。</li>
+            <li>1.5s 缓冲对高频极短命令（如“停一下”）有轻微延迟感，需靠快捷芯片绕过。</li>
+            <li>小屏同时展示确认卡与多轮历史时，可见历史区域会被临时压缩到约 2 条气泡。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="impl">
+        <div class="impl-h">ESP32-S3 / ES8311 实现要点</div>
+        <div class="costbox">
+          <span class="lvl mid">中等改造成本</span>
+          <code>page_chat.cpp</code>
+          <code>nav.cpp (totalDots = 6)</code>
+          <code>PSRAM RingBuffer</code>
+          <code>ES8311 I2S RMS/SNR</code>
+        </div>
+        <p>
+          • <b>内存预算</b>：在 PSRAM 开辟固定环形队列保存最近 20 轮 UTF-8 文本与时间戳（约 16 KB），LVGL 容器仅挂载最近 12 个气泡对象以维持 60fps 惯性拖拽。<br>
+          • <b>硬件适配</b>：ES8311 未经产线标定时易出现增益偏低或环境底噪飘高，在 <code>page_chat.cpp</code> 按 100ms 窗口计算帧 RMS dBFS，超过 <code>-30 dBFS</code> 持续 400ms 即点亮顶栏红点并展开内联告警条。<br>
+          • <b>适用场景</b>：最适合连续下发 DSH 开发任务、查看长日志摘要并需要语音二次确认的工作流。
+        </p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  var screenEl = document.getElementById('screen');
+  var threadEl = document.getElementById('thread');
+  var targetPill = document.getElementById('targetPill');
+  var targetLabel = document.getElementById('targetLabel');
+  var micDotBtn = document.getElementById('micDotBtn');
+  var snrBanner = document.getElementById('snrBanner');
+  var snrCloseBtn = document.getElementById('snrCloseBtn');
+  var snrNoise = document.getElementById('snrNoise');
+  var snrVal = document.getElementById('snrVal');
+  var warnBanner = document.getElementById('warnBanner');
+  var warnRetryBtn = document.getElementById('warnRetryBtn');
+
+  var asrLiveCard = document.getElementById('asrLiveCard');
+  var asrLiveTxt = document.getElementById('asrLiveTxt');
+  var liveDb = document.getElementById('liveDb');
+  var waveBars = document.getElementById('waveBars').querySelectorAll('i');
+
+  var draftCard = document.getElementById('draftCard');
+  var draftHead = document.getElementById('draftHead');
+  var draftTargetName = document.getElementById('draftTargetName');
+  var draftTimerText = document.getElementById('draftTimerText');
+  var draftText = document.getElementById('draftText');
+  var draftBarFill = document.getElementById('draftBarFill');
+  var draftCancelBtn = document.getElementById('draftCancelBtn');
+  var draftSendBtn = document.getElementById('draftSendBtn');
+
+  var chipsRow = document.getElementById('chipsRow');
+  var pttBtn = document.getElementById('pttBtn');
+  var pttLabel = document.getElementById('pttLabel');
+  var stateBtns = document.getElementById('stateBtns').querySelectorAll('button');
+  var zoomBtns = document.querySelectorAll('.zoomctl button');
+
+  var currentTarget = 'dsh'; // 'dsh' | 'nova'
+  var currentZoom = 1.5;
+  var activeTtsBubble = null;
+  var timers = [];
+  var intervals = [];
+  var draftRaf = null;
+  var pttDownTime = 0;
+  var isHolding = false;
+  var currentDraftPayload = '';
+  var pttSampleIdx = 0;
+
+  var pttSamples = {
+    dsh: [
+      '把刚才失败的两条测试日志整理成摘要发我',
+      '帮我看下 ES8311 的采样率配置有没有对齐 16k',
+      '先暂停后台同步，等会再继续跑构建'
+    ],
+    nova: [
+      '诺瓦，今天这个收音音量听起来清楚吗',
+      '帮我记一下晚上九点半提醒我拔掉充电线',
+      '刚编译报错了，先陪我喘口气再继续吧'
+    ]
+  };
+
+  var quickReplies = {
+    '继续': {
+      dsh: '已继续执行构建流水线，当前正在链接固件镜像（预计还需 18 秒）。',
+      nova: '好呀，我把刚才的话题接着往下聊，你刚说到哪一步啦？'
+    },
+    '查进度': {
+      dsh: '当前进度 11/12 项通过，仅剩 lvgl_chat_ui 集成测试正在验证。',
+      nova: '今天的语音记录一共 4 条，电量还有 88%，我这边状态满格！'
+    },
+    '停一下': {
+      dsh: '已暂停当前 DSH 队列中的自动部署步骤，等待你的下一步指令。',
+      nova: '收到，先停一停，随时按住说话叫我就行。'
+    }
+  };
+
+  var initialMessages = [
+    {
+      role: 'user',
+      target: 'dsh',
+      time: '20:59',
+      text: '帮我看下 nova-buddy 的编译还卡在哪个文件'
+    },
+    {
+      role: 'bot',
+      target: 'dsh',
+      time: '20:59',
+      text: '已检查构建队列，目前卡在 lvgl_port.c 的 DMA 缓冲配置，正在重跑增量编译。'
+    },
+    {
+      role: 'user',
+      target: 'nova',
+      time: '21:01',
+      text: '诺瓦，我今天录语音是不是有点太轻了？'
+    },
+    {
+      role: 'bot',
+      target: 'nova',
+      time: '21:01',
+      text: '刚才那句峰值 -18 dBFS，挺清晰的！离桌边再近一拳会更稳。'
+    },
+    {
+      role: 'user',
+      target: 'dsh',
+      time: '21:03',
+      text: '跑完测试把结果摘要发到群里，别贴整段日志'
+    },
+    {
+      role: 'bot',
+      target: 'dsh',
+      time: '21:03',
+      text: '收到，12 项单元测试全过后再汇总成 3 行发群里，现在进度 9/12。'
+    }
+  ];
+
+  function addTimer(fn, ms) {
+    var id = setTimeout(fn, ms);
+    timers.push(id);
+    return id;
+  }
+
+  function addInterval(fn, ms) {
+    var id = setInterval(fn, ms);
+    intervals.push(id);
+    return id;
+  }
+
+  function clearAsync() {
+    while (timers.length) clearTimeout(timers.pop());
+    while (intervals.length) clearInterval(intervals.pop());
+    if (draftRaf) {
+      cancelAnimationFrame(draftRaf);
+      draftRaf = null;
+    }
+  }
+
+  function formatNow() {
+    var d = new Date();
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mm = String(d.getMinutes()).padStart(2, '0');
+    return hh + ':' + mm;
+  }
+
+  function scrollThreadToBottom(smooth) {
+    threadEl.scrollTo({
+      top: threadEl.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto'
+    });
+  }
+
+  function setActiveStateBtn(stateName) {
+    for (var i = 0; i < stateBtns.length; i++) {
+      stateBtns[i].classList.toggle('on', stateBtns[i].getAttribute('data-state') === stateName);
+    }
+  }
+
+  function stopTts() {
+    if (activeTtsBubble) {
+      activeTtsBubble.classList.remove('playing');
+      var lbl = activeTtsBubble.querySelector('.tts-label');
+      if (lbl) lbl.textContent = '点击播报语音';
+      activeTtsBubble = null;
+    }
+  }
+
+  function playTtsOnBubble(bubbleEl) {
+    if (activeTtsBubble === bubbleEl) {
+      stopTts();
+      return;
+    }
+    stopTts();
+    activeTtsBubble = bubbleEl;
+    bubbleEl.classList.add('playing');
+    var lbl = bubbleEl.querySelector('.tts-label');
+    if (lbl) lbl.textContent = '正在播报…';
+    addTimer(function () {
+      if (activeTtsBubble === bubbleEl) stopTts();
+    }, 3200);
+  }
+
+  function appendMessage(msg) {
+    var row = document.createElement('div');
+    row.className = 'msg-row ' + msg.role + (msg.target === 'nova' ? ' nova' : '');
+
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    var textSpan = document.createElement('span');
+    textSpan.className = 'msg-body';
+    textSpan.textContent = msg.text;
+    bubble.appendChild(textSpan);
+
+    if (msg.role === 'bot') {
+      var ttsPill = document.createElement('div');
+      ttsPill.className = 'tts-pill';
+      ttsPill.innerHTML =
+        '<span class="tts-bars"><i></i><i></i><i></i></span>' +
+        '<span class="tts-label">点击播报语音</span>';
+      bubble.appendChild(ttsPill);
+      bubble.addEventListener('click', function () {
+        if (threadEl.dataset.wasDragged === '1') return;
+        playTtsOnBubble(bubble);
+      });
+    }
+
+    var meta = document.createElement('div');
+    meta.className = 'msg-meta';
+    var who = msg.role === 'user'
+      ? (msg.target === 'dsh' ? 'DSH' : '诺瓦')
+      : (msg.target === 'dsh' ? 'DSH 回执' : '诺瓦');
+    meta.textContent = who + ' · ' + msg.time;
+
+    row.appendChild(bubble);
+    row.appendChild(meta);
+    threadEl.appendChild(row);
+    scrollThreadToBottom(true);
+    return { row: row, bubble: bubble, textSpan: textSpan };
+  }
+
+  function renderInitialThread() {
+    threadEl.innerHTML = '';
+    for (var i = 0; i < initialMessages.length; i++) {
+      appendMessage(initialMessages[i]);
+    }
+    scrollThreadToBottom(false);
+  }
+
+  function resetOverlays() {
+    asrLiveCard.classList.remove('show');
+    draftCard.classList.remove('show');
+    chipsRow.style.display = 'flex';
+    pttBtn.classList.remove('holding');
+    pttLabel.textContent = '按住说话';
+    micDotBtn.classList.remove('rec');
+  }
+
+  function setTarget(next) {
+    currentTarget = next;
+    targetPill.classList.toggle('nova', next === 'nova');
+    targetLabel.textContent = next === 'dsh' ? '发给 DSH' : '闲聊诺瓦';
+    draftHead.classList.toggle('nova', next === 'nova');
+    draftTargetName.textContent = next === 'dsh' ? 'DSH' : '诺瓦';
+  }
+
+  targetPill.addEventListener('click', function () {
+    setTarget(currentTarget === 'dsh' ? 'nova' : 'dsh');
+  });
+
+  /* 顶部麦克风绿点点击切换 SNR 诊断条 */
+  micDotBtn.addEventListener('click', function () {
+    if (warnBanner.classList.contains('show')) {
+      warnBanner.classList.remove('show');
+      micDotBtn.classList.remove('warn');
+      snrBanner.classList.add('show');
+      setActiveStateBtn('browse');
+      return;
+    }
+    var showing = snrBanner.classList.toggle('show');
+    if (showing) {
+      snrNoise.textContent = String(-59 + Math.floor(Math.random() * 4));
+      snrVal.textContent = '+' + String(23 + Math.floor(Math.random() * 4));
+    }
+  });
+
+  snrCloseBtn.addEventListener('click', function () {
+    snrBanner.classList.remove('show');
+  });
+
+  warnRetryBtn.addEventListener('click', function () {
+    warnBanner.classList.remove('show');
+    micDotBtn.classList.remove('warn');
+    snrNoise.textContent = '-58';
+    snrVal.textContent = '+24';
+    snrBanner.classList.add('show');
+    setActiveStateBtn('browse');
+  });
+
+  /* 流式回复 + 自动播报演示 */
+  function startStreamingReply(userText, targetOverride) {
+    clearAsync();
+    resetOverlays();
+    stopTts();
+    setActiveStateBtn('streaming');
+
+    var tgt = targetOverride || currentTarget;
+    var replyPool = {
+      dsh: '收到“' + userText.slice(0, 12) + (userText.length > 12 ? '…' : '') +
+        '”，已拆分日志摘要并同步到工作区，当前 12 项校验全部通过。',
+      nova: '听清啦！刚刚这句信号很稳，我帮你把关键事项记进今晚备忘里咯。'
+    };
+    var fullReply = quickReplies[userText] ? quickReplies[userText][tgt] : replyPool[tgt];
+
+    var row = document.createElement('div');
+    row.className = 'msg-row bot' + (tgt === 'nova' ? ' nova' : '');
+
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    var streamHead = document.createElement('div');
+    streamHead.className = 'stream-head';
+    streamHead.innerHTML =
+      '<div class="nova-sprite-box"><div class="nova-thinking-sprite"></div></div>' +
+      '<span>' + (tgt === 'dsh' ? 'DSH 调度思考中…' : '诺瓦正在组织回复…') + '</span>';
+
+    var textSpan = document.createElement('span');
+    textSpan.className = 'msg-body';
+
+    var cursor = document.createElement('span');
+    cursor.className = 'cursor-blink';
+
+    bubble.appendChild(streamHead);
+    bubble.appendChild(textSpan);
+    bubble.appendChild(cursor);
+
+    var meta = document.createElement('div');
+    meta.className = 'msg-meta';
+    meta.textContent = (tgt === 'dsh' ? 'DSH 回执' : '诺瓦') + ' · ' + formatNow();
+
+    row.appendChild(bubble);
+    row.appendChild(meta);
+    threadEl.appendChild(row);
+    scrollThreadToBottom(true);
+
+    var idx = 0;
+    addTimer(function () {
+      addInterval(function () {
+        idx += 1;
+        textSpan.textContent = fullReply.slice(0, idx);
+        scrollThreadToBottom(false);
+        if (idx >= fullReply.length) {
+          clearAsync();
+          streamHead.remove();
+          cursor.remove();
+          var ttsPill = document.createElement('div');
+          ttsPill.className = 'tts-pill';
+          ttsPill.innerHTML =
+            '<span class="tts-bars"><i></i><i></i><i></i></span>' +
+            '<span class="tts-label">正在播报…</span>';
+          bubble.appendChild(ttsPill);
+          bubble.addEventListener('click', function () {
+            if (threadEl.dataset.wasDragged === '1') return;
+            playTtsOnBubble(bubble);
+          });
+          playTtsOnBubble(bubble);
+          setActiveStateBtn('browse');
+        }
+      }, 36);
+    }, 380);
+  }
+
+  function dispatchConfirmedMessage(text) {
+    clearAsync();
+    resetOverlays();
+    appendMessage({
+      role: 'user',
+      target: currentTarget,
+      time: formatNow(),
+      text: text
+    });
+    startStreamingReply(text, currentTarget);
+  }
+
+  /* 1.5s 识别确认缓冲逻辑 */
+  function enterConfirmDraft(text) {
+    clearAsync();
+    resetOverlays();
+    setActiveStateBtn('confirm');
+    currentDraftPayload = text;
+
+    draftHead.classList.toggle('nova', currentTarget === 'nova');
+    draftTargetName.textContent = currentTarget === 'dsh' ? 'DSH' : '诺瓦';
+    draftText.textContent = text;
+    draftBarFill.style.width = '100%';
+    draftTimerText.textContent = '1.5s 后自动发送';
+
+    chipsRow.style.display = 'none';
+    draftCard.classList.add('show');
+    scrollThreadToBottom(false);
+
+    var duration = 1500;
+    var start = performance.now();
+
+    function step(now) {
+      var elapsed = now - start;
+      var remain = Math.max(0, duration - elapsed);
+      var pct = (remain / duration) * 100;
+      draftBarFill.style.width = pct.toFixed(1) + '%';
+      draftTimerText.textContent = (remain / 1000).toFixed(1) + 's 后自动发送';
+      if (remain <= 0) {
+        draftRaf = null;
+        dispatchConfirmedMessage(currentDraftPayload);
+      } else {
+        draftRaf = requestAnimationFrame(step);
+      }
+    }
+    draftRaf = requestAnimationFrame(step);
+  }
+
+  draftCancelBtn.addEventListener('click', function () {
+    clearAsync();
+    resetOverlays();
+    setActiveStateBtn('browse');
+  });
+
+  draftSendBtn.addEventListener('click', function () {
+    if (!currentDraftPayload) return;
+    dispatchConfirmedMessage(currentDraftPayload);
+  });
+
+  /* 按住说话：实时波形 + dB + 逐字 ASR 转写 */
+  function startPttListening(autoReleaseMs) {
+    clearAsync();
+    resetOverlays();
+    warnBanner.classList.remove('show');
+    micDotBtn.classList.remove('warn');
+    micDotBtn.classList.add('rec');
+    setActiveStateBtn('holding');
+
+    isHolding = true;
+    pttBtn.classList.add('holding');
+    pttLabel.textContent = '松手识别确认 · 正在收音';
+    asrLiveCard.classList.add('show');
+    asrLiveTxt.textContent = '';
+    scrollThreadToBottom(false);
+
+    var list = pttSamples[currentTarget];
+    var sample = list[pttSampleIdx % list.length];
+    pttSampleIdx += 1;
+    currentDraftPayload = sample;
+
+    var charIdx = 0;
+    addInterval(function () {
+      for (var i = 0; i < waveBars.length; i++) {
+        var h = 4 + Math.floor(Math.random() * 14);
+        waveBars[i].style.height = h + 'px';
+      }
+      var db = -24 + Math.floor(Math.random() * 11);
+      liveDb.textContent = db + ' dBFS';
+    }, 90);
+
+    addInterval(function () {
+      if (charIdx < sample.length) {
+        charIdx += 1;
+        asrLiveTxt.textContent = sample.slice(0, charIdx);
+      }
+    }, 55);
+
+    if (autoReleaseMs) {
+      addTimer(function () {
+        if (isHolding) finishPttListening();
+      }, autoReleaseMs);
+    }
+  }
+
+  function finishPttListening() {
+    if (!isHolding) return;
+    isHolding = false;
+    var captured = asrLiveTxt.textContent.trim() || currentDraftPayload;
+    if (captured.length < 4) captured = currentDraftPayload;
+    enterConfirmDraft(captured);
+  }
+
+  pttBtn.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    pttDownTime = performance.now();
+    startPttListening(0);
+  });
+
+  window.addEventListener('pointerup', function () {
+    if (!isHolding) return;
+    var heldMs = performance.now() - pttDownTime;
+    if (heldMs < 280) {
+      // 轻点兜底：自动完成 1.2s 模拟说话后进入 1.5s 确认缓冲
+      addTimer(function () {
+        finishPttListening();
+      }, 1100);
+    } else {
+      finishPttListening();
+    }
+  });
+
+  pttBtn.addEventListener('pointercancel', function () {
+    if (isHolding) finishPttListening();
+  });
+
+  /* 快捷指令芯片：直接发送并触发流式回复 */
+  var chipBtns = chipsRow.querySelectorAll('.chip-cmd');
+  for (var c = 0; c < chipBtns.length; c++) {
+    chipBtns[c].addEventListener('click', function () {
+      var cmd = this.getAttribute('data-cmd');
+      dispatchConfirmedMessage(cmd);
+    });
+  }
+
+  /* 鼠标/触摸拖拽滚动消息区（兼容 zoom 比例） */
+  var dragActive = false;
+  var dragStartY = 0;
+  var dragStartScroll = 0;
+
+  threadEl.addEventListener('pointerdown', function (e) {
+    dragActive = true;
+    dragStartY = e.clientY;
+    dragStartScroll = threadEl.scrollTop;
+    threadEl.dataset.wasDragged = '0';
+    threadEl.classList.add('dragging');
+  });
+
+  window.addEventListener('pointermove', function (e) {
+    if (!dragActive) return;
+    var dy = (e.clientY - dragStartY) / currentZoom;
+    if (Math.abs(dy) > 5) {
+      threadEl.dataset.wasDragged = '1';
+      threadEl.scrollTop = dragStartScroll - dy;
+    }
+  });
+
+  window.addEventListener('pointerup', function () {
+    if (!dragActive) return;
+    dragActive = false;
+    threadEl.classList.remove('dragging');
+    setTimeout(function () {
+      threadEl.dataset.wasDragged = '0';
+    }, 30);
+  });
+
+  /* 外部状态按钮切换 */
+  function applyState(state) {
+    clearAsync();
+    resetOverlays();
+    warnBanner.classList.remove('show');
+    snrBanner.classList.remove('show');
+    micDotBtn.classList.remove('warn', 'rec');
+    isHolding = false;
+    setActiveStateBtn(state);
+
+    if (state === 'browse') {
+      scrollThreadToBottom(true);
+      return;
+    }
+    if (state === 'holding') {
+      startPttListening(0);
+      return;
+    }
+    if (state === 'confirm') {
+      enterConfirmDraft(pttSamples[currentTarget][0]);
+      return;
+    }
+    if (state === 'streaming') {
+      var userDemo = currentTarget === 'dsh'
+        ? '帮我把最新测试报告压缩到 3 行'
+        : '诺瓦，今天工作台状态都正常吗';
+      appendMessage({
+        role: 'user',
+        target: currentTarget,
+        time: formatNow(),
+        text: userDemo
+      });
+      startStreamingReply(userDemo, currentTarget);
+      return;
+    }
+    if (state === 'micwarn') {
+      warnBanner.classList.add('show');
+      micDotBtn.classList.add('warn');
+      scrollThreadToBottom(false);
+    }
+  }
+
+  for (var s = 0; s < stateBtns.length; s++) {
+    stateBtns[s].addEventListener('click', function () {
+      applyState(this.getAttribute('data-state'));
+    });
+  }
+
+  /* 缩放按钮 */
+  for (var z = 0; z < zoomBtns.length; z++) {
+    zoomBtns[z].addEventListener('click', function () {
+      var val = parseFloat(this.getAttribute('data-z'));
+      currentZoom = val;
+      document.documentElement.style.setProperty('--z', String(val));
+      for (var k = 0; k < zoomBtns.length; k++) {
+        zoomBtns[k].classList.toggle('on', zoomBtns[k] === this);
+      }
+    });
+  }
+
+  renderInitialThread();
+})();
+</script>
+</body>
+</html>

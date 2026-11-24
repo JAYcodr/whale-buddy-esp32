@@ -1,0 +1,1689 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nova Buddy · 方案 C · 全局对讲浮层 + 麦质自测</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#07080a;
+    --panel:#0d1117;
+    --line:#1b2330;
+    --txt:#e8edf6;
+    --dim:#8b9ab0;
+    --muted:#4d5d75;
+    --accent:#48c6ff;
+    --mint:#40e6b0;
+    --violet:#a88cff;
+    --red:#ff586c;
+    --z:1.5;
+  }
+  body{
+    background:var(--bg);
+    color:var(--txt);
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    font-size:15px;
+    line-height:1.62;
+    padding:56px 40px 120px;
+  }
+  .wrap{max-width:1160px;margin:0 auto}
+  .kicker{
+    font-size:11px;
+    letter-spacing:.22em;
+    color:var(--muted);
+    text-transform:uppercase;
+    margin-bottom:12px;
+  }
+  h1{
+    font-size:38px;
+    line-height:1.16;
+    font-weight:600;
+    letter-spacing:-.015em;
+    margin-bottom:14px;
+  }
+  h1 em{font-style:normal;color:var(--accent)}
+  .lede{
+    font-size:16px;
+    color:var(--dim);
+    max-width:720px;
+    line-height:1.7;
+  }
+  .lede b{color:var(--txt);font-weight:500}
+  .meta{margin-top:20px;display:flex;gap:9px;flex-wrap:wrap}
+  .chip{
+    font-size:12px;
+    color:var(--dim);
+    border:1px solid var(--line);
+    border-radius:99px;
+    padding:4px 12px;
+  }
+  .zoomctl{
+    display:flex;
+    align-items:center;
+    gap:7px;
+    margin-top:22px;
+    font-size:12px;
+    color:var(--muted);
+  }
+  .zoomctl button{
+    background:transparent;
+    border:1px solid var(--line);
+    color:var(--dim);
+    border-radius:6px;
+    padding:4px 11px;
+    font-size:12px;
+    cursor:pointer;
+    font-family:inherit;
+    transition:all .12s;
+  }
+  .zoomctl button:hover{border-color:#2d3d55;color:var(--txt)}
+  .zoomctl button.on{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:#04121c;
+    font-weight:600;
+  }
+
+  /* ---------- 主布局 ---------- */
+  .split{
+    display:flex;
+    gap:52px;
+    align-items:flex-start;
+    margin-top:34px;
+  }
+  .devside{display:flex;flex-direction:column;gap:14px}
+  .devbox{
+    width:calc(368px * var(--z));
+    height:calc(448px * var(--z));
+    position:relative;
+    border-radius:calc(6px * var(--z));
+    overflow:hidden;
+    flex:none;
+    box-shadow:0 0 0 1px #20293a,0 24px 60px -22px #000;
+    background:#000;
+  }
+
+  /* ---------- 368x448 OLED 屏幕 ---------- */
+  .screen{
+    width:368px;
+    height:448px;
+    position:absolute;
+    top:0;
+    left:0;
+    transform-origin:0 0;
+    transform:scale(var(--z));
+    background:#000;
+    overflow:hidden;
+    color:#f2f6ff;
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    font-weight:500;
+    -webkit-font-smoothing:antialiased;
+    user-select:none;
+  }
+
+  /* 底层真实页面截图 */
+  .underlay{
+    position:absolute;
+    inset:0;
+    background:#000;
+  }
+  .underlay-img{
+    width:368px;
+    height:448px;
+    display:block;
+    object-fit:cover;
+    transition:opacity .22s ease,filter .22s ease,transform .22s ease;
+  }
+  .screen.sheet-open .underlay-img{
+    opacity:.28;
+    filter:blur(2px) saturate(.85);
+    transform:scale(1.015);
+  }
+  .underlay-scrim{
+    position:absolute;
+    inset:0;
+    background:linear-gradient(180deg,rgba(0,0,0,.36) 0%,rgba(0,0,0,.78) 65%,rgba(0,0,0,.92) 100%);
+    opacity:1;
+    pointer-events:none;
+    transition:opacity .22s ease;
+  }
+  .screen:not(.sheet-open) .underlay-scrim{
+    opacity:0;
+  }
+
+  /* 收起态顶栏唤醒胶囊 + 模拟长按 KEY1 提示 */
+  .wake-bar{
+    position:absolute;
+    top:12px;
+    left:16px;
+    right:16px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    pointer-events:none;
+    opacity:0;
+    transform:translateY(-8px);
+    transition:opacity .2s ease,transform .2s ease;
+    z-index:4;
+  }
+  .screen:not(.sheet-open) .wake-bar{
+    opacity:1;
+    transform:translateY(0);
+  }
+  .wake-pill{
+    pointer-events:auto;
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    background:rgba(12,18,30,.92);
+    border:1.5px solid #48c6ff;
+    color:#f2f6ff;
+    border-radius:99px;
+    padding:7px 14px;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
+    box-shadow:0 6px 20px rgba(0,0,0,.72),0 0 18px rgba(72,198,255,.22);
+    transition:transform .12s ease,background .12s ease;
+    font-family:inherit;
+  }
+  .wake-pill:hover{background:#162238;transform:translateY(-1px)}
+  .wake-pill:active{transform:scale(.96)}
+  .wake-dot{
+    width:8px;
+    height:8px;
+    border-radius:50%;
+    background:#48c6ff;
+    box-shadow:0 0 8px #48c6ff;
+  }
+  .key1-badge{
+    pointer-events:auto;
+    background:rgba(12,18,30,.88);
+    border:1px solid #1e304e;
+    color:#8294b4;
+    border-radius:99px;
+    padding:6px 11px;
+    font-size:13px;
+    cursor:pointer;
+    font-family:inherit;
+    transition:border-color .12s,color .12s;
+  }
+  .key1-badge:hover{border-color:#48c6ff;color:#f2f6ff}
+
+  /* 右侧物理 KEY1 模拟触片（仅作硬件唤醒示意） */
+  .key1-hw{
+    position:absolute;
+    right:0;
+    top:128px;
+    background:#121c2e;
+    border:1px solid #1e304e;
+    border-right:none;
+    border-radius:10px 0 0 10px;
+    padding:8px 7px 8px 9px;
+    font-size:11px;
+    line-height:1.2;
+    color:#8294b4;
+    writing-mode:vertical-rl;
+    letter-spacing:.08em;
+    cursor:pointer;
+    z-index:3;
+    transition:all .15s;
+  }
+  .key1-hw:hover{background:#162238;color:#48c6ff;border-color:#48c6ff}
+  .screen.sheet-open .key1-hw{opacity:.42}
+
+  /* ---------- 模态对讲浮层（344px 居中底浮） ---------- */
+  .sheet{
+    position:absolute;
+    left:12px;
+    bottom:10px;
+    width:344px;
+    max-height:430px;
+    background:#0c121e;
+    border:1.5px solid #1e304e;
+    border-radius:22px;
+    padding:13px 16px 13px;
+    display:flex;
+    flex-direction:column;
+    gap:9px;
+    z-index:10;
+    box-shadow:0 18px 42px rgba(0,0,0,.85);
+    transform:translateY(428px);
+    opacity:0;
+    pointer-events:none;
+    transition:transform .2s cubic-bezier(.22,.82,.32,1),opacity .18s ease,border-color .18s ease,box-shadow .18s ease;
+  }
+  .screen.sheet-open .sheet{
+    transform:translateY(0);
+    opacity:1;
+    pointer-events:auto;
+  }
+  .sheet.active-cyan{
+    border-color:#48c6ff;
+    box-shadow:0 18px 42px rgba(0,0,0,.85),0 0 24px rgba(72,198,255,.16);
+  }
+  .sheet.active-mint{
+    border-color:#2c7a66;
+  }
+  .sheet.active-red{
+    border-color:#ff586c;
+    box-shadow:0 18px 42px rgba(0,0,0,.85),0 0 22px rgba(255,88,108,.18);
+  }
+
+  /* 浮层顶栏 */
+  .sheet-hdr{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    min-height:32px;
+  }
+  .seg{
+    display:inline-flex;
+    background:#070b13;
+    border:1px solid #1e304e;
+    border-radius:11px;
+    padding:2px;
+    gap:2px;
+  }
+  .seg button{
+    background:transparent;
+    border:none;
+    color:#8294b4;
+    font-size:14px;
+    font-weight:500;
+    padding:5px 11px;
+    border-radius:8px;
+    cursor:pointer;
+    font-family:inherit;
+    transition:all .14s;
+    line-height:1.1;
+  }
+  .seg button.on{
+    background:#162238;
+    color:#f2f6ff;
+    box-shadow:inset 0 0 0 1px #274066;
+  }
+  .status-pill{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    font-size:13px;
+    color:#8294b4;
+    background:#121c2e;
+    border:1px solid #1e304e;
+    border-radius:99px;
+    padding:4px 9px;
+    margin-left:auto;
+    white-space:nowrap;
+  }
+  .status-dot{
+    width:7px;
+    height:7px;
+    border-radius:50%;
+    background:#48c6ff;
+    flex:none;
+  }
+  .status-pill.listening{color:#48c6ff;border-color:#204c6b;background:#0e2030}
+  .status-pill.listening .status-dot{
+    background:#48c6ff;
+    box-shadow:0 0 8px #48c6ff;
+    animation:pulseDot .9s ease-in-out infinite;
+  }
+  .status-pill.thinking{color:#a88cff;border-color:#3a2f63;background:#161229}
+  .status-pill.thinking .status-dot{background:#a88cff;animation:pulseDot .7s ease-in-out infinite}
+  .status-pill.ready-mint{color:#40e6b0;border-color:#1b4d3f;background:#0c241d}
+  .status-pill.ready-mint .status-dot{background:#40e6b0}
+  .status-pill.warn{color:#ff586c;border-color:#5e222c;background:#240e14}
+  .status-pill.warn .status-dot{background:#ff586c;box-shadow:0 0 7px #ff586c}
+
+  @keyframes pulseDot{
+    0%,100%{transform:scale(1);opacity:1}
+    50%{transform:scale(1.35);opacity:.55}
+  }
+
+  .close-btn{
+    width:30px;
+    height:30px;
+    border-radius:50%;
+    border:1px solid #1e304e;
+    background:#121c2e;
+    color:#8294b4;
+    font-size:17px;
+    line-height:1;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex:none;
+    font-family:inherit;
+    transition:all .12s;
+  }
+  .close-btn:hover{background:#162238;color:#f2f6ff;border-color:#48c6ff}
+
+  /* 面板切换 */
+  .mode-pane{display:none;flex-direction:column;gap:10px}
+  .mode-pane.on{display:flex}
+
+  /* ---------- 模式 1：对讲 ---------- */
+  .spec-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    background:#070b14;
+    border:1px solid #162238;
+    border-radius:14px;
+    padding:8px 12px;
+    height:46px;
+  }
+  .spec-bars{
+    display:flex;
+    align-items:center;
+    gap:4px;
+    height:28px;
+    flex:1;
+  }
+  .spec-bar{
+    width:7px;
+    height:6px;
+    border-radius:4px;
+    background:#1e304e;
+    transition:height .08s ease,background .14s ease;
+  }
+  .spec-bars.live .spec-bar{background:#48c6ff}
+  .spec-bars.tts .spec-bar{background:#40e6b0}
+  .spec-bars.think .spec-bar{background:#a88cff}
+  .spec-bars.warn .spec-bar{background:#ff586c}
+
+  .mic-meter{
+    display:flex;
+    flex-direction:column;
+    align-items:flex-end;
+    line-height:1.18;
+    flex:none;
+    cursor:pointer;
+  }
+  .mic-db{
+    font-size:13px;
+    font-variant-numeric:tabular-nums;
+    color:#8294b4;
+    font-weight:600;
+  }
+  .mic-db.live{color:#48c6ff}
+  .mic-db.warn{color:#ff586c}
+  .mic-snr{
+    font-size:11px;
+    color:#4a5c7c;
+  }
+  .mic-snr.good{color:#40e6b0}
+  .mic-snr.warn{color:#ff586c}
+
+  .asr-box{
+    min-height:58px;
+    display:flex;
+    align-items:center;
+    padding:2px 2px;
+  }
+  .asr-text{
+    font-size:19px;
+    line-height:1.42;
+    color:#f2f6ff;
+    font-weight:500;
+    word-break:break-word;
+  }
+  .asr-text.placeholder{
+    font-size:17px;
+    color:#8294b4;
+    font-weight:400;
+  }
+  .cursor-blink{
+    display:inline-block;
+    width:2px;
+    height:19px;
+    background:#48c6ff;
+    vertical-align:-3px;
+    margin-left:3px;
+    animation:blink .8s steps(2) infinite;
+  }
+  @keyframes blink{0%{opacity:1}50%{opacity:0}}
+
+  /* 简短答复卡 */
+  .reply-card{
+    background:#162238;
+    border:1px solid #24395c;
+    border-left:3.5px solid #40e6b0;
+    border-radius:14px;
+    padding:10px 12px;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    min-height:82px;
+    transition:all .18s ease;
+  }
+  .reply-card.muted-card{
+    background:#101829;
+    border-color:#1a2842;
+    border-left-color:#1e304e;
+  }
+  .reply-card.warn-card{
+    background:#211118;
+    border-color:#5e222c;
+    border-left-color:#ff586c;
+  }
+  .reply-top{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+  }
+  .tts-tag{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    font-size:13px;
+    color:#40e6b0;
+    font-weight:600;
+  }
+  .tts-tag.idle{color:#4a5c7c;font-weight:500}
+  .tts-tag.think{color:#a88cff}
+  .tts-tag.warn{color:#ff586c}
+  .tts-wave{
+    display:inline-flex;
+    align-items:center;
+    gap:2.5px;
+    height:12px;
+  }
+  .tts-wave i{
+    display:block;
+    width:2.5px;
+    height:4px;
+    border-radius:2px;
+    background:#40e6b0;
+  }
+  .tts-wave.playing i:nth-child(1){animation:ttsBar .55s ease-in-out infinite}
+  .tts-wave.playing i:nth-child(2){animation:ttsBar .55s .14s ease-in-out infinite}
+  .tts-wave.playing i:nth-child(3){animation:ttsBar .55s .28s ease-in-out infinite}
+  @keyframes ttsBar{0%,100%{height:4px}50%{height:12px}}
+
+  .reply-actions{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .mini-link{
+    background:#0c121e;
+    border:1px solid #1e304e;
+    color:#8294b4;
+    font-size:12px;
+    padding:2px 8px;
+    border-radius:99px;
+    cursor:pointer;
+    font-family:inherit;
+    transition:all .12s;
+  }
+  .mini-link:hover{border-color:#48c6ff;color:#f2f6ff}
+  .reply-body{
+    font-size:16px;
+    line-height:1.42;
+    color:#f2f6ff;
+    font-weight:500;
+  }
+  .reply-body.dim{color:#8294b4;font-size:15px;font-weight:400}
+  .reply-extra{
+    font-size:13.5px;
+    line-height:1.4;
+    color:#8294b4;
+    border-top:1px solid #1e304e;
+    padding-top:6px;
+    display:none;
+  }
+  .reply-card.expanded .reply-extra{display:block}
+
+  /* 底部 PTT 按钮区 */
+  .ptt-dock{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:7px;
+    padding-top:2px;
+  }
+  .ptt-btn{
+    width:72px;
+    height:72px;
+    border-radius:50%;
+    border:2px solid #48c6ff;
+    background:radial-gradient(circle at 35% 30%,#1c4266,#0d2238 72%);
+    color:#f2f6ff;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    position:relative;
+    box-shadow:0 0 22px rgba(72,198,255,.28),inset 0 1px 0 rgba(255,255,255,.15);
+    transition:transform .12s ease,box-shadow .16s ease,background .16s ease,border-color .16s ease;
+    touch-action:none;
+  }
+  .ptt-btn:hover{box-shadow:0 0 28px rgba(72,198,255,.42)}
+  .ptt-btn.holding{
+    transform:scale(.94);
+    background:radial-gradient(circle at 50% 45%,#48c6ff,#196e9e 78%);
+    border-color:#9be2ff;
+    box-shadow:0 0 34px rgba(72,198,255,.65),0 0 0 7px rgba(72,198,255,.16);
+  }
+  .ptt-btn.holding svg path,.ptt-btn.holding svg rect{stroke:#04121c}
+  .ptt-hint{
+    font-size:15px;
+    color:#8294b4;
+    line-height:1.2;
+  }
+  .ptt-hint.live{color:#48c6ff;font-weight:600}
+
+  /* ---------- 模式 2：收音自测 ---------- */
+  .probe-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+  }
+  .mcell{
+    background:#121c2e;
+    border:1px solid #1e304e;
+    border-radius:13px;
+    padding:9px 11px;
+    display:flex;
+    flex-direction:column;
+    gap:3px;
+    min-height:60px;
+  }
+  .mcell.ok{border-color:#1e4d40;background:#0e201b}
+  .mcell.warn{border-color:#692430;background:#221016}
+  .mcell-lbl{
+    font-size:13px;
+    color:#8294b4;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+  }
+  .mcell-val{
+    font-size:17px;
+    font-weight:600;
+    color:#f2f6ff;
+    font-variant-numeric:tabular-nums;
+    line-height:1.25;
+  }
+  .mcell.ok .mcell-val{color:#40e6b0}
+  .mcell.warn .mcell-val{color:#ff586c}
+
+  .env-hdr{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    font-size:13.5px;
+    color:#8294b4;
+  }
+  .fault-toggle{
+    background:none;
+    border:none;
+    color:#48c6ff;
+    font-size:13px;
+    cursor:pointer;
+    font-family:inherit;
+    text-decoration:underline;
+    text-underline-offset:3px;
+    padding:0;
+  }
+  .fault-toggle.is-fault{color:#ff586c}
+
+  .env-box{
+    position:relative;
+    height:64px;
+    background:#070b14;
+    border:1px solid #1e304e;
+    border-radius:13px;
+    padding:8px 10px;
+    display:flex;
+    align-items:center;
+    gap:3px;
+    overflow:hidden;
+  }
+  .env-midline{
+    position:absolute;
+    left:8px;
+    right:8px;
+    top:50%;
+    height:1px;
+    background:#162238;
+    pointer-events:none;
+  }
+  .env-bar{
+    flex:1;
+    height:8px;
+    border-radius:3px;
+    background:#48c6ff;
+    opacity:.9;
+    position:relative;
+    z-index:1;
+    transition:height .14s ease,background .14s ease;
+  }
+  .env-bar.fault{background:#ff586c}
+  .env-bar.noise{background:#4a5c7c}
+  .playhead{
+    position:absolute;
+    top:4px;
+    bottom:4px;
+    width:2px;
+    background:#40e6b0;
+    box-shadow:0 0 8px #40e6b0;
+    left:0;
+    opacity:0;
+    z-index:2;
+  }
+  .playhead.on{opacity:1}
+
+  .probe-verdict{
+    font-size:14.5px;
+    line-height:1.3;
+    color:#40e6b0;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    min-height:22px;
+  }
+  .probe-verdict.warn{color:#ff586c}
+  .probe-verdict.sampling{color:#48c6ff}
+
+  .probe-btns{
+    display:grid;
+    grid-template-columns:1.18fr 1fr;
+    gap:9px;
+  }
+  .pbtn{
+    height:46px;
+    border-radius:13px;
+    border:1px solid #1e304e;
+    background:#162238;
+    color:#f2f6ff;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
+    font-family:inherit;
+    position:relative;
+    overflow:hidden;
+    transition:all .12s;
+  }
+  .pbtn:hover{border-color:#48c6ff}
+  .pbtn.primary{
+    background:#48c6ff;
+    border-color:#48c6ff;
+    color:#04121c;
+  }
+  .pbtn.primary:hover{background:#66d0ff}
+  .pbtn.running{
+    background:#10293d;
+    border-color:#48c6ff;
+    color:#48c6ff;
+  }
+  .pbtn.playing{
+    background:#0f2a22;
+    border-color:#40e6b0;
+    color:#40e6b0;
+  }
+
+  /* ---------- 状态切换按钮 ---------- */
+  .states{
+    display:grid;
+    grid-template-columns:repeat(5,1fr);
+    gap:6px;
+    width:calc(368px * var(--z));
+  }
+  .states button{
+    background:#0f1622;
+    border:1px solid var(--line);
+    color:var(--dim);
+    border-radius:8px;
+    padding:9px 4px;
+    font-size:11.5px;
+    cursor:pointer;
+    font-family:inherit;
+    transition:all .12s;
+    white-space:nowrap;
+  }
+  .states button:hover{background:#16203a;color:var(--txt)}
+  .states button.on{
+    background:#162238;
+    border-color:var(--accent);
+    color:#f2f6ff;
+    font-weight:600;
+  }
+  .devcap{
+    font-size:12px;
+    color:var(--muted);
+    line-height:1.6;
+    max-width:calc(368px * var(--z));
+  }
+  .devcap b{color:var(--dim);font-weight:500}
+
+  /* ---------- 右侧设计说明 ---------- */
+  .notes{flex:1;min-width:0;padding-top:2px}
+  .quote{
+    font-size:18.5px;
+    line-height:1.65;
+    color:#cfd9e8;
+    padding-bottom:22px;
+    border-bottom:1px solid var(--line);
+  }
+  .quote b{color:#fff;font-weight:500}
+
+  table.axes{
+    width:100%;
+    border-collapse:collapse;
+    font-size:13.5px;
+    margin-top:8px;
+  }
+  table.axes td{
+    padding:12px 12px 12px 0;
+    border-bottom:1px solid var(--line);
+    vertical-align:top;
+    line-height:1.55;
+  }
+  table.axes td:first-child{
+    width:84px;
+    color:var(--muted);
+    font-weight:500;
+  }
+  table.axes td:last-child{color:#cfd9e8}
+  table.axes i{font-style:normal;color:var(--accent)}
+
+  .tradeoff{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:12px 34px;
+    margin-top:24px;
+    font-size:13.5px;
+  }
+  .tradeoff .col-h{
+    font-size:10.5px;
+    letter-spacing:.14em;
+    color:var(--muted);
+    margin-bottom:9px;
+    text-transform:uppercase;
+  }
+  .tradeoff li{
+    list-style:none;
+    color:var(--dim);
+    padding-left:15px;
+    position:relative;
+    margin-bottom:8px;
+    line-height:1.55;
+  }
+  .tradeoff li:before{
+    content:"";
+    position:absolute;
+    left:0;
+    top:8px;
+    width:5px;
+    height:5px;
+    border-radius:50%;
+    background:#2b3a4e;
+  }
+  .tradeoff .pro li:before{background:var(--mint)}
+  .tradeoff .con li:before{background:var(--red)}
+
+  .impl{
+    margin-top:24px;
+    padding:16px 18px;
+    background:#0b1018;
+    border:1px solid var(--line);
+    border-radius:12px;
+  }
+  .impl-h{
+    font-size:11px;
+    letter-spacing:.14em;
+    color:var(--accent);
+    text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .impl ul{display:flex;flex-direction:column;gap:7px}
+  .impl li{
+    list-style:none;
+    font-size:13px;
+    color:var(--dim);
+    line-height:1.58;
+  }
+  .impl li b{color:var(--txt);font-weight:500}
+  code{
+    background:#101722;
+    border:1px solid #1a2534;
+    border-radius:4px;
+    padding:1px 5px;
+    font-size:11.5px;
+    color:#8fa4bd;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+
+  @media (max-width:1040px){
+    body{padding:40px 20px 100px}
+    h1{font-size:29px}
+    .split{flex-direction:column;gap:34px}
+    .tradeoff{grid-template-columns:1fr}
+    :root{--z:1.15}
+  }
+  @media (max-width:560px){
+    :root{--z:.92}
+    body{padding:28px 14px 80px}
+    .states{grid-template-columns:repeat(3,1fr)}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker">NOVA BUDDY · ASR + VOICE UI · CONCEPT C</div>
+    <h1>方案 C · <em>全局对讲浮层</em>：随时呼出 + 麦质自测</h1>
+    <p class="lede">零新增主页面：在任意页面长按物理 <b>KEY1</b> 或点击顶栏唤醒胶囊，立即弹出复用 <code>POP_IN</code> 动效的底部对讲浮层，并内置 ES8311 收音自测探针。</p>
+    <div class="meta">
+      <span class="chip">368 × 448 AMOLED</span>
+      <span class="chip">0 新增页面环</span>
+      <span class="chip">200ms POP_IN / POP_OUT</span>
+      <span class="chip">Step-0 麦质自测一体</span>
+    </div>
+    <div class="zoomctl">
+      <span>预览缩放</span>
+      <button data-z="1">1×</button>
+      <button data-z="1.5" class="on">1.5×</button>
+      <button data-z="2">2×</button>
+      <span style="margin-left:8px;color:#33414f">1× 为 1.8 寸屏物理像素比例</span>
+    </div>
+  </header>
+
+  <div class="split">
+    <div class="devside">
+      <div class="devbox">
+        <div class="screen sheet-open" id="screen">
+          <!-- 底层页面截图（page_home / page_quota） -->
+          <div class="underlay">
+            <img class="underlay-img" id="underlayImg" src="../previews/page_home.png" alt="底层页面截图">
+            <div class="underlay-scrim"></div>
+          </div>
+
+          <!-- 收起后的唤醒顶栏 -->
+          <div class="wake-bar">
+            <button class="wake-pill" id="wakePill" type="button">
+              <span class="wake-dot"></span>
+              <span>点此呼出对讲</span>
+            </button>
+            <button class="key1-badge" id="togglePageBtn" type="button">切底层页</button>
+          </div>
+
+          <!-- 模拟侧面物理 KEY1 按钮 -->
+          <button class="key1-hw" id="key1Hw" type="button" title="模拟长按物理 KEY1 呼出/收起">KEY1</button>
+
+          <!-- 全局对讲浮层 -->
+          <div class="sheet" id="sheet" role="dialog" aria-label="全局对讲浮层">
+            <div class="sheet-hdr">
+              <div class="seg" role="tablist">
+                <button id="tabWalkie" class="on" type="button">对讲</button>
+                <button id="tabProbe" type="button">收音自测</button>
+              </div>
+              <span class="status-pill" id="statusPill">
+                <span class="status-dot"></span>
+                <span id="statusText">就绪</span>
+              </span>
+              <button class="close-btn" id="closeSheetBtn" type="button" title="收起浮层">×</button>
+            </div>
+
+            <!-- 模式 1：对讲 -->
+            <div class="mode-pane on" id="paneWalkie">
+              <div class="spec-row">
+                <div class="spec-bars" id="specBars"></div>
+                <div class="mic-meter" id="micMeterToggle" title="点击切换正常/异常麦质信号">
+                  <span class="mic-db" id="micDb">-48.2 dBFS</span>
+                  <span class="mic-snr good" id="micSnr">麦噪正常</span>
+                </div>
+              </div>
+
+              <div class="asr-box">
+                <div class="asr-text placeholder" id="asrText">按住下方对讲键，或长按物理 KEY1 开始说话</div>
+              </div>
+
+              <div class="reply-card muted-card" id="replyCard">
+                <div class="reply-top">
+                  <span class="tts-tag idle" id="ttsTag">
+                    <span class="tts-wave" id="ttsWave"><i></i><i></i><i></i></span>
+                    <span id="ttsLabel">等待上一轮答复</span>
+                  </span>
+                  <div class="reply-actions">
+                    <button class="mini-link" id="expandBtn" type="button">展开</button>
+                    <button class="mini-link" id="autoHideBtn" type="button">自动收起 4s</button>
+                  </div>
+                </div>
+                <div class="reply-body dim" id="replyBody">说出指令后，简短结果会直接留在这里并语音播报。</div>
+                <div class="reply-extra" id="replyExtra">关联任务：<code>pytest tests/test_asr_stream.py</code> 已入队 DSH，将在沙箱修复后自动回传结果。</div>
+              </div>
+
+              <div class="ptt-dock">
+                <button class="ptt-btn" id="pttBtn" type="button" aria-label="按住对讲">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                    <rect x="9" y="2.5" width="6" height="11.5" rx="3" stroke="#f2f6ff" stroke-width="2"/>
+                    <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" stroke="#f2f6ff" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M12 18v3.5M8.5 21.5h7" stroke="#f2f6ff" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </button>
+                <div class="ptt-hint" id="pttHint">按住对讲 · 轻点也可演示</div>
+              </div>
+            </div>
+
+            <!-- 模式 2：收音自测 -->
+            <div class="mode-pane" id="paneProbe">
+              <div class="probe-grid">
+                <div class="mcell ok" id="cellPeak">
+                  <div class="mcell-lbl"><span>峰值 Peak</span><span>ES8311</span></div>
+                  <div class="mcell-val" id="valPeak">-14.2 dBFS</div>
+                </div>
+                <div class="mcell" id="cellNoise">
+                  <div class="mcell-lbl"><span>底噪 Noise</span><span>ADC</span></div>
+                  <div class="mcell-val" id="valNoise">-56.8 dBFS</div>
+                </div>
+                <div class="mcell ok" id="cellSnr">
+                  <div class="mcell-lbl"><span>信噪比 SNR</span><span>动态</span></div>
+                  <div class="mcell-val" id="valSnr">42.6 dB · 良好</div>
+                </div>
+                <div class="mcell ok" id="cellClip">
+                  <div class="mcell-lbl"><span>削波 Clip</span><span>溢出</span></div>
+                  <div class="mcell-val" id="valClip">0.0%</div>
+                </div>
+              </div>
+
+              <div class="env-hdr">
+                <span id="envLabel">3s 录音包络（48kHz / 16bit）</span>
+                <button class="fault-toggle" id="faultToggleBtn" type="button">模拟异常麦质</button>
+              </div>
+
+              <div class="env-box" id="envBox">
+                <div class="env-midline"></div>
+                <div class="playhead" id="playhead"></div>
+              </div>
+
+              <div class="probe-verdict" id="probeVerdict">● ES8311 收音通道健康，可直接用于语音识别</div>
+
+              <div class="probe-btns">
+                <button class="pbtn primary" id="sampleBtn" type="button">开始 3s 采样</button>
+                <button class="pbtn" id="playbackBtn" type="button">本机回放</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="states" id="stateButtons">
+        <button data-state="home" class="on" type="button">主屏呼出</button>
+        <button data-state="quota" type="button">额度页呼出</button>
+        <button data-state="listening" type="button">对讲收音中</button>
+        <button data-state="reply" type="button">简短答复卡</button>
+        <button data-state="probe" type="button">麦克风收音自测</button>
+      </div>
+      <div class="devcap">
+        <b>交互说明：</b>按住底部青色圆形对讲键（或轻点一次触发自动演示）可实时流式转写并播报答复；点右上 <code>×</code> 或侧边 <code>KEY1</code> 可体验 <code>200ms POP_OUT / POP_IN</code> 叠层呼出；切到「收音自测」可跑 3 秒采样、本机回放及异常麦质告警。
+      </div>
+    </div>
+
+    <div class="notes">
+      <p class="quote">
+        <b>不往页面环里再塞新页面：</b>在任意界面按住物理 <code>KEY1</code> 或点顶栏麦克风，直接从底部升起对讲浮层（复用 <code>page_approval</code> 的 <code>POP_IN</code> 语法），说完即答、答完即收，并把硬件 Step-0 的 ES8311 收音自测直接嵌进第二标签。
+      </p>
+
+      <table class="axes">
+        <tr>
+          <td>概念</td>
+          <td>全局随叫随到的模态对讲抽屉，而不是必须划 4 次才能到达的「语音页」。</td>
+        </tr>
+        <tr>
+          <td>内容组织</td>
+          <td>底层保留当前页面上下文（主屏 / 额度页）；浮层内仅分 <i>对讲</i>（频谱 + 转写 + 1 张简短答复卡 + PTT）与 <i>收音自测</i>（2×2 声学指标 + 3s 包络 + 采样回放）。</td>
+        </tr>
+        <tr>
+          <td>交互模型</td>
+          <td><i>按住即说、松开即发</i>（支持物理 <code>KEY1</code> 与触屏 PTT 双触发）；答复播报后支持 4s 自动收起，不打断用户原本在看的数据。</td>
+        </tr>
+        <tr>
+          <td>视觉语法</td>
+          <td>底层页面降暗至 28% + 轻模糊退后，344px 浮层圆角卡片沿用 OLED 深蓝底与青/薄荷语义色，录音态青边呼吸、异常麦质珊瑚红告警。</td>
+        </tr>
+      </table>
+
+      <div class="tradeoff">
+        <div class="pro">
+          <div class="col-h">优势</div>
+          <li>完全不膨胀现有 <code>page_home → quota → rank</code> 页面环，任何界面随时开口</li>
+          <li>物理 <code>KEY1</code> 盲操呼出率极高，1.8 寸屏单手握持即可按住对讲</li>
+          <li>把未验证过的 ES8311 麦克风诊断直接产品化，真机联调期零额外工具成本</li>
+        </div>
+        <div class="con">
+          <div class="col-h">代价</div>
+          <li>长篇多轮对话记录不适合塞在浮层里，复杂上下文需转交桌面端或加「历史」入口</li>
+          <li>遮挡底层页面下半部分，若用户想同时对照榜单数值与回复需点右上 <code>×</code> 收起</li>
+        </div>
+      </div>
+
+      <div class="impl">
+        <div class="impl-h">ESP32-S3 + ES8311 工程落地笔记</div>
+        <ul>
+          <li><b>零页面环耦合：</b>直接复用 <code>page_approval</code> 现有的全局 <code>POP_IN / POP_OUT</code> 模态遮罩栈，监听全局长按 <code>KEY1</code> 事件与状态栏微胶囊点击。</li>
+          <li><b>Step-0 麦质探针：</b>「收音自测」复用 16kHz/48kHz I2S DMA 环形缓冲，计算峰值 <code>Peak</code>、底噪 <code>Noise</code>、<code>SNR</code> 与削波比例，并通过 ES8311 DAC 原路回放验证扬声器。</li>
+          <li><b>低内存渲染：</b>16 根粗粒度圆角频谱柱仅需 DMA 块 RMS 映射（每 60ms 刷新一次），避免高密度波形重绘拖慢 LVGL 帧率。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var screenEl = document.getElementById('screen');
+  var sheetEl = document.getElementById('sheet');
+  var underlayImg = document.getElementById('underlayImg');
+  var wakePill = document.getElementById('wakePill');
+  var togglePageBtn = document.getElementById('togglePageBtn');
+  var key1Hw = document.getElementById('key1Hw');
+  var closeSheetBtn = document.getElementById('closeSheetBtn');
+
+  var tabWalkie = document.getElementById('tabWalkie');
+  var tabProbe = document.getElementById('tabProbe');
+  var paneWalkie = document.getElementById('paneWalkie');
+  var paneProbe = document.getElementById('paneProbe');
+
+  var statusPill = document.getElementById('statusPill');
+  var statusText = document.getElementById('statusText');
+
+  var specBarsEl = document.getElementById('specBars');
+  var micMeterToggle = document.getElementById('micMeterToggle');
+  var micDbEl = document.getElementById('micDb');
+  var micSnrEl = document.getElementById('micSnr');
+  var asrTextEl = document.getElementById('asrText');
+
+  var replyCard = document.getElementById('replyCard');
+  var ttsTag = document.getElementById('ttsTag');
+  var ttsWave = document.getElementById('ttsWave');
+  var ttsLabel = document.getElementById('ttsLabel');
+  var replyBody = document.getElementById('replyBody');
+  var expandBtn = document.getElementById('expandBtn');
+  var autoHideBtn = document.getElementById('autoHideBtn');
+  var pttBtn = document.getElementById('pttBtn');
+  var pttHint = document.getElementById('pttHint');
+
+  var cellPeak = document.getElementById('cellPeak');
+  var cellNoise = document.getElementById('cellNoise');
+  var cellSnr = document.getElementById('cellSnr');
+  var cellClip = document.getElementById('cellClip');
+  var valPeak = document.getElementById('valPeak');
+  var valNoise = document.getElementById('valNoise');
+  var valSnr = document.getElementById('valSnr');
+  var valClip = document.getElementById('valClip');
+  var envLabel = document.getElementById('envLabel');
+  var faultToggleBtn = document.getElementById('faultToggleBtn');
+  var envBox = document.getElementById('envBox');
+  var playhead = document.getElementById('playhead');
+  var probeVerdict = document.getElementById('probeVerdict');
+  var sampleBtn = document.getElementById('sampleBtn');
+  var playbackBtn = document.getElementById('playbackBtn');
+
+  var stateButtons = document.querySelectorAll('#stateButtons button');
+  var zoomButtons = document.querySelectorAll('.zoomctl button');
+
+  var ASR_FULL = '把当前工作区报错的那个测试修一下';
+  var REPLY_FULL = '收到，已转交 DSH 处理并准备复跑验证。';
+
+  var currentPage = 'home';
+  var currentMode = 'walkie';
+  var isFaultMic = false;
+  var autoHideEnabled = true;
+
+  var timers = [];
+  var rafId = null;
+  var pttActive = false;
+  var pttStartTime = 0;
+  var streamIndex = 0;
+  var autoDemoTimer = null;
+  var sampleTimer = null;
+  var playTimer = null;
+
+  /* 初始化 16 根频谱柱 */
+  var specBars = [];
+  for(var i = 0; i < 16; i++){
+    var b = document.createElement('span');
+    b.className = 'spec-bar';
+    specBarsEl.appendChild(b);
+    specBars.push(b);
+  }
+
+  /* 初始化 32 根收音自测包络柱 */
+  var envBars = [];
+  for(var j = 0; j < 32; j++){
+    var eb = document.createElement('span');
+    eb.className = 'env-bar';
+    envBox.appendChild(eb);
+    envBars.push(eb);
+  }
+
+  function clearAllTimers(){
+    while(timers.length){
+      clearTimeout(timers.pop());
+    }
+    if(autoDemoTimer){ clearTimeout(autoDemoTimer); autoDemoTimer = null; }
+    if(sampleTimer){ clearInterval(sampleTimer); sampleTimer = null; }
+    if(playTimer){ clearInterval(playTimer); playTimer = null; }
+    if(rafId){ cancelAnimationFrame(rafId); rafId = null; }
+  }
+
+  function later(fn, ms){
+    var id = setTimeout(fn, ms);
+    timers.push(id);
+    return id;
+  }
+
+  /* 缩放控制 */
+  zoomButtons.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      zoomButtons.forEach(function(x){ x.classList.remove('on'); });
+      btn.classList.add('on');
+      document.documentElement.style.setProperty('--z', btn.getAttribute('data-z'));
+    });
+  });
+
+  function setActiveStateBtn(name){
+    stateButtons.forEach(function(btn){
+      btn.classList.toggle('on', btn.getAttribute('data-state') === name);
+    });
+  }
+
+  function setUnderlay(page){
+    currentPage = page;
+    underlayImg.src = page === 'quota' ? '../previews/page_quota.png' : '../previews/page_home.png';
+  }
+
+  function setSheetBorder(mode){
+    sheetEl.classList.remove('active-cyan', 'active-mint', 'active-red');
+    if(mode === 'cyan') sheetEl.classList.add('active-cyan');
+    if(mode === 'mint') sheetEl.classList.add('active-mint');
+    if(mode === 'red') sheetEl.classList.add('active-red');
+  }
+
+  function setStatus(label, cls){
+    statusText.textContent = label;
+    statusPill.className = 'status-pill' + (cls ? ' ' + cls : '');
+  }
+
+  function switchMode(mode){
+    currentMode = mode;
+    tabWalkie.classList.toggle('on', mode === 'walkie');
+    tabProbe.classList.toggle('on', mode === 'probe');
+    paneWalkie.classList.toggle('on', mode === 'walkie');
+    paneProbe.classList.toggle('on', mode === 'probe');
+  }
+
+  function setSpectrumIdle(bars){
+    specBarsEl.className = 'spec-bars';
+    specBars.forEach(function(b, idx){
+      var h = 5 + ((idx * 7) % 5);
+      b.style.height = h + 'px';
+    });
+  }
+
+  function animateSpectrum(mode){
+    if(rafId){ cancelAnimationFrame(rafId); rafId = null; }
+    specBarsEl.className = 'spec-bars ' + mode;
+    var t0 = performance.now();
+    function tick(now){
+      var t = (now - t0) / 1000;
+      specBars.forEach(function(b, idx){
+        var center = 1 - Math.abs(idx - 7.5) / 8.5;
+        var wave;
+        if(mode === 'live'){
+          wave = Math.abs(Math.sin(t * 9.5 + idx * 0.65)) * 0.65 + Math.abs(Math.cos(t * 15 - idx * 0.4)) * 0.35;
+          b.style.height = Math.round(5 + (wave * 21 * (0.45 + center * 0.6))) + 'px';
+        }else if(mode === 'think'){
+          wave = 0.5 + 0.5 * Math.sin(t * 6 - idx * 0.5);
+          b.style.height = Math.round(6 + wave * 12) + 'px';
+        }else if(mode === 'tts'){
+          wave = Math.abs(Math.sin(t * 7.5 + idx * 0.55));
+          b.style.height = Math.round(5 + wave * 16 * (0.5 + center * 0.5)) + 'px';
+        }
+      });
+      if(mode === 'live'){
+        var db = isFaultMic ? (-1.2 + Math.sin(t * 8) * 1.1) : (-16.8 + Math.sin(t * 6) * 3.4);
+        micDbEl.textContent = db.toFixed(1) + ' dBFS';
+      }
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function stopSpectrum(){
+    if(rafId){ cancelAnimationFrame(rafId); rafId = null; }
+    setSpectrumIdle();
+  }
+
+  function updateMicBadge(state){
+    if(isFaultMic){
+      micDbEl.className = 'mic-db warn';
+      micSnrEl.className = 'mic-snr warn';
+      micDbEl.textContent = state === 'live' ? '-0.6 dBFS' : '-28.6 dBFS';
+      micSnrEl.textContent = '削波 / 麦噪过大';
+    }else if(state === 'live'){
+      micDbEl.className = 'mic-db live';
+      micSnrEl.className = 'mic-snr good';
+      micDbEl.textContent = '-16.4 dBFS';
+      micSnrEl.textContent = 'SNR 42 dB · 良好';
+    }else{
+      micDbEl.className = 'mic-db';
+      micSnrEl.className = 'mic-snr good';
+      micDbEl.textContent = '-48.2 dBFS';
+      micSnrEl.textContent = '麦质正常';
+    }
+  }
+
+  function resetReplyCardIdle(){
+    replyCard.className = 'reply-card muted-card';
+    ttsTag.className = 'tts-tag idle';
+    ttsWave.classList.remove('playing');
+    ttsLabel.textContent = '等待上一轮答复';
+    replyBody.className = 'reply-body dim';
+    replyBody.textContent = '说出指令后，简短结果会直接留在这里并语音播报。';
+    expandBtn.textContent = '展开';
+  }
+
+  /* 预设状态渲染 */
+  function applyState(stateName){
+    clearAllTimers();
+    pttActive = false;
+    pttBtn.classList.remove('holding');
+    screenEl.classList.add('sheet-open');
+    setActiveStateBtn(stateName);
+
+    if(stateName === 'home' || stateName === 'quota'){
+      setUnderlay(stateName === 'quota' ? 'quota' : 'home');
+      switchMode('walkie');
+      setSheetBorder('');
+      setStatus('就绪', '');
+      stopSpectrum();
+      updateMicBadge('idle');
+      asrTextEl.className = 'asr-text placeholder';
+      asrTextEl.textContent = '按住下方对讲键，或长按物理 KEY1 开始说话';
+      pttHint.textContent = '按住对讲 · 轻点也可演示';
+      pttHint.className = 'ptt-hint';
+      resetReplyCardIdle();
+      return;
+    }
+
+    if(stateName === 'listening'){
+      switchMode('walkie');
+      setSheetBorder(isFaultMic ? 'red' : 'cyan');
+      setStatus('收音中', isFaultMic ? 'warn' : 'listening');
+      updateMicBadge('live');
+      animateSpectrum('live');
+      pttBtn.classList.add('holding');
+      pttHint.textContent = '正在收音… 松开立即识别';
+      pttHint.className = 'ptt-hint live';
+      asrTextEl.className = 'asr-text';
+      asrTextEl.innerHTML = '把当前工作区报错的那个…<span class="cursor-blink"></span>';
+      resetReplyCardIdle();
+      return;
+    }
+
+    if(stateName === 'reply'){
+      switchMode('walkie');
+      setSheetBorder('mint');
+      setStatus('播报中', 'ready-mint');
+      updateMicBadge('idle');
+      animateSpectrum('tts');
+      pttHint.textContent = '按住继续追问';
+      pttHint.className = 'ptt-hint';
+      asrTextEl.className = 'asr-text';
+      asrTextEl.textContent = ASR_FULL;
+
+      replyCard.className = 'reply-card';
+      ttsTag.className = 'tts-tag';
+      ttsWave.classList.add('playing');
+      ttsLabel.textContent = 'TTS 播报中';
+      replyBody.className = 'reply-body';
+      replyBody.textContent = REPLY_FULL;
+      autoHideBtn.textContent = autoHideEnabled ? '自动收起 4s' : '保持显示';
+      later(function(){
+        ttsWave.classList.remove('playing');
+        ttsLabel.textContent = '已播报';
+        setStatus('就绪', 'ready-mint');
+        stopSpectrum();
+      }, 2200);
+      return;
+    }
+
+    if(stateName === 'probe'){
+      switchMode('probe');
+      renderProbeMetrics();
+      return;
+    }
+  }
+
+  /* 交互式语音流程：按住对讲 */
+  function startVoiceCapture(){
+    if(currentMode !== 'walkie'){ switchMode('walkie'); }
+    clearAllTimers();
+    pttActive = true;
+    pttStartTime = Date.now();
+    streamIndex = 0;
+
+    setActiveStateBtn('listening');
+    setSheetBorder(isFaultMic ? 'red' : 'cyan');
+    setStatus('收音中', isFaultMic ? 'warn' : 'listening');
+    updateMicBadge('live');
+    animateSpectrum('live');
+    pttBtn.classList.add('holding');
+    pttHint.textContent = '正在收音… 松开结束';
+    pttHint.className = 'ptt-hint live';
+
+    asrTextEl.className = 'asr-text';
+    asrTextEl.innerHTML = '<span class="cursor-blink"></span>';
+    resetReplyCardIdle();
+
+    function stepChar(){
+      if(!pttActive) return;
+      if(streamIndex < ASR_FULL.length){
+        streamIndex++;
+        asrTextEl.innerHTML = ASR_FULL.slice(0, streamIndex) + '<span class="cursor-blink"></span>';
+        later(stepChar, 85);
+      }
+    }
+    later(stepChar, 140);
+  }
+
+  function finishVoiceCapture(){
+    if(!pttActive) return;
+    pttActive = false;
+    pttBtn.classList.remove('holding');
+
+    if(isFaultMic){
+      stopSpectrum();
+      setSheetBorder('red');
+      setStatus('麦噪异常', 'warn');
+      updateMicBadge('idle');
+      asrTextEl.className = 'asr-text';
+      asrTextEl.textContent = ASR_FULL.slice(0, Math.max(6, streamIndex)) + '（识别置信度低）';
+      replyCard.className = 'reply-card warn-card';
+      ttsTag.className = 'tts-tag warn';
+      ttsWave.classList.remove('playing');
+      ttsLabel.textContent = 'ES8311 收音告警';
+      replyBody.className = 'reply-body';
+      replyBody.textContent = '检测到削波与高底噪，建议切换到「收音自测」校准增益。';
+      pttHint.textContent = '按住重试 · 或前往收音自测';
+      pttHint.className = 'ptt-hint';
+      return;
+    }
+
+    /* 补全文字并进入思考 -> 播报答复 */
+    asrTextEl.className = 'asr-text';
+    asrTextEl.textContent = ASR_FULL;
+    setSheetBorder('cyan');
+    setStatus('思考中', 'thinking');
+    updateMicBadge('idle');
+    animateSpectrum('think');
+    pttHint.textContent = '正在理解指令…';
+    pttHint.className = 'ptt-hint';
+
+    replyCard.className = 'reply-card muted-card';
+    ttsTag.className = 'tts-tag think';
+    ttsWave.classList.remove('playing');
+    ttsLabel.textContent = '语义理解中…';
+    replyBody.className = 'reply-body dim';
+    replyBody.textContent = '正在连接工作区 Agent 处理…';
+
+    later(function(){
+      setActiveStateBtn('reply');
+      setSheetBorder('mint');
+      setStatus('播报中', 'ready-mint');
+      animateSpectrum('tts');
+      pttHint.textContent = '按住继续追问';
+      pttHint.className = 'ptt-hint';
+
+      replyCard.className = 'reply-card';
+      ttsTag.className = 'tts-tag';
+      ttsWave.classList.add('playing');
+      ttsLabel.textContent = 'TTS 播报中';
+      replyBody.className = 'reply-body';
+      replyBody.textContent = '';
+
+      var rIdx = 0;
+      function streamReply(){
+        if(rIdx < REPLY_FULL.length){
+          rIdx++;
+          replyBody.textContent = REPLY_FULL.slice(0, rIdx);
+          later(streamReply, 38);
+        }
+      }
+      streamReply();
+
+      later(function(){
+        ttsWave.classList.remove('playing');
+        ttsLabel.textContent = '已播报';
+        setStatus('就绪', 'ready-mint');
+        stopSpectrum();
+        if(autoHideEnabled){
+          var sec = 4;
+          function countDown(){
+            if(!autoHideEnabled || !screenEl.classList.contains('sheet-open')) return;
+            autoHideBtn.textContent = '自动收起 ' + sec + 's';
+            if(sec <= 0){
+              screenEl.classList.remove('sheet-open');
+              autoHideBtn.textContent = '自动收起 4s';
+              return;
+            }
+            sec--;
+            later(countDown, 1000);
+          }
+          countDown();
+        }
+      }, 1750);
+    }, 520);
+  }
+
+  pttBtn.addEventListener('pointerdown', function(e){
+    e.preventDefault();
+    startVoiceCapture();
+  });
+
+  window.addEventListener('pointerup', function(){
+    if(!pttActive) return;
+    var elapsed = Date.now() - pttStartTime;
+    /* 若用户只是轻点一下，自动演示完整 1.65s 说话流 */
+    if(elapsed < 240){
+      autoDemoTimer = setTimeout(finishVoiceCapture, 1550);
+    }else{
+      finishVoiceCapture();
+    }
+  });
+
+  /* 展开 / 自动收起开关 */
+  expandBtn.addEventListener('click', function(){
+    var expanded = replyCard.classList.toggle('expanded');
+    expandBtn.textContent = expanded ? '收起详情' : '展开';
+  });
+
+  autoHideBtn.addEventListener('click', function(){
+    autoHideEnabled = !autoHideEnabled;
+    autoHideBtn.textContent = autoHideEnabled ? '自动收起 4s' : '保持显示';
+  });
+
+  /* 模拟麦质切换（对讲态） */
+  micMeterToggle.addEventListener('click', function(){
+    isFaultMic = !isFaultMic;
+    updateMicBadge(pttActive ? 'live' : 'idle');
+    if(currentMode === 'probe'){ renderProbeMetrics(); }
+  });
+
+  /* ---------- 模式 2：收音自测 ---------- */
+  var normalHeights = [10,14,22,38,44,32,18,12,10,26,46,50,36,24,14,10,12,28,42,48,34,18,10,12,20,36,44,28,16,12,10,8];
+  var faultHeights  = [32,44,50,52,50,48,38,42,50,52,52,46,36,40,48,52,50,44,36,42,50,52,48,40,38,46,52,50,44,36,34,30];
+
+  function renderProbeMetrics(){
+    playhead.classList.remove('on');
+    playhead.style.left = '0px';
+    sampleBtn.className = 'pbtn primary';
+    sampleBtn.textContent = '开始 3s 采样';
+    playbackBtn.className = 'pbtn';
+    playbackBtn.textContent = '本机回放';
+
+    if(isFaultMic){
+      setSheetBorder('red');
+      setStatus('麦质告警', 'warn');
+      cellPeak.className = 'mcell warn';
+      cellNoise.className = 'mcell warn';
+      cellSnr.className = 'mcell warn';
+      cellClip.className = 'mcell warn';
+      valPeak.textContent = '-0.4 dBFS';
+      valNoise.textContent = '-28.6 dBFS';
+      valSnr.textContent = '11.4 dB · 过轻';
+      valClip.textContent = '4.2%';
+      faultToggleBtn.textContent = '恢复正常样本';
+      faultToggleBtn.classList.add('is-fault');
+      probeVerdict.className = 'probe-verdict warn';
+      probeVerdict.textContent = '▲ 削波且底噪过高，建议下调 ES8311 PGA 增益';
+      envBars.forEach(function(eb, idx){
+        eb.className = 'env-bar fault';
+        eb.style.height = faultHeights[idx] + 'px';
+      });
+    }else{
+      setSheetBorder('mint');
+      setStatus('自测完成', 'ready-mint');
+      cellPeak.className = 'mcell ok';
+      cellNoise.className = 'mcell';
+      cellSnr.className = 'mcell ok';
+      cellClip.className = 'mcell ok';
+      valPeak.textContent = '-14.2 dBFS';
+      valNoise.textContent = '-56.8 dBFS';
+      valSnr.textContent = '42.6 dB · 良好';
+      valClip.textContent = '0.0%';
+      faultToggleBtn.textContent = '模拟异常麦质';
+      faultToggleBtn.classList.remove('is-fault');
+      probeVerdict.className = 'probe-verdict';
+      probeVerdict.textContent = '● ES8311 收音通道健康，可直接用于语音识别';
+      envBars.forEach(function(eb, idx){
+        eb.className = normalHeights[idx] <= 14 ? 'env-bar noise' : 'env-bar';
+        eb.style.height = normalHeights[idx] + 'px';
+      });
+    }
+  }
+
+  faultToggleBtn.addEventListener('click', function(){
+    clearAllTimers();
+    isFaultMic = !isFaultMic;
+    renderProbeMetrics();
+  });
+
+  sampleBtn.addEventListener('click', function(){
+    clearAllTimers();
+    setSheetBorder('cyan');
+    setStatus('采样中', 'listening');
+    sampleBtn.className = 'pbtn running';
+    playbackBtn.className = 'pbtn';
+    playbackBtn.textContent = '本机回放';
+    probeVerdict.className = 'probe-verdict sampling';
+    probeVerdict.textContent = '● 正在采集 ES8311 I2S 原始音频…';
+
+    var elapsed = 0;
+    var duration = 3000;
+    sampleTimer = setInterval(function(){
+      elapsed += 100;
+      var left = Math.max(0, (duration - elapsed) / 1000).toFixed(1);
+      sampleBtn.textContent = '采样中 ' + left + 's';
+      envBars.forEach(function(eb, idx){
+        var base = isFaultMic ? faultHeights[idx] : normalHeights[idx];
+        var jitter = Math.round((Math.random() - 0.5) * 14);
+        var h = Math.max(6, Math.min(52, base + jitter));
+        eb.className = isFaultMic ? 'env-bar fault' : (h <= 14 ? 'env-bar noise' : 'env-bar');
+        eb.style.height = h + 'px';
+      });
+      valPeak.textContent = (isFaultMic ? (-0.2 - Math.random() * 1.2) : (-15.5 + Math.random() * 2.8)).toFixed(1) + ' dBFS';
+      if(elapsed >= duration){
+        clearInterval(sampleTimer);
+        sampleTimer = null;
+        renderProbeMetrics();
+      }
+    }, 100);
+  });
+
+  playbackBtn.addEventListener('click', function(){
+    clearAllTimers();
+    setStatus('回放中', 'ready-mint');
+    playbackBtn.className = 'pbtn playing';
+    playhead.classList.add('on');
+    probeVerdict.className = 'probe-verdict';
+    probeVerdict.textContent = '● 正在通过 ES8311 DAC 扬声器回放 3s 采样…';
+
+    var elapsed = 0;
+    var duration = 2400;
+    var boxW = envBox.clientWidth - 4;
+    playTimer = setInterval(function(){
+      elapsed += 60;
+      var pct = Math.min(1, elapsed / duration);
+      playhead.style.left = Math.round(pct * boxW) + 'px';
+      playbackBtn.textContent = '回放中 ' + ((duration - elapsed) / 1000).toFixed(1) + 's';
+      if(elapsed >= duration){
+        clearInterval(playTimer);
+        playTimer = null;
+        renderProbeMetrics();
+      }
+    }, 60);
+  });
+
+  /* 标签页 & 浮层呼出/收起 */
+  tabWalkie.addEventListener('click', function(){
+    clearAllTimers();
+    switchMode('walkie');
+    setSheetBorder('');
+    setStatus('就绪', '');
+    updateMicBadge('idle');
+    stopSpectrum();
+  });
+
+  tabProbe.addEventListener('click', function(){
+    clearAllTimers();
+    setActiveStateBtn('probe');
+    switchMode('probe');
+    renderProbeMetrics();
+  });
+
+  closeSheetBtn.addEventListener('click', function(){
+    clearAllTimers();
+    stopSpectrum();
+    screenEl.classList.remove('sheet-open');
+  });
+
+  wakePill.addEventListener('click', function(){
+    screenEl.classList.add('sheet-open');
+  });
+
+  key1Hw.addEventListener('click', function(){
+    var opened = screenEl.classList.toggle('sheet-open');
+    if(!opened){
+      clearAllTimers();
+      stopSpectrum();
+    }
+  });
+
+  togglePageBtn.addEventListener('click', function(){
+    setUnderlay(currentPage === 'home' ? 'quota' : 'home');
+  });
+
+  stateButtons.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      applyState(btn.getAttribute('data-state'));
+    });
+  });
+
+  /* 初始态 */
+  applyState('home');
+})();
+</script>
+</body>
+</html>

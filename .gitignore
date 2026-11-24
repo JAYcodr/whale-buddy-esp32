@@ -20,3 +20,6 @@ host-plugin/node_modules/
 # Host simulator build & transient outputs
 tools/sim/build/
 tools/sim/out/
+
+# Local mic test recordings
+recordings/
