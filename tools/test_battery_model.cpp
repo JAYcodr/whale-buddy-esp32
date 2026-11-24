@@ -213,6 +213,53 @@ static void testOvernightCutoffPlugIn() {
   CHECK_MSG(boot3.pct == 64, "soft reboot continuity broken: %u%%", boot3.pct);
 }
 
+static void testUvloCutoffPlugIn() {
+  // Regression for the 2026-11-24 VSYS_UVLO cutoffs on D93468. Both boots woke
+  // on vbus_insert with an intact PMU DATA_BUFFER (seedPowerLost=false), so the
+  // power-loss guard never ran. The 200ms "unloaded" boot sample still carries
+  // charge polarization: raw OCV read 36% / 76% while the anchor, the AXP fuel
+  // gauge and the 29s rest probe all said 3-15%. A low anchor must win over the
+  // charging terminal voltage even when the PMU did not lose power.
+  {
+    BatteryModel m;
+    BatteryIn in = tickIn(3747, true, true, AXP_CHG_CC, 300);
+    in.gaugePct = 3;
+    in.seedPct = 3;
+    in.seedPowerLost = false;
+    in.seedMvValid = true;
+    in.seedMv = 3747;
+    BatteryOut boot = batteryModelStep(m, in);
+    CHECK_MSG(boot.pct <= 7, "uvlo boot 12:40 jumped to %u%% (anchor 3%%)", boot.pct);
+    // The clamp must hold on subsequent ticks too: a first-frame-only fix would
+    // let the CC integrator bounce straight back up to the polarized OCV.
+    BatteryOut after30 = run(m, 30, tickIn(3864, true, true, AXP_CHG_CC, 300));
+    CHECK_MSG(after30.pct <= 12, "uvlo boot rebounded to %u%% after 30s", after30.pct);
+  }
+  {
+    BatteryModel m;
+    BatteryIn in = tickIn(3994, true, true, AXP_CHG_CC, 300);
+    in.gaugePct = 10;
+    in.seedPct = 0;
+    in.seedPowerLost = false;
+    in.seedMvValid = true;
+    in.seedMv = 3994;
+    BatteryOut boot = batteryModelStep(m, in);
+    CHECK_MSG(boot.pct <= 4, "uvlo boot 12:16 jumped to %u%% (anchor 0%%)", boot.pct);
+  }
+  // Guard must not mask a genuine pack swap: a stale low anchor plus a real
+  // 4.18V rest OCV is outside the low-anchor clamp and must still read full.
+  {
+    BatteryModel m;
+    BatteryIn in = tickIn(4180, true, true, AXP_CHG_CC, 300);
+    in.seedPct = 3;
+    in.seedPowerLost = false;
+    in.seedMvValid = true;
+    in.seedMv = 4180;
+    BatteryOut boot = batteryModelStep(m, in);
+    CHECK_MSG(boot.pct >= 95, "full-pack swap wrongly clamped to %u%%", boot.pct);
+  }
+}
+
 static void testNo76To80Jump() {
   // Regression: charging at 76% (whether CC stays or transitions to CV, or screen
   // turns off raising current 300->500mA) must never jump 4% in 10-30s.
@@ -429,6 +476,7 @@ int main() {
   testBootOnDone();
   testLimitCap();
   testOvernightCutoffPlugIn();
+  testUvloCutoffPlugIn();
   testNo76To80Jump();
   testCompensationDetails();
   testSelfCalibration();

@@ -560,10 +560,14 @@ inline BatteryOut batteryModelStep(BatteryModel& m, const BatteryIn& in) {
         if (diff >= -20 && diff <= 20) {
           initTarget = (int)in.seedPct;
         }
-      } else if (in.seedPct <= 15 && stage != BattStage::DONE && stage != BattStage::CV &&
-                 compMv < 4000) {
-        // PMU lost power (e.g. overnight empty cutoff) and USB just woke it up:
-        // do not let initial charging polarization jump 0-15% up to 50%.
+      }
+      // A low anchor is authoritative regardless of whether the PMU lost power.
+      // AXP2101 keeps DATA_BUFFER alive on VBAT through a VSYS_UVLO cutoff, so
+      // gating this guard on seedPowerLost alone let two real 2026-11-24 cutoffs
+      // boot at 76% and 36% (anchors 0% / 3%) from a polarized charge terminal
+      // voltage. compMv < 4000 still leaves a genuine full-pack swap detectable.
+      if (in.seedPct <= 15 && stage != BattStage::DONE && stage != BattStage::CV &&
+          compMv < 4000) {
         const int maxSeed = (int)in.seedPct + 4;
         if (initTarget > maxSeed) initTarget = maxSeed;
       }
