@@ -480,6 +480,47 @@ export function createPowerStore(options = {}) {
     }
 
     if (why === 'boot') {
+      // A device that runs itself flat and reboots on the charger never emits
+      // the `usb_in` that used to close a discharge session: the boot frame
+      // replaces it (2026-11-24 lost a 3h28m 72%->5% run exactly this way, so
+      // every real discharge cycle since has been missing from `cycles` and the
+      // drain model stayed "样本不足"). Close it here from the watermark that was
+      // still open when the device went down. vbusMinMv>0 means the session was
+      // a charge session; only battery-only watermarks become discharge cycles.
+      const wm = dev.activeWatermark;
+      if (wm && wm.durSec >= 60 && Number(wm.vbusMinMv) === 0) {
+        const endPct = data.seed != null && Number(data.seed) >= 0
+          ? Number(data.seed)
+          : (Number(data.pct) || 0);
+        pushBounded(dev.cycles, {
+          ts: nowMs,
+          kind: 'discharge',
+          durSec: wm.durSec,
+          startPct: wm.startPct,
+          endPct,
+          deltaPct: wm.startPct - endPct,
+          vbatMinMv: wm.vbatMinMv,
+          vbatMaxMv: wm.vbatMaxMv,
+          vsysMinMv: wm.vsysMinMv,
+          vbusMinMv: wm.vbusMinMv,
+          tmpMaxC: wm.tmpMaxC,
+          vbusLimSec: wm.vbusLimSec,
+          thermRegSec: wm.thermRegSec,
+          tempCapSec: wm.tempCapSec,
+          screenOnSec: wm.screenOnSec,
+          aodSec: wm.aodSec,
+          mohm: data.mohm != null ? Number(data.mohm) : null,
+          mah: data.mah != null ? Number(data.mah) : null,
+          closedBy: 'boot',
+        }, maxCycles);
+        dev.counters.dischargeCycles += 1;
+        dev.counters.vbusLimSecTotal += wm.vbusLimSec;
+        dev.counters.thermRegSecTotal += wm.thermRegSec;
+        dev.counters.tempCapSecTotal += wm.tempCapSec;
+        dev.counters.screenOnSecTotal += wm.screenOnSec;
+        dev.counters.aodSecTotal += wm.aodSec;
+        dev.activeWatermark = null;
+      }
       dev.counters.boots += 1;
       if (data.lost) dev.counters.pwrLost += 1;
       bumpTagCounts(dev.counters.onSrcCounts, onTags || []);
@@ -526,8 +567,7 @@ export function createPowerStore(options = {}) {
       const endPct = Number(data.pct) || 0;
       const cycle = {
         ts: nowMs,
-        kind: isDischargeClose ? 'discharge' : 'charge',
-        durSec: wm.durSec,
+        kind: isDischargeClose ? 'discharge' : 'charge',        durSec: wm.durSec,
         startPct: wm.startPct,
         endPct,
         deltaPct: isDischargeClose ? wm.startPct - endPct : endPct - wm.startPct,

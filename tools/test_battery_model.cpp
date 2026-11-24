@@ -260,6 +260,84 @@ static void testUvloCutoffPlugIn() {
   }
 }
 
+static void testRestedBootBeatsLoadSaggedSeed() {
+  // 2026-11-24 17:20:28 (D93468), after the 1s rest window was put on the boot
+  // path: the pack had been run to cutoff, the PMU anchor read 0%, and the
+  // settled 1s sample read 3647mV = 21%. The old code clamped that to seed+4 =
+  // 4% and under-reported by 17 points all evening. A settled rest sample is
+  // better information than a load-sagged anchor, so it must win.
+  {
+    BatteryModel m;
+    BatteryIn in = tickIn(3801, true, true, AXP_CHG_CC, 300);
+    in.gaugePct = 5;
+    in.seedPct = 0;
+    in.seedPowerLost = false;
+    in.seedMvValid = true;
+    in.seedMvSettled = true;
+    in.seedMv = 3647;
+    BatteryOut boot = batteryModelStep(m, in);
+    CHECK_MSG(boot.pct >= 18 && boot.pct <= 24,
+              "rested boot should land near 21%%, got %u%%", boot.pct);
+    // And it must not sprint: 30s of the same polarized terminal voltage may
+    // raise the display a little but nowhere near the 45% the 3801mV terminal
+    // voltage implies.
+    BatteryOut after30 = run(m, 30, tickIn(3908, true, true, AXP_CHG_CC, 300));
+    CHECK_MSG(after30.pct <= 28, "rested boot rebounded to %u%% after 30s", after30.pct);
+  }
+  // The short 200ms sample is still treated as polarized: it must keep the old
+  // low-anchor clamp, otherwise the 76% / 36% boots come straight back.
+  {
+    BatteryModel m;
+    BatteryIn in = tickIn(3801, true, true, AXP_CHG_CC, 300);
+    in.gaugePct = 5;
+    in.seedPct = 0;
+    in.seedPowerLost = false;
+    in.seedMvValid = true;
+    in.seedMvSettled = false;
+    in.seedMv = 3801;
+    BatteryOut boot = batteryModelStep(m, in);
+    CHECK_MSG(boot.pct <= 4, "unsettled boot should clamp to seed+4, got %u%%", boot.pct);
+  }
+}
+
+static void testChargeRampMatchesPackCapacity() {
+  // 2026-11-24 17:20:57 -> 17:56:50 on 300mA: the display went 4 -> 72 in 36 min.
+  // On the 600mAh spec figure that looked like a runaway (raw OCV led the rested
+  // probe and the integrator sprinted). The pack is ~300mAh, where 300mA x
+  // 0.598h = 179mAh really is ~60% of the pack. The regression to lock in is that
+  // the ramp tracks the time model and the probes, never the polarized raw.
+  BatteryModel m;
+  BatteryCal cal;
+  cal.designMah = 300;
+  BatteryIn boot = tickIn(3801, true, true, AXP_CHG_CC, 300);
+  boot.gaugePct = 5;
+  boot.seedPct = 0;
+  boot.seedPowerLost = false;
+  boot.seedMvValid = true;
+  boot.seedMvSettled = true;
+  boot.seedMv = 3647;
+  boot.calDesignMah = cal.designMah;
+  boot.calChgMohm = cal.chgMohm;
+  const uint8_t start = batteryModelStep(m, boot).pct;
+  CHECK_MSG(start >= 18 && start <= 24, "start %u", start);
+
+  // +12 min: rested probe 3869mV (55%), display should sit below 50%.
+  BatteryIn t = tickIn(4044, true, true, AXP_CHG_CC, 300);
+  t.calDesignMah = cal.designMah;
+  t.calChgMohm = cal.chgMohm;
+  t.probeOcvMv = 3869;
+  BatteryOut mid = run(m, 723, t);
+  CHECK_MSG(mid.pct >= 36 && mid.pct <= 52, "12min display %u (probe says 55%%)", mid.pct);
+
+  // +24.5 min: rested probe 3944mV (67%), display should sit below 65% but close.
+  BatteryIn t2 = tickIn(4094, true, true, AXP_CHG_CC, 300);
+  t2.calDesignMah = cal.designMah;
+  t2.calChgMohm = cal.chgMohm;
+  t2.probeOcvMv = 3944;
+  BatteryOut late = run(m, 721, t2);
+  CHECK_MSG(late.pct >= 58 && late.pct <= 70, "24min display %u (probe says 67%%)", late.pct);
+}
+
 static void testNo76To80Jump() {
   // Regression: charging at 76% (whether CC stays or transitions to CV, or screen
   // turns off raising current 300->500mA) must never jump 4% in 10-30s.
@@ -314,10 +392,12 @@ static void testSelfCalibration() {
 
   // 2. Capacity learning across CC span: 3660mV (23%) -> 3860mV (54%) = 31% delta;
   //    at 700mAh real cell, 31% / 0.95 = 228.4mAh pushed -> learns toward ~700mAh.
+  //    The default pack is 300mAh now, so a 700mAh cell must pull the estimate up
+  //    from there: 300*0.7 + 700*0.3 = 420mAh on the first sample.
   BatteryCal capCal;
   CHECK(battCalOnCapacitySpan(capCal, 3660, 3860, 228400u));
   CHECK(capCal.capSamples == 1);
-  CHECK_MSG(capCal.designMah > 615 && capCal.designMah < 660,
+  CHECK_MSG(capCal.designMah > 405 && capCal.designMah < 440,
             "learned designMah %u", capCal.designMah);
   // Reject too-short delta (<12%).
   CHECK(!battCalOnCapacitySpan(capCal, 3810, 3860, 60000u));
@@ -338,7 +418,7 @@ static void testSelfCalibration() {
   BatteryCal bad{ 50, 100, 1000, 3900, 3100, 0, 0, 0 };
   battCalSanitize(bad);
   CHECK(bad.chgMohm == 200);
-  CHECK(bad.designMah == 400);
+  CHECK(bad.designMah == 200);
   CHECK(bad.cvTauMs == 240000u);
   CHECK(bad.fullRestMv == 4120);
   CHECK(bad.lowAnchorMv == 3350);
@@ -477,6 +557,8 @@ int main() {
   testLimitCap();
   testOvernightCutoffPlugIn();
   testUvloCutoffPlugIn();
+  testRestedBootBeatsLoadSaggedSeed();
+  testChargeRampMatchesPackCapacity();
   testNo76To80Jump();
   testCompensationDetails();
   testSelfCalibration();

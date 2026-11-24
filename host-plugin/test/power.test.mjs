@@ -282,4 +282,37 @@ describe('Host power store & bounded analytics', () => {
     assert.ok(rep.alerts.some((a) => a.includes('温控')));
     assert.ok(rep.alerts.some((a) => a.includes('+180 mΩ')));
   });
+
+  it('closes a discharge session on reboot so cutoff runs reach the drain model', async () => {
+    // 2026-11-24: the device ran flat and rebooted on the charger without ever
+    // emitting usb_in, so the 3h28m 72%->5% discharge never landed in `cycles`
+    // and the drain model stayed "样本不足" all day.
+    const home = await mkdtemp(join(tmpdir(), 'nova-pwr-bootclose-'));
+    const store = createPowerStore({ dshHome: home, statPersistMs: 60 * 60 * 1000 });
+    const t0 = 1_795_497_000_000;
+    store.recordPowerEvent('D93468', {
+      evt: 'pwr', why: 'usb_out', seq: 1, pct: 72, mv: 4185, st: 1, usb: 0,
+      wm: { dur: 0, sp: 72, vmin: 4185, vmax: 4185, vsmin: 4401, vbmin: 0, tmax: 37, scrS: 0 },
+    }, t0);
+    store.recordPowerEvent('D93468', {
+      evt: 'pwr', why: 'low_bat', seq: 5, pct: 5, mv: 3479, st: 1, usb: 0,
+      wm: { dur: 12506, sp: 72, vmin: 3474, vmax: 4185, vsmin: 3447, vbmin: 0, tmax: 37, scrS: 579 },
+    }, t0 + 12_000_000);
+    assert.equal(store.getReport('D93468').counters.dischargeCycles, 0);
+
+    store.recordPowerEvent('D93468', {
+      evt: 'pwr', why: 'boot', seq: 1, pct: 4, raw: 45, gauge: 5, st: 3, mv: 3801, rmv: 3647,
+      vb: 5180, vs: 4014, usb: 1, seed: 0, lost: 0, mah: 300, mohm: 520, onSrc: 4, offSrc: 8,
+    }, t0 + 12_100_000);
+
+    const report = store.getReport('D93468');
+    assert.equal(report.counters.dischargeCycles, 1);
+    assert.equal(report.activeWatermark, null);
+    const cycle = report.recentCycles.at(-1);
+    assert.equal(cycle.kind, 'discharge');
+    assert.equal(cycle.durSec, 12506);
+    assert.equal(cycle.startPct, 72);
+    assert.equal(cycle.endPct, 0);
+    assert.equal(cycle.closedBy, 'boot');
+  });
 });

@@ -37,6 +37,12 @@ uint32_t s_lastThermEvtMs  = 0;
 uint8_t  s_lowBatSentMask  = 0;
 uint32_t s_prevWmTickMs    = 0;
 uint16_t s_lastRestMv      = 0;
+// The stage must hold for this long before it is reported as an edge. CC<->CV
+// flapped 20 times in 55s on 2026-11-24 (4193-4202mV), each flap writing a
+// keyframe event and eating the 256KiB host log at ~4KB/min.
+constexpr uint32_t kStageSettleMs = 12000u;
+uint8_t  s_pendingStage    = 0;
+uint32_t s_pendingStageMs  = 0;
 
 void pushPowerEvent(PowerEvent ev) {
   portENTER_CRITICAL(&s_mux);
@@ -67,6 +73,7 @@ volatile bool   s_resetCalReq = false;
 // Boot-time unloaded OCV + PMU/NVS continuity anchors.
 uint16_t        s_bootRestMv        = 0;
 bool            s_hasBootRestMv     = false;
+bool            s_bootRestSettled   = false;  // 1s pause actually held
 int16_t         s_pmuSeedPct        = -1;
 bool            s_pmuSeedLimitCut   = false;
 bool            s_pmuPowerLost      = true;
@@ -282,20 +289,29 @@ bool hwPowerInit() {
   const bool usbNow  = (s_pmu.getVbusVoltage() > 4000) || s_pmu.isVbusIn();
   const bool batConn = s_pmu.isBatteryConnect();
   const uint16_t probeMv = batConn ? s_pmu.getBattVoltage() : 0;
-  s_bootRestMv    = 0;
-  s_hasBootRestMv = false;
+  s_bootRestMv      = 0;
+  s_hasBootRestMv   = false;
+  s_bootRestSettled = false;
   if (usbNow && batConn && probeMv >= 2800) {
-    // VSYS stays powered by VBUS; wait 220ms with charging disabled so both
-    // ohmic I*R drop and AXP ADC conversion settle cleanly.
+    // VSYS stays powered by VBUS, so charging can be paused to read a resting
+    // OCV. The window has to match the periodic 1s probe: on 2026-11-24 two
+    // consecutive boots (12:40, 17:20) read 143mV / 154mV higher after only
+    // 200ms than after a 1s rest on the very same pack, and that inflated value
+    // is what seeds the whole session (76% and 45% while the pack was near
+    // empty). Take three samples across 1s and use the last, ignoring the first
+    // conversions after the ADC is enabled.
     s_pmu.disableCellbatteryCharge();
-    delay(200);
+    delay(600);
     const uint16_t r1 = s_pmu.getBattVoltage();
-    delay(25);
+    delay(200);
     const uint16_t r2 = s_pmu.getBattVoltage();
-    const uint16_t restMv = battMvValid(r2) ? r2 : r1;
+    delay(200);
+    const uint16_t r3 = s_pmu.getBattVoltage();
+    const uint16_t restMv = battMvValid(r3) ? r3 : (battMvValid(r2) ? r2 : r1);
     if (battMvValid(restMv)) {
-      s_bootRestMv    = restMv;
-      s_hasBootRestMv = true;
+      s_bootRestMv      = restMv;
+      s_hasBootRestMv   = true;
+      s_bootRestSettled = true;
     }
   } else if (battMvValid(probeMv)) {
     s_bootRestMv    = probeMv;
@@ -480,6 +496,7 @@ void hwPowerTick(uint32_t nowMs) {
   in.seedPct        = seedPct;
   in.seedPowerLost  = seedLost;
   in.seedMvValid    = !s_model.init && s_hasBootRestMv && battMvValid(s_bootRestMv);
+  in.seedMvSettled  = in.seedMvValid && s_bootRestSettled;
   in.seedMv         = s_bootRestMv;
   in.calChgMohm     = s_cal.chgMohm;
   in.calDesignMah   = s_cal.designMah;
@@ -608,6 +625,8 @@ void hwPowerTick(uint32_t nowMs) {
     s_evtInited       = true;
     s_prevEvtUsb      = usb;
     s_prevEvtStage    = (uint8_t)out.stage;
+    s_pendingStage    = (uint8_t)out.stage;
+    s_pendingStageMs  = nowMs;
     s_prevEvtThermReg = thermReg;
     s_prevEvtTempCap  = dec.tempCapped;
     s_prevWmTickMs    = nowMs;
@@ -626,8 +645,27 @@ void hwPowerTick(uint32_t nowMs) {
     }
 
     const bool usbChanged   = (usb != s_prevEvtUsb);
-    const bool stageChanged = ((uint8_t)out.stage != s_prevEvtStage);
     const bool thermChanged = (thermReg != s_prevEvtThermReg) || (dec.tempCapped != s_prevEvtTempCap);
+
+    // Stage edges are debounced: a stage has to stay put for kStageSettleMs
+    // before it counts. Transient CC/CV chatter around the 4.20V clamp would
+    // otherwise emit one keyframe per tick pair.
+    const uint8_t curStage = (uint8_t)out.stage;
+    bool stageChanged = false;
+    if (curStage != s_pendingStage) {
+      s_pendingStage   = curStage;
+      s_pendingStageMs = nowMs;
+    } else if (curStage != s_prevEvtStage &&
+               (uint32_t)(nowMs - s_pendingStageMs) >= kStageSettleMs) {
+      stageChanged    = true;
+      s_prevEvtStage  = curStage;
+    }
+    if (usbChanged) {
+      // Plug transitions reset the debounce so the first stable stage is taken.
+      s_pendingStage   = curStage;
+      s_pendingStageMs = nowMs;
+      s_prevEvtStage   = curStage;
+    }
 
     if (usbChanged) {
       pushPowerEvent(buildPwrEvt(usb ? BattPwrEvtReason::USB_IN : BattPwrEvtReason::USB_OUT, true));

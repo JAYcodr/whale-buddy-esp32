@@ -212,7 +212,19 @@ enum : uint8_t {
   AXP_CHG_STOP = 5,
 };
 
-constexpr uint16_t kBattDesignMah            = 600;   // Waveshare 1.8 board pack
+// Effective pack capacity. The Waveshare spec says 600mAh, but this cell does
+// not behave like one. Four independent estimates on 2026-11-24 all land near
+// 300mAh (45-50% of spec):
+//   - 17:20:57 -> 17:56:50 charge: 300mA x 0.598h = 179mAh raised the rest-probe
+//     OCV from 21% to 67% (+46 points) => 179 / 0.46 = 389mAh;
+//   - 13:11:16 -> 13:16:31: 300mA x 0.088h = 26mAh raised the display 63 -> 72
+//     (+9 points) => 289mAh;
+//   - 17:20 rest 3647mV (21%) -> 18:48 rest 4063mV (84%): ~210mAh in between
+//     => 333mAh.
+// With 600mAh the model printed a 2x-too-fast charge ramp; at 300mAh the
+// observed ramp is ordinary 0.5-1C charging, which is what a 600mAh-spec board
+// with a smaller cell really does.
+constexpr uint16_t kBattDesignMah            = 300;   // effective pack capacity (spec 600)
 constexpr uint8_t  kBattLimitMin             = 80;
 constexpr uint8_t  kBattLimitMax             = 100;
 constexpr uint8_t  kBattLimitHyst            = 4;     // resume charging at limit - this
@@ -254,6 +266,7 @@ struct BatteryIn {
   int16_t  seedPct        = -1;     // persisted boot pct anchor (-1 = none)
   bool     seedPowerLost  = false;  // true if PMU lost power (e.g. overnight cutoff)
   bool     seedMvValid    = false;  // true if seedMv was sampled with charging paused
+  bool     seedMvSettled  = false;  // true if that pause held ~1s (a true rest OCV)
   uint16_t seedMv         = 0;      // unloaded boot OCV sample (mV)
   uint16_t calChgMohm     = 0;      // 0 = use kBattChgPackMohm
   uint16_t calDesignMah   = 0;      // 0 = use kBattDesignMah
@@ -381,7 +394,7 @@ inline uint16_t battEffectiveChargeMa(const BatteryIn& in, BattStage stage, uint
 inline void battCalSanitize(BatteryCal& cal) {
   if (cal.chgMohm < 200u) cal.chgMohm = 200u;
   if (cal.chgMohm > 1200u) cal.chgMohm = 1200u;
-  if (cal.designMah < 400u) cal.designMah = 400u;
+  if (cal.designMah < 200u) cal.designMah = 200u;
   if (cal.designMah > 950u) cal.designMah = 950u;
   if (cal.cvTauMs < 240000u) cal.cvTauMs = 240000u;
   if (cal.cvTauMs > 900000u) cal.cvTauMs = 900000u;
@@ -512,7 +525,7 @@ inline BatteryOut batteryModelStep(BatteryModel& m, const BatteryIn& in) {
 
   const uint16_t chgMohm = (in.calChgMohm >= 200u && in.calChgMohm <= 1200u)
                              ? in.calChgMohm : kBattChgPackMohm;
-  const uint16_t designMah = (in.calDesignMah >= 400u && in.calDesignMah <= 950u)
+  const uint16_t designMah = (in.calDesignMah >= 200u && in.calDesignMah <= 950u)
                                ? in.calDesignMah : kBattDesignMah;
   const uint16_t lowAnchorMv = (in.calLowAnchorMv >= 3350u && in.calLowAnchorMv <= 3520u)
                                  ? in.calLowAnchorMv : 3400u;
@@ -552,7 +565,16 @@ inline BatteryOut batteryModelStep(BatteryModel& m, const BatteryIn& in) {
   if (firstTick) {
     m.init = true;
     int initTarget = (int)raw;
-    if (in.seedPct >= 0 && in.seedPct <= 100) {
+    // A settled 1s unloaded rest sample taken on VBUS is the single most
+    // trustworthy number the boot path can produce: the pack is unloaded and the
+    // surface charge has drained. Prefer it over both the PMU/NVS seed — a load
+    // sag can drive the seed to 0 while the pack is still half full — and over
+    // the polarized charging terminal voltage. Both 2026-11-24 reboots agree:
+    // seeds 0 and 3 came from load-sagged anchors, while the rested probes read
+    // 21% and 15%. A short (200ms) boot sample does NOT qualify: those read
+    // 143mV/154mV high on this hardware, so it keeps the old low-anchor clamp.
+    const bool restedBoot = in.seedMvSettled && battMvValid(in.seedMv) && in.usb;
+    if (!restedBoot && in.seedPct >= 0 && in.seedPct <= 100) {
       if (!in.seedPowerLost) {
         // PMU retained battery-backed RAM across reboot; keep continuity unless
         // the pack voltage diverged dramatically (e.g. battery swapped).
@@ -561,11 +583,10 @@ inline BatteryOut batteryModelStep(BatteryModel& m, const BatteryIn& in) {
           initTarget = (int)in.seedPct;
         }
       }
-      // A low anchor is authoritative regardless of whether the PMU lost power.
-      // AXP2101 keeps DATA_BUFFER alive on VBAT through a VSYS_UVLO cutoff, so
-      // gating this guard on seedPowerLost alone let two real 2026-11-24 cutoffs
-      // boot at 76% and 36% (anchors 0% / 3%) from a polarized charge terminal
-      // voltage. compMv < 4000 still leaves a genuine full-pack swap detectable.
+      // A low anchor is authoritative when we have no rested sample to
+      // arbitrate: AXP2101 keeps DATA_BUFFER alive on VBAT through a VSYS_UVLO
+      // cutoff, so gating this guard on seedPowerLost alone let two real
+      // cutoffs boot at 76% / 36% from a polarized charge terminal voltage.
       if (in.seedPct <= 15 && stage != BattStage::DONE && stage != BattStage::CV &&
           compMv < 4000) {
         const int maxSeed = (int)in.seedPct + 4;
@@ -612,8 +633,14 @@ inline BatteryOut batteryModelStep(BatteryModel& m, const BatteryIn& in) {
 
     const int estPct = (int)(m.chgMilli / 1000);
     if (stage == BattStage::PRE || stage == BattStage::CC) {
+      // The compensated reading only nudges the integrator. It used to add up to
+      // 16 milli-%/s (57.6%/h) whenever raw led by 12 points, which on a ~300mAh
+      // pack is several times the real charge rate and let the display run far
+      // ahead of the pack (2026-11-24: raw said 79% while the rested probe said
+      // 67%, and the counter still sprinted). Keep the nudge small enough that
+      // the time model stays in charge of the ramp.
       if ((int)raw > estPct + 4) {
-        const int32_t extraRate = ((int)raw > estPct + 12) ? 16 : 8;
+        const int32_t extraRate = ((int)raw > estPct + 12) ? 4 : 2;
         deltaMilli += (int32_t)(extraRate * (int32_t)dt / 1000);
       } else if (estPct > (int)raw + 14) {
         deltaMilli = 0;
