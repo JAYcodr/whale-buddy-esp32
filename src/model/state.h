@@ -197,6 +197,8 @@ struct NovaState {
   uint8_t  uiBusyPct;    // UI 任务忙时占比（1s 窗口）
   uint8_t  decBusyPct;   // 解码任务忙时占比（1s 窗口）
   int8_t   txPower;      // 当前 WiFi 最大发射功率（0.25dBm 单位，80=20dBm）
+  uint8_t  pwrOnSrc;     // AXP2101 PWRON_STATUS (0x20) 开机黑匣子
+  uint8_t  pwrOffSrc;    // AXP2101 PWROFF_STATUS (0x21) 关机黑匣子
 
   // LLM choreography loop
   char       choreoMood[32];

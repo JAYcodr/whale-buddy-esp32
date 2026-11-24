@@ -20,6 +20,11 @@ PowerWatermark s_wmSnap = {};
 volatile bool  s_aodActive = false;
 uint8_t        s_pwrOnSrc = 0;
 uint8_t        s_pwrOffSrc = 0;
+volatile bool  s_clockValid = false;
+volatile uint8_t s_clockHour = 0;
+uint8_t        s_appliedChgLed = 0xFF;
+bool           s_wdtEnabled = false;
+uint16_t       s_vbusVolLimMv = 0;
 
 constexpr size_t kPowerEvtCap = 12;
 PowerEvent       s_evtRing[kPowerEvtCap] = {};
@@ -248,6 +253,12 @@ bool hwPowerInit() {
     return false;
   }
 
+  // Disarm any stale hardware watchdog countdown left across a warm reboot
+  // before setting up rails and the 1s boot OCV probe.
+  s_pmu.disableWatchdog();
+  s_wdtEnabled = false;
+  s_appliedChgLed = 0xFF;
+
   // Charge profile for the 600mAh pack. 300mA is 0.5C; the governor moves it
   // between 100 and 500mA afterwards depending on screen state and die temp.
   s_pmu.setChargeTargetVoltage(XPOWERS_AXP2101_CHG_VOL_4V2);
@@ -255,6 +266,10 @@ bool hwPowerInit() {
   s_pmu.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
   s_pmu.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_50MA);
   s_pmu.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_500MA);
+  // 4.36V VINDPM prevents weak USB ports/cables from collapsing below brownout
+  // while keeping full 500mA charge margin on normal PC ports (often 4.45-4.55V under load).
+  s_pmu.setVbusVoltageLimit(XPOWERS_AXP2101_VBUS_VOL_LIM_4V36);
+  s_vbusVolLimMv = (uint16_t)(3880u + (s_pmu.getVbusVoltageLimit() & 0x0Fu) * 80u);
   // Leave setLowBatShutdownThreshold at its reset value: it keys off the
   // fuel gauge, which is not calibrated for this pack yet. A surprise hard
   // power-off at "5%" would be worse than the current soft-empty anchor.
@@ -279,8 +294,9 @@ bool hwPowerInit() {
     const int offRaw = (int)s_pmu.getPowerOffSource();
     s_pwrOnSrc  = (onRaw >= 0) ? (uint8_t)onRaw : 0;
     s_pwrOffSrc = (offRaw >= 0) ? (uint8_t)offRaw : 0;
-    Serial.printf("[bat] blackbox on=0x%02X off=0x%02X pmuLost=%d seed=%d\n",
-                  s_pwrOnSrc, s_pwrOffSrc, s_pmuPowerLost ? 1 : 0, (int)s_pmuSeedPct);
+    Serial.printf("[bat] blackbox on=0x%02X off=0x%02X pmuLost=%d seed=%d vindpm=%umV wdt=64s\n",
+                  s_pwrOnSrc, s_pwrOffSrc, s_pmuPowerLost ? 1 : 0, (int)s_pmuSeedPct,
+                  (unsigned)s_vbusVolLimMv);
   }
 
   // Let the newly-enabled ADC complete at least one conversion, then capture an
@@ -356,7 +372,13 @@ bool hwPowerInit() {
   // cross-chip XPOWERS_PWR_BTN_* enums (which would write the wrong
   // INTEN register).
   s_pmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ | XPOWERS_AXP2101_PKEY_LONG_IRQ);
+  s_pmu.setWatchdogConfig(XPOWERS_AXP2101_WDT_IRQ_AND_RSET_PD_PWROK);
+  s_pmu.setWatchdogTimeout(XPOWERS_AXP2101_WDT_TIMEOUT_64S);
+  s_pmu.clrWatchdog();
   s_pmu.clearIrqStatus();
+  s_pmu.enableWatchdog();
+  s_pmu.clrWatchdog();
+  s_wdtEnabled = true;
 
   // Do NOT run hwPowerTick(0) here: settingsLoad() has not loaded chargeLimitPct
   // yet. setup() invokes hwPowerTick(millis()) right after settingsLoad().
@@ -370,6 +392,10 @@ void hwPowerTick(uint32_t nowMs) {
   s_lastTickMs = nowMs;
   if (dt < 200u) dt = 200u;
   if (dt > 60000u) dt = 60000u;
+
+  if (s_wdtEnabled) {
+    s_pmu.clrWatchdog();
+  }
 
   int     mv       = (int)s_pmu.getBattVoltage();
   const int vbus   = (int)s_pmu.getVbusVoltage();
@@ -418,7 +444,7 @@ void hwPowerTick(uint32_t nowMs) {
     } else {
       seedPct = s_nvsSavedPct;
       seedLost = true;
-      if (battCalOnUnexpectedCutoff(s_cal, seedPct, true)) {
+      if (battCalOnUnexpectedCutoff(s_cal, seedPct, true, s_pwrOffSrc)) {
         calDirty = true;
       }
     }
@@ -479,6 +505,15 @@ void hwPowerTick(uint32_t nowMs) {
   const ChargeDecision dec = chargeGovernorStep(
       s_gov, cfg.chargeSpeed, s_screenOn, tempF, govPct, limit, usb, nowMs);
   applyCharging(dec.enable, dec.ma);
+
+  const ChgLedPolicy ledPol = chgLedPolicyFor(
+      cfg.quietHours, s_clockValid, s_clockHour, s_screenOn, s_aodActive, usb);
+  if ((uint8_t)ledPol != s_appliedChgLed) {
+    s_pmu.setChargingLedMode(ledPol == ChgLedPolicy::OFF
+                                 ? XPOWERS_CHG_LED_OFF
+                                 : XPOWERS_CHG_LED_CTRL_CHG);
+    s_appliedChgLed = (uint8_t)ledPol;
+  }
 
   BatteryIn in;
   in.mV             = battMvValid((uint16_t)mv) ? (uint16_t)mv
@@ -729,12 +764,20 @@ void hwPowerTick(uint32_t nowMs) {
   s_bat.thermReg         = thermReg;
   s_bat.pwrOnSrc         = s_pwrOnSrc;
   s_bat.pwrOffSrc        = s_pwrOffSrc;
+  s_bat.vbusVolLimMv     = s_vbusVolLimMv;
+  s_bat.chgLedOff        = (s_appliedChgLed == (uint8_t)ChgLedPolicy::OFF);
+  s_bat.wdtEnabled       = s_wdtEnabled;
+  s_bat.wdtTimeoutSec    = s_wdtEnabled ? 64u : 0u;
   s_wmSnap               = s_wm;
   portEXIT_CRITICAL(&s_mux);
 }
 
 void hwPowerSetScreenOn(bool on) { s_screenOn = on; }
 void hwPowerSetAodActive(bool active) { s_aodActive = active; }
+void hwPowerSetClock(bool valid, uint8_t hour) {
+  s_clockValid = valid;
+  s_clockHour  = hour;
+}
 
 HwBattery hwBattery() {
   HwBattery b;
@@ -784,6 +827,10 @@ void hwPowerAckEvent() {
 void hwPowerResetCal() { s_resetCalReq = true; }
 
 void hwPowerOff() {
+  if (s_wdtEnabled) {
+    s_pmu.disableWatchdog();
+    s_wdtEnabled = false;
+  }
   if (s_model.init) {
     writePmuAnchor(s_model.pct, s_gov.limitCut);
     saveNvsBatteryPct(s_model.pct);

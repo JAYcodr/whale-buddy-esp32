@@ -468,8 +468,17 @@ inline bool battCalOnFullRest(BatteryCal& cal, uint16_t restMv) {
   return true;
 }
 
-inline bool battCalOnUnexpectedCutoff(BatteryCal& cal, int16_t seedPct, bool seedPowerLost) {
-  if (!seedPowerLost || seedPct < 6 || seedPct > 15) return false;
+// An unexpected cutoff (PMU lost power while NVS thought 6..15% remained)
+// means lowAnchorMv was too optimistic; nudge it upward gently unless the
+// PMU blackbox explicitly logged a normal software shutdown without VSYS UVLO.
+inline bool battCalOnUnexpectedCutoff(BatteryCal& cal, int16_t seedPct, bool seedPowerLost,
+                                      uint8_t pwrOffSrc = 0) {
+  if (!seedPowerLost) return false;
+  const bool vsysUvlo = (pwrOffSrc & 0x08u) != 0;
+  const bool swOff    = (pwrOffSrc & 0x02u) != 0;
+  if (swOff && !vsysUvlo) return false;
+  const int16_t maxPct = vsysUvlo ? 20 : 15;
+  if (seedPct < 6 || seedPct > maxPct) return false;
   if (cal.lowAnchorMv < 3520u) {
     cal.lowAnchorMv = (uint16_t)(cal.lowAnchorMv + 15u);
     battCalSanitize(cal);
@@ -807,4 +816,22 @@ inline ChargeDecision chargeGovernorStep(ChargeGovernor& g, ChargeSpeed speed,
   d.tempCapped = g.tempCapped;
   d.limitCut   = g.limitCut;
   return d;
+}
+
+// AXP2101 CHGLED policy: keep hardware charging indicator during daytime / USB
+// use, but turn it off during quiet night hours (23:00-08:00) or unpowered deep idle.
+enum class ChgLedPolicy : uint8_t {
+  AUTO_CHG = 0,
+  OFF      = 1,
+};
+
+inline ChgLedPolicy chgLedPolicyFor(bool quietEnabled, bool timeValid, uint8_t hour,
+                                    bool screenOn, bool aodActive, bool usbPresent) {
+  if (quietEnabled && timeValid && (hour >= 23u || hour < 8u)) {
+    return ChgLedPolicy::OFF;
+  }
+  if (!usbPresent && !screenOn && !aodActive) {
+    return ChgLedPolicy::OFF;
+  }
+  return ChgLedPolicy::AUTO_CHG;
 }

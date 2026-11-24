@@ -26,6 +26,10 @@ struct HwBattery {
   bool     thermReg;          // AXP2101 hardware thermal regulation active
   uint8_t  pwrOnSrc;          // AXP2101 PWRON_STATUS (0x20) latched at boot
   uint8_t  pwrOffSrc;         // AXP2101 PWROFF_STATUS (0x21) latched at boot
+  uint16_t vbusVolLimMv;      // AXP2101 VINDPM VBUS input voltage limit, millivolts
+  bool     chgLedOff;         // true when CHGLED is muted by night/idle policy
+  bool     wdtEnabled;        // AXP2101 hardware watchdog active
+  uint8_t  wdtTimeoutSec;     // AXP2101 hardware watchdog timeout in seconds
 };
 
 bool hwPowerInit();
@@ -42,9 +46,10 @@ void hwPowerResetCal();
 // governor. Kept out of hwBattery() so a BLE/status read can't advance time.
 void hwPowerTick(uint32_t nowMs);
 
-// Screen / AOD state for charge governor & per-session power watermarks.
+// Screen / AOD / RTC clock state for charge governor, CHGLED policy & power watermarks.
 void hwPowerSetScreenOn(bool on);
 void hwPowerSetAodActive(bool active);
+void hwPowerSetClock(bool valid, uint8_t hour);
 
 void hwPowerOff();
 // AXP2101 power-key IRQ helpers. Each call reads + clears the IRQ

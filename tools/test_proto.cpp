@@ -161,11 +161,15 @@ int main() {
   std::strcpy(hs.fwVer, "0.5.0-rc.12345");
   std::strcpy(hs.ip, "255.255.255.255");
   std::strcpy(hs.apSsid, "Nova-FFFFFFFFFFFFFFFF");
+  hs.pwrOnSrc = 255;
+  hs.pwrOffSrc = 255;
   NovaSettings hc{};
   hc.soundPct = 255;
   n = protoBuildHello(buf, 320, hs, hc, true);
   CHECK(n > 0 && n < 320);
   CHECK(std::strlen(buf) == n);
+  CHECK(std::strstr(buf, "\"onSrc\":255") != nullptr);
+  CHECK(std::strstr(buf, "\"offSrc\":255") != nullptr);
 
   // prefs 只上宿主 toHost 的 4 项，键名与旧实现一致。
   n = protoBuildPrefs(buf, sizeof(buf), cfg);

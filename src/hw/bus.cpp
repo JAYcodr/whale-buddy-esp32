@@ -35,11 +35,12 @@ static void busTaskFn(void*) {
 
   // Initial read so snapshot is valid immediately after startup.
   // settingsLoad() has run by now, so this tick also applies the saved
-  // charge-limit / charge-speed policy.
-  hwPowerTick(millis());
-  HwBattery bat = hwBattery();
+  // charge-limit / charge-speed / CHGLED policy.
   HwTime tm = {};
   bool tmOk = hwRtcRead(&tm);
+  hwPowerSetClock(tmOk, tm.H);
+  hwPowerTick(millis());
+  HwBattery bat = hwBattery();
   float ax = 0.0f, ay = 0.0f, az = 1.0f;
   hwImuAccel(&ax, &ay, &az);
 
@@ -112,6 +113,7 @@ static void busTaskFn(void*) {
       if (hwRtcRead(&nextTm)) {
         tm = nextTm;
         tmOk = true;
+        hwPowerSetClock(true, tm.H);
         i2cErrStreak = 0;
       } else if (++i2cErrStreak >= 10) {
         i2cErrStreak = 0;

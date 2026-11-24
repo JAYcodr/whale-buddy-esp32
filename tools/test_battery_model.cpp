@@ -410,9 +410,15 @@ static void testSelfCalibration() {
   CHECK(battCalOnFullRest(cvCal, 4160));
   CHECK(cvCal.fullRestMv < 4180);
 
-  // 4. Unexpected cutoff at 8% nudges lowAnchorMv upward safely.
+  // 4. Unexpected cutoff at 8% nudges lowAnchorMv upward safely,
+  //    but an explicit software shutdown without VSYS UVLO must not nudge it.
+  BatteryCal swCal = cvCal;
+  CHECK(!battCalOnUnexpectedCutoff(swCal, 8, true, 0x02));
+  CHECK(swCal.lowAnchorMv == cvCal.lowAnchorMv);
   CHECK(battCalOnUnexpectedCutoff(cvCal, 8, true));
   CHECK_MSG(cvCal.lowAnchorMv == 3415, "lowAnchorMv %u", cvCal.lowAnchorMv);
+  CHECK(battCalOnUnexpectedCutoff(cvCal, 18, true, 0x08));
+  CHECK_MSG(cvCal.lowAnchorMv == 3430, "lowAnchorMv uvlo %u", cvCal.lowAnchorMv);
 
   // 5. Sanitizer clamps extreme values cleanly.
   BatteryCal bad{ 50, 100, 1000, 3900, 3100, 0, 0, 0 };
@@ -548,6 +554,22 @@ static void testPowerWatermark() {
   CHECK(eq(battPwrEvtReasonStr(BattPwrEvtReason::LOW_BAT), "low_bat"));
 }
 
+static void testChgLedPolicy() {
+  // Daytime on USB: let the charger drive CHGLED normally.
+  CHECK(chgLedPolicyFor(true, true, 14, true, false, true) == ChgLedPolicy::AUTO_CHG);
+  CHECK(chgLedPolicyFor(true, true, 8, false, true, true) == ChgLedPolicy::AUTO_CHG);
+  // Quiet night hours (23:00-08:00) mute the LED when quietHours is enabled.
+  CHECK(chgLedPolicyFor(true, true, 23, true, false, true) == ChgLedPolicy::OFF);
+  CHECK(chgLedPolicyFor(true, true, 2, false, true, true) == ChgLedPolicy::OFF);
+  CHECK(chgLedPolicyFor(true, true, 7, true, false, true) == ChgLedPolicy::OFF);
+  // Disabling quietHours or lacking valid RTC keeps daytime indicator active on USB.
+  CHECK(chgLedPolicyFor(false, true, 2, true, false, true) == ChgLedPolicy::AUTO_CHG);
+  CHECK(chgLedPolicyFor(true, false, 2, true, false, true) == ChgLedPolicy::AUTO_CHG);
+  // Unplugged deep idle (screen off, no AOD) mutes LED even during the day.
+  CHECK(chgLedPolicyFor(true, true, 14, false, false, false) == ChgLedPolicy::OFF);
+  CHECK(chgLedPolicyFor(true, true, 14, true, false, false) == ChgLedPolicy::AUTO_CHG);
+}
+
 int main() {
   testCurve();
   testDischargeSlew();
@@ -566,6 +588,7 @@ int main() {
   testLowAnchor();
   testGovernor();
   testPowerWatermark();
+  testChgLedPolicy();
 
   if (g_fail) {
     std::printf("\n%d/%d checks failed\n", g_fail, g_checks);

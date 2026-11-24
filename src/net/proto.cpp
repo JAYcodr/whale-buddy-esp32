@@ -596,6 +596,8 @@ size_t protoBuildHello(char* buf, size_t cap, const NovaState& st, const NovaSet
     h["ip"]  = st.ip;
     h["pwr"] = (uint8_t)cfg.powerProfile;   // v0.5.0：探针要知道现在跑哪档
     h["aod"] = cfg.aodMode;
+    h["onSrc"]  = st.pwrOnSrc;
+    h["offSrc"] = st.pwrOffSrc;
 
     JsonObject p = doc["prefs"].to<JsonObject>();
     for (const SettingDef& d : kSettings) {

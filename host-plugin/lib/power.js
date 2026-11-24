@@ -299,6 +299,72 @@ function buildAlerts(dev, chargeProfile, calibration) {
   return alerts;
 }
 
+function remainHoursFor(pct, rate) {
+  if (!rate || !(rate.pctPerHour > 0) || pct == null || pct < 0) return null;
+  if (pct === 0) return 0;
+  return Math.round((pct / rate.pctPerHour) * 10) / 10;
+}
+
+export function estimatePowerEta(dev, drainRates, chargeProfile) {
+  const evt = dev?.lastEvent || null;
+  const st = dev?.lastStat || null;
+  if (!evt && !st) return null;
+
+  const useStat = Boolean(st && (!evt || (Number(st.ts) || 0) >= (Number(evt.ts) || 0)));
+  const latest = useStat ? st : evt;
+  const pct = Number.isFinite(Number(latest.pct)) ? Number(latest.pct) : null;
+  const stageName = latest.stageName || stageNameOf(latest.st ?? latest.stage);
+  const isChargingStage = stageName === 'PRE' || stageName === 'CC' || stageName === 'CV';
+  const isDone = stageName === 'DONE' || stageName === 'LIMITED';
+  const charging = (Boolean(latest.chg) || isChargingStage) && !isDone;
+  const aod = Boolean(st?.aod);
+  const lcd = st ? Boolean(st.lcd) : true;
+
+  const byScenario = {
+    overall: remainHoursFor(pct, drainRates?.overall),
+    screenOn: remainHoursFor(pct, drainRates?.screenOn),
+    aod: remainHoursFor(pct, drainRates?.aod),
+    idle: remainHoursFor(pct, drainRates?.idle),
+  };
+
+  let activeScenario = 'unknown';
+  let activeRate = null;
+  if (charging) {
+    activeScenario = 'charging';
+    activeRate = drainRates?.overall || null;
+  } else if (aod) {
+    activeScenario = drainRates?.aod ? 'aod' : (drainRates?.overall ? 'overall' : 'unknown');
+    activeRate = drainRates?.aod || drainRates?.overall || null;
+  } else if (lcd) {
+    activeScenario = drainRates?.screenOn ? 'screenOn' : (drainRates?.overall ? 'overall' : 'unknown');
+    activeRate = drainRates?.screenOn || drainRates?.overall || null;
+  } else {
+    activeScenario = drainRates?.idle ? 'idle' : (drainRates?.overall ? 'overall' : 'unknown');
+    activeRate = drainRates?.idle || drainRates?.overall || null;
+  }
+
+  let toFullHours = null;
+  let toFullMinutes = null;
+  const chargePctPerHour = chargeProfile?.avgPctPerHour > 0 ? chargeProfile.avgPctPerHour : null;
+  if (charging && pct != null && pct < 100 && chargePctPerHour != null) {
+    const rawHours = (100 - pct) / chargePctPerHour;
+    toFullHours = Math.round(rawHours * 10) / 10;
+    toFullMinutes = Math.max(1, Math.round(rawHours * 60));
+  }
+
+  return {
+    pct,
+    charging,
+    stageName,
+    activeScenario,
+    remainHours: remainHoursFor(pct, activeRate),
+    toFullHours,
+    toFullMinutes,
+    chargePctPerHour,
+    byScenario,
+  };
+}
+
 /**
  * @param {object} [options]
  * @param {string} [options.dshHome]
@@ -650,6 +716,7 @@ export function createPowerStore(options = {}) {
     const chargeProfile = summarizeChargeProfile(dev.cycles);
     const calibration = summarizeCalibration(dev);
     const alerts = buildAlerts(dev, chargeProfile, calibration);
+    const eta = estimatePowerEta(dev, drainRates, chargeProfile);
     return {
       deviceId: targetId,
       updatedAt: state.updatedAt || dev.lastSeenAt,
@@ -661,6 +728,7 @@ export function createPowerStore(options = {}) {
       calibration,
       drainRates,
       chargeProfile,
+      eta,
       recentCycles: dev.cycles.slice(-10),
       alerts,
       storage: storageStats(),

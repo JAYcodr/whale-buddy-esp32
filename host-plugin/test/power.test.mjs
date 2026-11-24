@@ -281,6 +281,23 @@ describe('Host power store & bounded analytics', () => {
     assert.ok(rep.alerts.some((a) => a.includes('VBUS')));
     assert.ok(rep.alerts.some((a) => a.includes('温控')));
     assert.ok(rep.alerts.some((a) => a.includes('+180 mΩ')));
+    // Last probe at 80% in CC stage with avgPctPerHour=30 => (100-80)/30 = 0.7h / 40min
+    assert.equal(rep.eta.pct, 80);
+    assert.equal(rep.eta.charging, true);
+    assert.equal(rep.eta.toFullMinutes, 40);
+    assert.equal(rep.eta.toFullHours, 0.7);
+    assert.equal(rep.eta.byScenario.screenOn, 3.2);
+    assert.equal(rep.eta.byScenario.aod, 8);
+
+    // Newer stat frame on AOD discharge at 60% switches ETA scenario to AOD (60 / 10 = 6h)
+    store.recordStat('D93468', {
+      evt: 'stat', mv: 3900, pct: 60, chg: 0, stage: 1, tmp: 29, lcd: 1, aod: 1, brt: 40, mhz: 80, rssi: -45,
+    }, t0 + 15_500_000);
+    const repAod = store.getReport('D93468');
+    assert.equal(repAod.eta.charging, false);
+    assert.equal(repAod.eta.activeScenario, 'aod');
+    assert.equal(repAod.eta.remainHours, 6);
+    assert.equal(repAod.eta.toFullMinutes, null);
   });
 
   it('closes a discharge session on reboot so cutoff runs reach the drain model', async () => {

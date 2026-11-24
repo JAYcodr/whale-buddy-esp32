@@ -121,6 +121,7 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
                           "\"effMa\":%u,\"bootMv\":%u,\"seed\":%d,\"pwrLost\":%s,"
                           "\"mohm\":%u,\"mah\":%u,\"vbusMv\":%u,\"vsysMv\":%u,"
                           "\"thermReg\":%s,\"onSrc\":%u,\"offSrc\":%u,"
+                          "\"vbusLimMv\":%u,\"chgLed\":\"%s\",\"wdt\":%u,"
                           "\"wm\":{\"dur\":%lu,\"sp\":%u,\"vmin\":%u,\"vmax\":%u,"
                           "\"vsmin\":%u,\"vbmin\":%u,\"tmax\":%d,\"vlimS\":%u,"
                           "\"tregS\":%u,\"tcapS\":%u,\"scrS\":%u,\"aodS\":%u}}}\n",
@@ -137,6 +138,9 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
                           (unsigned)b.vbusMv, (unsigned)b.vsysMv,
                           b.thermReg ? "true" : "false",
                           (unsigned)b.pwrOnSrc, (unsigned)b.pwrOffSrc,
+                          (unsigned)b.vbusVolLimMv,
+                          b.chgLedOff ? "off" : "auto",
+                          b.wdtEnabled ? (unsigned)b.wdtTimeoutSec : 0u,
                           durSec, (unsigned)wm.startPct,
                           (unsigned)wm.vbatMinMv, (unsigned)wm.vbatMaxMv,
                           (unsigned)wm.vsysMinMv, (unsigned)wm.vbusMinMv,
@@ -2020,6 +2024,13 @@ void setup() {
   char devId[16];
   snprintf(devId, sizeof(devId), "%02X%02X%02X", mac[3], mac[4], mac[5]);
   novaStateInit(devId, NOVA_FW_VER);
+  {
+    const HwBattery bootBat = hwBattery();
+    novaStateWithLock([&](NovaState& st) {
+      st.pwrOnSrc  = bootBat.pwrOnSrc;
+      st.pwrOffSrc = bootBat.pwrOffSrc;
+    });
+  }
   Serial.printf("nova: deviceId=%s\n", devId);
 
   if (!nvaInit("/pets/nova")) {
