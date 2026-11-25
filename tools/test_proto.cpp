@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -26,6 +27,30 @@ static int g_checks = 0;
     std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); \
   } \
 } while (0)
+
+// 已知缺陷的「期望行为」断言：默认不计入回归，避免把主回归钉在红灯上。
+// 复现：NOVA_EXPECT_IDEAL=1 bash tools/test_proto.sh
+// 修好实现后，把对应 IDEAL_CHECK 改成 CHECK 并删掉钉死现状的那条。
+#define IDEAL_CHECK(cond) do { \
+  if (std::getenv("NOVA_EXPECT_IDEAL") != nullptr) { CHECK(cond); } \
+} while (0)
+
+// 校验截断后的字符串仍是合法 UTF-8（不能出现半个汉字 / 断裂续字节）。
+static bool validUtf8(const char* s) {
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(s);
+  while (*p) {
+    size_t n = (*p < 0x80) ? 1
+             : ((*p & 0xE0) == 0xC0) ? 2
+             : ((*p & 0xF0) == 0xE0) ? 3
+             : ((*p & 0xF8) == 0xF0) ? 4 : 0;
+    if (!n) return false;
+    for (size_t i = 1; i < n; i++) {
+      if ((p[i] & 0xC0) != 0x80) return false;
+    }
+    p += n;
+  }
+  return true;
+}
 
 // ── ESP 侧符号的桩 ────────────────────────────────────────────────
 bool hwBusRequestRtcWrite(const HwTime&) { return true; }
@@ -562,6 +587,113 @@ int main() {
     CHECK(n > 0 && n < sizeof(chatBuf));
     CHECK(std::strstr(chatBuf, "\"target\":\"s1\"") != nullptr);
     CHECK(std::strstr(chatBuf, "\"mode\":\"steer\"") != nullptr);
+  }
+
+  // ── 9. 工具审批：下行报文 / 上行决策 / 状态机幂等 ──────────────────
+  // 对应 host-plugin/test/approval.test.mjs（宿主侧）。这里只管设备侧纯逻辑。
+  {
+    const char* apJson = "{\"t\":\"approval\",\"id\":\"ap_7f3\",\"tool\":\"Bash\","
+                         "\"reason\":\"rm -rf\",\"ttl\":20000}";
+    novaStateInit("testdev", "0.5.0");
+    CHECK(protoApplyMessage("approval", apJson, std::strlen(apJson), 1000));
+    NovaState st;
+    novaStateRead(&st);
+    CHECK(st.approvalActive);
+    CHECK(std::strcmp(st.apId, "ap_7f3") == 0);
+    CHECK(std::strcmp(st.apTool, "Bash") == 0);
+    CHECK(std::strcmp(st.apReason, "rm -rf") == 0);
+    CHECK(st.apTtlMs == 20000);
+    CHECK(st.apArrivedMs == 1000);
+    CHECK(st.apGen == 1);
+
+    // 缺 id 必须拒收，不能弹出无主弹窗。
+    const char* noId = "{\"t\":\"approval\",\"tool\":\"Bash\"}";
+    CHECK(!protoApplyMessage("approval", noId, std::strlen(noId), 1100));
+    novaStateRead(&st);
+    CHECK(std::strcmp(st.apId, "ap_7f3") == 0);
+
+    // 同 id 重投必须幂等：倒计时不重置、不重播到达音 / 转场，但仍刷新存活时间。
+    CHECK(protoApplyMessage("approval", apJson, std::strlen(apJson), 5000));
+    novaStateRead(&st);
+    CHECK(st.apArrivedMs == 1000);
+    CHECK(st.apGen == 1);
+    CHECK(st.lastMqttRxMs == 5000);
+
+    // 同 id 的 approval_end 收口；异 id 不得关掉当前弹窗。
+    const char* endSame = "{\"t\":\"approval_end\",\"id\":\"ap_7f3\"}";
+    CHECK(protoApplyMessage("approval_end", endSame, std::strlen(endSame), 6000));
+    novaStateRead(&st);
+    CHECK(!st.approvalActive);
+    CHECK(st.apGen == 2);
+
+    // 已收口的旧审批重放（持久会话）不能复活成幽灵弹窗。
+    CHECK(protoApplyMessage("approval", apJson, std::strlen(apJson), 6100));
+    novaStateRead(&st);
+    CHECK(!st.approvalActive);
+    CHECK(st.apGen == 2);
+
+    // 换一个新 id 才能重新弹窗。
+    const char* ap3 = "{\"t\":\"approval\",\"id\":\"ap_third\",\"tool\":\"Bash\",\"ttl\":20000}";
+    CHECK(protoApplyMessage("approval", ap3, std::strlen(ap3), 7000));
+    const char* endOther = "{\"t\":\"approval_end\",\"id\":\"ap_other\"}";
+    CHECK(protoApplyMessage("approval_end", endOther, std::strlen(endOther), 7100));
+    novaStateRead(&st);
+    CHECK(st.approvalActive);
+
+    // ⚠️ 已知缺陷：空 id 的 approval_end 会无条件清场（proto.cpp:217）。
+    const char* endEmpty = "{\"t\":\"approval_end\"}";
+    CHECK(protoApplyMessage("approval_end", endEmpty, std::strlen(endEmpty), 7200));
+    novaStateRead(&st);
+    CHECK(!st.approvalActive);
+    IDEAL_CHECK(st.approvalActive);
+
+    // ⚠️ 已知缺陷 F6：设备只有一个 apId 槽，第二个审批直接覆盖第一个。
+    const char* ap2 = "{\"t\":\"approval\",\"id\":\"ap_second\",\"tool\":\"Bash\",\"ttl\":20000}";
+    novaStateInit("testdev", "0.5.0");
+    CHECK(protoApplyMessage("approval", apJson, std::strlen(apJson), 8000));
+    CHECK(protoApplyMessage("approval", ap2, std::strlen(ap2), 8100));
+    novaStateRead(&st);
+    CHECK(std::strcmp(st.apId, "ap_second") == 0);
+    IDEAL_CHECK(std::strcmp(st.apId, "ap_7f3") == 0);
+
+    // ttl 缺省口径：proto.cpp:206 是 8000，main.cpp / page_approval.cpp 却按 15000 兜底。
+    const char* noTtl = "{\"t\":\"approval\",\"id\":\"ap_nottl\",\"tool\":\"Bash\"}";
+    CHECK(protoApplyMessage("approval", noTtl, std::strlen(noTtl), 8200));
+    novaStateRead(&st);
+    CHECK(st.apTtlMs == 8000);
+
+    // 超长中文 reason：必须按 UTF-8 边界截断，不能出现半个汉字。
+    std::string longReason;
+    for (int i = 0; i < 40; i++) longReason += "删除六个录音";
+    char longJson[1024];
+    std::snprintf(longJson, sizeof(longJson),
+                  "{\"t\":\"approval\",\"id\":\"ap_long\",\"tool\":\"Bash\",\"reason\":\"%s\"}",
+                  longReason.c_str());
+    CHECK(protoApplyMessage("approval", longJson, std::strlen(longJson), 8300));
+    novaStateRead(&st);
+    CHECK(std::strlen(st.apReason) > 0);
+    CHECK(std::strlen(st.apReason) < sizeof(st.apReason));
+    CHECK(validUtf8(st.apReason));
+    CHECK(std::strlen(st.apId) < sizeof(st.apId));
+
+    // 上行决策三种组合，字段名必须与宿主 handleUp (bridge.js:556-567) 对齐。
+    char buf[448] = {};
+    size_t n = protoBuildDecision(buf, sizeof(buf), "ap_7f3", true, false);
+    CHECK(n > 0 && n < sizeof(buf));
+    CHECK(std::strstr(buf, "\"evt\":\"decision\"") != nullptr);
+    CHECK(std::strstr(buf, "\"id\":\"ap_7f3\"") != nullptr);
+    CHECK(std::strstr(buf, "\"accept\":true") != nullptr);
+    CHECK(std::strstr(buf, "toPc") == nullptr);
+
+    n = protoBuildDecision(buf, sizeof(buf), "ap_7f3", false, false);
+    CHECK(n > 0 && std::strstr(buf, "\"accept\":false") != nullptr);
+
+    n = protoBuildDecision(buf, sizeof(buf), "ap_7f3", false, true);
+    CHECK(n > 0 && std::strstr(buf, "\"toPc\":true") != nullptr);
+    CHECK(std::strstr(buf, "\"accept\"") == nullptr);
+
+    // 缓冲区不足时整条不发，不能发出半截 JSON。
+    CHECK(protoBuildDecision(buf, 8, "ap_7f3", true, false) == 0);
   }
 
   std::printf("%d checks, %d failed\n", g_checks, g_fail);

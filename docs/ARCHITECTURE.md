@@ -346,10 +346,12 @@ sequenceDiagram
         BR-->>DSH: resolve(allowed-once | rejected) 或 next()
         DEV->>DEV: 关弹窗，播放 success/error/thinking 一次性动画
     end
-    Note over BR,DEV: 超时 → settleApproval(timeout) → 发 approval_end 清设备 → next()<br/>浏览器先答 → 发 approval_end；mirror 模式下与设备决策 Promise.race
+    Note over BR,DEV: 超时 → settleApproval(timeout) → 发 approval_end 清设备 → 返回 rejected（自动拒绝）<br/>浏览器先答 → 发 approval_end；mirror 模式下与设备决策 Promise.race
 ```
 
-**默认值**（`index.js` 传入）：`deviceApproval='mirror'`、`fallbackMs=20000`（`bridge.js` 内部缺省仍是 8000）。`mirror` = 设备与浏览器谁先答听谁的；`prefer` = 只等设备，超时才回退。
+**默认值**（`index.js` 传入，与 `bridge.js` 内部缺省一致）：`deviceApproval='mirror'`、`fallbackMs=20000`。`mirror` = 设备与浏览器谁先答听谁的；`prefer` = 只等设备。**两种模式超时都返回 `rejected` 自动拒绝**，只有设备点「转电脑」（`toPc` / `fallback`）才走 `next()` 回落到本机对话框。
+
+设备侧 `applyApproval` 对同 id 重投幂等（QoS1 重发 / `cleanSession=false` 重连重放）：不重置 `apArrivedMs`、不 `apGen++`，避免倒计时重新满格、重播到达音，以及已收口的审批复活成幽灵弹窗。
 
 ### 4.4 三条出网抓取支线
 

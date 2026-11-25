@@ -39,8 +39,13 @@ PROTO_N=$(num_checked)
 run_step "settings" bash tools/test_settings.sh
 SETTINGS_N=$(num_checked)
 
+# 两份本来就写好、却一直没进回归的自动断言：都不需要真机或 broker。
+run_step "state payload" node tools/verify_state_payload.mjs
+run_step "rec self-test"  node tools/rec_receiver.mjs --self-test
+
 run_step "junit"    bash -c 'cd host-plugin && npm test'
-JUNIT_N=$(echo "$OUT" | grep -E '^ℹ tests [0-9]+' | grep -oE '[0-9]+' | head -1)
+# node --test 的 TAP 汇总行是 "# tests 35"，旧正则按 "ℹ tests" 匹配导致这一栏一直为空。
+JUNIT_N=$(echo "$OUT" | grep -E '^# tests [0-9]+' | grep -oE '[0-9]+' | head -1)
 
 run_step "sim"      bash tools/sim/check.sh
 

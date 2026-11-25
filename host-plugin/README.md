@@ -62,4 +62,12 @@ payload：
 npm test        # node --test
 ```
 
-`npm install` 之后直接跑，不需要设备或 broker。
+`npm install` 之后直接跑，不需要设备或 broker。仓库根目录另有两条入口：
+
+```bash
+bash tools/check_all.sh                        # 全套回归：纯逻辑单测 + npm test + 47 张像素基线
+node --test tools/approval.known-issues.mjs    # 已知缺陷的期望行为，故意保持红灯
+NOVA_EXPECT_IDEAL=1 bash tools/test_proto.sh  # 设备侧同样的理想断言开关
+```
+
+`check_all.sh` 是绿的唯一门槛；后两条是待修清单，修好一个就把对应断言转正（把 `IDEAL_CHECK` 改成 `CHECK`，或把 `known-issues.mjs` 的用例搬进 `test/approval.test.mjs`）。

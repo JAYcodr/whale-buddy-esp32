@@ -110,7 +110,7 @@
 1. 插电与电池均可运行；**主屏角色动画实测 ≥55fps**，整屏重绘 ≥30fps，静态页近零推送。
 2. 三张额度卡在线更新；断网时显示缓存值 + 数据年龄。
 3. 排行页数据与 modeldial.com 一致，含 CC BY 4.0 署名。
-4. DSH 触发审批时设备 500ms 内弹出；设备点「批准」→ 工具真的执行；超时自动回退到电脑端决定。
+4. DSH 触发审批时设备 500ms 内弹出；设备点「批准」→ 工具真的执行；无人应答超时自动拒绝（默认 20 秒）。
 5. 熄屏策略与现有电池/翻面/USB 逻辑一致，60fps 只在必要区域开启。
 6. `pio run -e waveshare-esp32s3-touch-amoled-1-8` 零警告通过。
 
@@ -255,7 +255,7 @@ spiffs   off=0x310000 size=0x4F0000 (4.94MB)
 │  · 出网抓取：DeepSeek / OpenCode / Design    │
 │  · ModelDial 榜单抓取 + 6h 缓存              │
 │  · 决定翻译（accept → allowed-once）         │
-│  · 超时回退                                   │
+│  · 超时拒绝                                   │
 └──────────────────────────────────────────────┘
 ```
 
@@ -371,7 +371,7 @@ v0.1 写「BLE 是唯一免改硬件中断约束的选择」，**这个推理不
 {"t":"rank","src":"ModelDial","lic":"CC BY 4.0","at":1763700000,
  "rows":[{"r":1,"m":"gpt-6.2-astra","e":"xhigh","s":95.5,"b":94,"f":98,"k":95}]}
 
-{"t":"approval","id":"ap_7f3","tool":"Bash","reason":"rm -rf /tmp/x","ttl":8000}
+{"t":"approval","id":"ap_7f3","tool":"Bash","reason":"rm -rf /tmp/x","ttl":20000}
 {"t":"approval_end","id":"ap_7f3"}
 ```
 
@@ -766,10 +766,11 @@ github.com/PC2005-cloud/dsh-pet
 单仓放在 `nova-buddy/host-plugin/` 子目录，标准 DSH bundle：`package.json` + `cordis.patch.yml` + `index.js` + `locale/{en,zh}.json` + `icon.svg` + `docs/DETAIL.md`。
 
 - `inject = ['approval','agents','sessions','tokenMeter']`
-- 监听 `approval/request`：设备优先，超时回退
+- 监听 `approval/request`：设备优先，超时自动拒绝
   - 设备离线（LWT 或 `nova/<id>/hello` 未收到）→ `next()`
-  - 在线 → publish 到 `nova/<id>/approval`（QoS1，不 retain），等设备回 `nova/<id>/up`，超时 `fallbackMs=8000`，期间不调 `next()`
-  - 超时/设备转电脑 → `next()`
+  - 在线 → publish 到 `nova/<id>/approval`（QoS1，不 retain），等设备回 `nova/<id>/up`；默认 `fallbackMs=20000`，`prefer` 期间不调 `next()`，超时返回 `rejected` 并 `approval_end` 清屏
+  - `mirror`（默认）下 `next()` 与设备弹窗同时开始，谁先答听谁的；超时同样返回 `rejected`
+  - 设备点「转电脑」（`toPc` / `fallback`）→ `next()`
   - 配置：`deviceApproval: 'prefer'|'mirror'|'off'`，`fallbackMs`
 - 监听 `agent/status`、`tool/call`、`turn/start|end` → publish 到 `nova/<id>/state`（retain）
 - 内置 MQTT 客户端（`mqtt` npm 包），连 broker；断线自动重连
@@ -912,7 +913,7 @@ B 档体积：368×448×2 = 329,728 B（约 322 KB），USB CDC 几百 KB/s → 
 | **P1** ✅ | WiFiManager 配网 + MQTT 连通（`192.168.31.15:1883`）+ 协议 + 状态模型 + 主屏/详情/设置导航 | 真机连网在线；DSH 会话数/运行数同步 |
 | **P2** ✅ | 额度三卡（DeepSeek / OpenCode Go / OpenDesign） | 实测抓取 DeepSeek `CNY 77.08`、OpenCode Go `w 73% / m 66%` |
 | **P3** ✅ | 排行页（ModelDial Top 8） | 实测抓取 8 行 + `CC BY 4.0` 署名 |
-| **P4** ✅ | 审批闭环（固件弹窗 + `host-plugin` `approval/request` 监听与回退） | 端到端协议与单测通过（待你在真机触屏点按验收） |
+| **P4** ✅ | 审批闭环（固件弹窗 + `host-plugin` `approval/request` 监听与超时自动拒绝） | 端到端协议与单测通过（待你在真机触屏点按验收） |
 | **P5** ✅ | `.nva` 帧序列解码（ROM `tinfl`）+ `task_decode` 双缓冲 + 动效 + `hwTone` 音效 + 自适应电源 | 诺瓦动画已真机上屏，支持触屏手势与设置切档 |
 
 ---

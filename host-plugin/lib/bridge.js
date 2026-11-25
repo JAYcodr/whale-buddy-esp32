@@ -1225,13 +1225,18 @@ export function createNovaBridge(options = {}) {
         return winner.outcome;
       }
       if (winner.kind === 'decided') return winner.outcome;
+      // README 承诺「无人值守自动拒绝」：超时即按拒绝收口，不再回退电脑端对话框。
+      // mirror 下 next() 从一开始就调用了，DSH 没有取消对话框的接口；
+      // 这里让裁决值生效，那个仍 pending 的 local 结果会被 race 丢弃。
+      if (winner.kind === 'timeout') return 'rejected';
       return local.then((r) => r.outcome);
     }
 
     const res = await waitDevice;
     if (res.kind === 'decided') return res.outcome;
     if (res.kind === 'abort') return 'rejected';
-    return next();
+    if (res.kind === 'timeout') return 'rejected';
+    return next(); // kind === 'fallback'：设备点了「交给电脑」，仍走本机对话框
   }
 
   function stop() {

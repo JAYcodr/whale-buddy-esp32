@@ -143,6 +143,9 @@ bash tools/test_battery.sh
 # 跑 AOD 熄屏策略纯逻辑单测
 bash tools/test_aod.sh
 
+# 一条命令跑完所有回归（含上面两项 + 协议 / 设置 / 宿主单测 / 47 张像素基线）
+bash tools/check_all.sh
+
 # 设备在线且 broker 可达时，采样实机功耗与帧率
 node tools/power_probe.mjs --id D93468 --minutes 20 --tag aod-off
 ```

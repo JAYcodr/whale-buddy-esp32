@@ -197,6 +197,13 @@ bool applyApproval(JsonDocument& doc, uint32_t nowMs) {
   const char* id = doc["id"] | "";
   if (!id[0]) return false;
   novaStateWithLock([&](NovaState& st) {
+    // 同 id 重投（QoS1 重发 / cleanSession=false 重连重放）一律忽略：
+    // 既不能重置 apArrivedMs（倒计时重新满格），也不能 apGen++（重播到达音和转场）。
+    // applyApprovalEnd 不清 apId，因此已收口的旧审批重放也不会复活成幽灵弹窗。
+    if (strcmp(st.apId, id) == 0) {
+      st.lastMqttRxMs = nowMs;
+      return;
+    }
     st.approvalActive = true;
     safeStrCopy(st.apId, sizeof(st.apId), id);
     safeStrCopy(st.apTool, sizeof(st.apTool), doc["tool"] | "Tool");

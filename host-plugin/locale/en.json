@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Nova Buddy",
-    "description": "Pushes DSH session status, quota cards, the ModelDial leaderboard, and tool approvals to an ESP32-S3 AMOLED desk screen over MQTT. While the screen is online, tool approvals are asked there first and fall back to the local dialog after 8 seconds."
+    "description": "Pushes DSH session status, quota cards, the ModelDial leaderboard, and tool approvals to an ESP32-S3 AMOLED desk screen over MQTT. While the screen is online, tool approvals are asked there first and are automatically rejected if nobody answers within the configured timeout (20s by default); the device can also hand the decision back to the local dialog."
   }
 }
