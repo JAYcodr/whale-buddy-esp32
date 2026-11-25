@@ -230,16 +230,23 @@ bool applyApprovalEnd(JsonDocument& doc, uint32_t nowMs) {
   return true;
 }
 
+// choreo 动作名 → NvaAnimKey 索引。顺序必须与 src/anim/nva.h 的 0..23 逐项一致，
+// 也要和 host-plugin/lib/ai.js 的 VALID_ANIMS 对齐（宿主那边是名字白名单）。
+// 这里不直接引 nva.h：proto.cpp 只做协议编解码，不该为了查一个名字把 canvas 拉进来。
+const char* const kAnimNames[] = {
+  "idle", "thinking", "working", "waiting", "success", "error", "click", "sleep", "quota",
+  "click_happy", "click_shy", "click_angry", "click_giggle",
+  "crab_walk", "happy_run", "coding", "archive",
+  "stretch", "yawn", "wake_up", "hum", "eat_token", "bubble", "quota_worry",
+};
+constexpr uint8_t kAnimNameCount = (uint8_t)(sizeof(kAnimNames) / sizeof(kAnimNames[0]));
+static_assert(kAnimNameCount == 24, "kAnimNames 必须与 NvaAnimKey::COUNT 同步");
+
 uint8_t animNameToIdx(const char* s) {
-  if (!s) return 0;
-  if (strcmp(s, "thinking") == 0) return 1;
-  if (strcmp(s, "working") == 0)  return 2;
-  if (strcmp(s, "waiting") == 0)  return 3;
-  if (strcmp(s, "success") == 0)  return 4;
-  if (strcmp(s, "error") == 0)    return 5;
-  if (strcmp(s, "click") == 0)    return 6;
-  if (strcmp(s, "sleep") == 0)    return 7;
-  if (strcmp(s, "quota") == 0)    return 8;
+  if (!s || !s[0]) return 0;
+  for (uint8_t i = 0; i < kAnimNameCount; i++) {
+    if (strcmp(s, kAnimNames[i]) == 0) return i;
+  }
   return 0;
 }
 

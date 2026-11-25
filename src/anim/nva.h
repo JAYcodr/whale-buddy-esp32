@@ -12,6 +12,22 @@ enum class NvaAnimKey : uint8_t {
   CLICK,
   SLEEP,
   QUOTA,
+  // ── v0.6.0 表现力扩容（0..8 与旧版逐项兼容，新动作只追加在后面）──
+  CLICK_HAPPY,
+  CLICK_SHY,
+  CLICK_ANGRY,
+  CLICK_GIGGLE,
+  CRAB_WALK,
+  HAPPY_RUN,
+  CODING,
+  ARCHIVE,
+  STRETCH,
+  YAWN,
+  WAKE_UP,
+  HUM,
+  EAT_TOKEN,
+  BUBBLE,
+  QUOTA_WORRY,
   COUNT
 };
 

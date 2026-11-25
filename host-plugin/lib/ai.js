@@ -26,11 +26,26 @@ function resolveVoiceRef(tts) {
     return '';
   }
 }
+// choreo 动作白名单：顺序 = src/anim/nva.h 的 NvaAnimKey 0..23，
+// 也是 src/net/proto.cpp:animNameToIdx 的映射表。三处必须逐项一致，
+// 名字对不上设备端会静默回落 idle（proto 里未知动作一律返 0）。
 const VALID_ANIMS = new Set([
   'idle', 'thinking', 'working', 'waiting', 'success', 'error', 'click', 'sleep', 'quota',
+  'click_happy', 'click_shy', 'click_angry', 'click_giggle',
+  'crab_walk', 'happy_run', 'coding', 'archive',
+  'stretch', 'yawn', 'wake_up', 'hum', 'eat_token', 'bubble', 'quota_worry',
 ]);
-const DIVERSE_DAY_POOL = ['idle', 'thinking', 'waiting', 'quota', 'success', 'working', 'click'];
-const DIVERSE_NIGHT_POOL = ['sleep', 'idle', 'waiting', 'thinking', 'quota'];
+// 防重复替换池：白天偏元气互动，夜里偏困倦安静。池子前面几项仍是基础动作，
+// 老剧本的行为不变；新动作排在后面当「没在用的就换这个」的备选。
+const DIVERSE_DAY_POOL = [
+  'idle', 'thinking', 'waiting', 'quota', 'success', 'working', 'click',
+  'click_happy', 'stretch', 'hum', 'bubble', 'crab_walk', 'happy_run',
+  'coding', 'archive', 'eat_token', 'click_shy',
+];
+const DIVERSE_NIGHT_POOL = [
+  'sleep', 'idle', 'waiting', 'thinking', 'quota',
+  'yawn', 'stretch', 'hum', 'bubble', 'wake_up',
+];
 
 export function loadAiConfig(overrides = {}) {
   let fileCfg = {};
@@ -180,15 +195,24 @@ async function callOneLlm(provider, prompt, normOpts = {}) {
         role: 'system',
         content:
           '你是桌面AI宠物「鲸鱼娘诺瓦」的行为编排导演。人设：元气可爱、轻快带一点点小傲娇的小女仆。\n' +
-          '请根据当前时间、主人开发状态、算力余额与上一轮已播动作，编排一段 5 步左右的循环桌面动画剧本。\n' +
-          '可选动作库（每段约10秒）：idle(悠闲待机)、thinking(思考散步)、working(认真干活)、waiting(乖巧张望)、success(比耶开心)、quota(看余额算力)、click(元气挥手)、sleep(犯困打盹)、error(委屈叹气)。\n' +
+          '请根据当前时间、主人开发状态、算力余额、今日 Token 消耗与上一轮已播动作，编排一段 5 步左右的循环桌面动画剧本。\n' +
+          '可选动作库（每段约10秒，anim 只认下面这 24 个名字）：\n' +
+          '【基础状态】idle(悠闲待机)、thinking(思考散步)、working(认真干活)、waiting(乖巧张望)、success(比耶开心)、error(委屈叹气)、sleep(犯困打盹)\n' +
+          '【被点回应】click(元气挥手)、click_happy(开心跃动)、click_shy(害羞惊讶)、click_giggle(挠痒咯咯笑)、click_angry(傲娇生气)、wake_up(打瞌睡被惊醒)\n' +
+          '【走路步伐】crab_walk(螃蟹横走，配 speed:"walk")、happy_run(开心小跑，配 speed:"run")\n' +
+          '【工作感知】coding(写代码)、archive(清点归档)\n' +
+          '【日常摸鱼】stretch(超大伸懒腰)、hum(悠闲哼歌)、bubble(鲸鱼吐泡泡)\n' +
+          '【余额与干饭】quota(钱袋满溢)、quota_worry(数金皱眉)、eat_token(吃Token)\n' +
+          '【困倦预警】yawn(哈欠连天)\n' +
           '严格只输出纯 JSON（禁止 Markdown 代码块或任何解释）：\n' +
           '{"mood":"4-8字心情","steps":[{"x":184,"speed":"walk","anim":"idle","dur":11500,"say":"不超过10字"}]}\n' +
           '编排规则（重要）：\n' +
           '1. 5步内尽量覆盖 4~5 种不同 anim，禁止连续两步相同动画，首步与末步也不得相同；避免单调重复！\n' +
           '2. dur 为毫秒整数 [11000,18000]（每个动作至少11秒以便完整播完一整段动画）。\n' +
           '3. x 为整数 [80,288]（每步换个位置更有灵动感），speed 仅限 "walk" 或 "run"。\n' +
-          '4. 深夜(23:00-06:00)多安排 sleep/idle/waiting 并温柔提醒休息；白天多用元气互动动作。',
+          '4. 语义贴得住才好看：余额紧张用 quota_worry、余额充裕用 quota；今天 Token 烧得多就 eat_token 干饭；主人在调代码用 coding、在翻搜索结果用 archive；日常摸鱼多掺 hum / bubble / stretch / click_happy。\n' +
+          '5. 深夜(23:00-06:00)犯困先 yawn 再 sleep，多排 sleep/idle/waiting 并温柔提醒休息；白天多用元气互动动作。\n' +
+          '6. click_* 系列与 wake_up 只用于「真的被戳」的语境，平时别排，否则看起来像在自嗨。',
       },
       { role: 'user', content: prompt },
     ],

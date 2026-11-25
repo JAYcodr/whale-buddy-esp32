@@ -32,13 +32,18 @@ inline uint32_t busyNowUs() {
 }
 
 constexpr const char* ANIM_NAMES[(int)NvaAnimKey::COUNT] = {
-  "idle", "thinking", "working", "waiting", "success", "error", "click", "sleep", "quota"
+  "idle", "thinking", "working", "waiting", "success", "error", "click", "sleep", "quota",
+  "click_happy", "click_shy", "click_angry", "click_giggle",
+  "crab_walk", "happy_run", "coding", "archive",
+  "stretch", "yawn", "wake_up", "hum", "eat_token", "bubble", "quota_worry",
 };
 
-// All 9 NVA2 packs are baked at uniform world scale from the 640x360 source stage,
+// All NVA2 packs are baked at uniform world scale from the 640x360 source stage,
 // so runtime base scale is 1:1 (no nearest-neighbor resize blur).
 constexpr float kAnimBaseScale[(int)NvaAnimKey::COUNT] = {
   1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f,
+  1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f,
+  1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f,
 };
 
 // Resident keys stay cached in PSRAM; others load on demand into a shared buffer.

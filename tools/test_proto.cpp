@@ -696,6 +696,69 @@ int main() {
     CHECK(protoBuildDecision(buf, 8, "ap_7f3", true, false) == 0);
   }
 
+  // ── 10. choreo 动作名 → NvaAnimKey：24 项逐一对齐 ────────────────
+  // 契约见 docs/pet-expressiveness-plan.md §1：0..23 的顺序就是枚举顺序，
+  // 名字拼错 / 宿主发旧名都会在这里退化成 0（idle），不能让设备播错动作。
+  {
+    static const char* const kExpect[24] = {
+      "idle", "thinking", "working", "waiting", "success", "error", "click", "sleep", "quota",
+      "click_happy", "click_shy", "click_angry", "click_giggle",
+      "crab_walk", "happy_run", "coding", "archive",
+      "stretch", "yawn", "wake_up", "hum", "eat_token", "bubble", "quota_worry",
+    };
+    NovaState cs{};
+    for (int i = 0; i < 24; i++) {
+      char json[192];
+      std::snprintf(json, sizeof(json),
+                    "{\"mood\":\"巡游\",\"steps\":[{\"x\":184,\"speed\":\"walk\","
+                    "\"anim\":\"%s\",\"dur\":11000,\"say\":\"\"}]}",
+                    kExpect[i]);
+      novaStateInit("testdev", "0.5.0");
+      CHECK(protoApplyMessage("choreo", json, std::strlen(json), 9000 + (uint32_t)i));
+      novaStateRead(&cs);
+      CHECK(cs.nChoreoSteps == 1);
+      CHECK(cs.choreoSteps[0].anim == (uint8_t)i);
+    }
+
+    // 一条消息塞满 6 步（MAX_CHOREO_STEPS）时也要逐个对位，不能串号。
+    const char* six =
+        "{\"steps\":["
+        "{\"anim\":\"stretch\"},{\"anim\":\"yawn\"},{\"anim\":\"wake_up\"},"
+        "{\"anim\":\"hum\"},{\"anim\":\"eat_token\"},{\"anim\":\"bubble\"}]}";
+    novaStateInit("testdev", "0.5.0");
+    CHECK(protoApplyMessage("choreo", six, std::strlen(six), 9100));
+    novaStateRead(&cs);
+    CHECK(cs.nChoreoSteps == 6);
+    for (int i = 0; i < 6; i++) CHECK(cs.choreoSteps[i].anim == (uint8_t)(17 + i));
+
+    // 超过 6 步按上限截断：多出来的直接丢，且不越界写。
+    char many[1024] = {};
+    std::strcat(many, "{\"steps\":[");
+    for (int i = 0; i < 24; i++) {
+      if (i) std::strcat(many, ",");
+      std::strcat(many, "{\"anim\":\"success\"}");
+    }
+    std::strcat(many, "]}");
+    novaStateInit("testdev", "0.5.0");
+    CHECK(protoApplyMessage("choreo", many, std::strlen(many), 9200));
+    novaStateRead(&cs);
+    CHECK(cs.nChoreoSteps == 6);
+
+    // 未知名 / 大小写不符 / 空串 / 缺字段：一律回落 idle(0)，消息本身仍算应用。
+    const char* unknown =
+        "{\"steps\":[{\"anim\":\"quota_empty\"},{\"anim\":\"IDLE\"},"
+        "{\"anim\":\"\"},{\"x\":120,\"dur\":12000}]}";
+    novaStateInit("testdev", "0.5.0");
+    CHECK(protoApplyMessage("choreo", unknown, std::strlen(unknown), 9300));
+    novaStateRead(&cs);
+    CHECK(cs.nChoreoSteps == 4);
+    for (int i = 0; i < 4; i++) CHECK(cs.choreoSteps[i].anim == 0);
+
+    // steps 为空必须原地拒绝：否则一条空剧本就能把设备上跑着的动作清掉。
+    const char* empty = "{\"mood\":\"空\",\"steps\":[]}";
+    CHECK(!protoApplyMessage("choreo", empty, std::strlen(empty), 9400));
+  }
+
   std::printf("%d checks, %d failed\n", g_checks, g_fail);
   return g_fail ? 1 : 0;
 }

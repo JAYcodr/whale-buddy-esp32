@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { zstdCompressSync } from 'node:zlib';
 import { createNovaBridge, shortenCommand, foldTitle, foldPath, sanitizeOneLine } from '../lib/bridge.js';
 import { extractJsonObject, isQuietHours, normalizeChoreo, summarizeSessionReply, measureDisplayWidth } from '../lib/ai.js';
 import { wavToNvAdpcm, encodeNvAdpcm, MAX_NVAD_SAMPLES } from '../lib/adpcm.js';
@@ -530,5 +531,60 @@ describe('命令方块桥接（sessionController + 压缩器 + NVAD clamp）', (
     assert.ok(muteMsg, 'must publish explicit mute state when assistant produced no reply text');
 
     await bridge.stop();
+  });
+});
+
+describe('导演上下文摘要（今日 Token）', () => {
+  // DSH 会话日志是「逐条 append 的 zstd 多帧流」，造样本时必须真的压成多帧。
+  const tokenLine = (time, usage) =>
+    JSON.stringify({ type: 'assistant/message', time, data: { turn: 1, step: 1, usage } }) + '\n';
+  const frame = (text) => zstdCompressSync(Buffer.from(text, 'utf8'));
+
+  async function makeTokenHome(lines) {
+    const home = await mkdtemp(join(tmpdir(), 'nova-bridge-tokens-'));
+    const sessionDir = join(home, 'sessions', 'scope-a', 'session-1');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, 'session.v4.jsonl.zstd'), Buffer.concat(lines.map(frame)));
+    return home;
+  }
+
+  const captureBridge = (home, summaries) =>
+    createNovaBridge({
+      mqttConnect: () => createMockMqttClient(),
+      dshHome: home,
+      choreoGenerator: async (summary) => {
+        summaries.push(summary);
+        return { t: 'choreo', mood: '干饭', steps: [{ x: 184, speed: 'walk', anim: 'eat_token', dur: 12000, say: '干饭' }] };
+      },
+    });
+
+  it('把最近一天的 Token 消耗写进上下文，导演才排得出 eat_token', async () => {
+    const home = await makeTokenHome([
+      tokenLine(new Date(2026, 10, 20, 12).getTime(), {
+        inputTokens: 1_000, outputTokens: 10, cacheReadTokens: 9_000, cacheWriteTokens: 0,
+      }),
+      tokenLine(new Date(2026, 10, 21, 12).getTime(), {
+        inputTokens: 2_000, outputTokens: 20, cacheReadTokens: 18_000, cacheWriteTokens: 0,
+      }),
+    ]);
+    const summaries = [];
+    const bridge = captureBridge(home, summaries);
+    await bridge.refreshTokens(true);
+    await bridge.refreshChoreo('test');
+    assert.equal(summaries.length, 1);
+    assert.match(summaries[0], /触发=test/);
+    assert.match(summaries[0], /Token\(11\/21\)=2\.0万/, `上下文里没有今日 Token：${summaries[0]}`);
+    bridge.stop();
+  });
+
+  it('没有 token 数据时宁可留空，也不硬塞一条 "Token=0"', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'nova-bridge-tokens-empty-'));
+    const summaries = [];
+    const bridge = captureBridge(home, summaries);
+    await bridge.refreshTokens(true);
+    await bridge.refreshChoreo('test');
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0].includes('Token('), false, summaries[0]);
+    bridge.stop();
   });
 });

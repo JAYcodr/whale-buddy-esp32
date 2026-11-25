@@ -86,7 +86,7 @@ struct TokenDay {
 struct ChoreoStep {
   int16_t  x;
   bool     run;
-  uint8_t  anim;   // NvaAnimKey index 0..8
+  uint8_t  anim;   // NvaAnimKey index 0..23
   uint16_t durMs;
   char     say[64];
 };

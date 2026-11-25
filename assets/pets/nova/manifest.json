@@ -9,7 +9,9 @@
     "colors": 96,
     "fps": 10,
     "median": false,
-    "xor_delta": true
+    "xor_delta": true,
+    "stab_diff": 12,
+    "keyframe_interval": 25
   },
   "anims": [
     {
@@ -19,9 +21,9 @@
       "frames": 100,
       "fps": 10,
       "colors": 96,
-      "bytes": 543052,
-      "kb": 530.3,
-      "kb_per_frame": 5.3
+      "bytes": 436092,
+      "kb": 425.9,
+      "kb_per_frame": 4.26
     },
     {
       "name": "thinking",
@@ -30,9 +32,9 @@
       "frames": 100,
       "fps": 10,
       "colors": 96,
-      "bytes": 402133,
-      "kb": 392.7,
-      "kb_per_frame": 3.93
+      "bytes": 328052,
+      "kb": 320.4,
+      "kb_per_frame": 3.2
     },
     {
       "name": "working",
@@ -41,9 +43,9 @@
       "frames": 100,
       "fps": 10,
       "colors": 96,
-      "bytes": 566510,
-      "kb": 553.2,
-      "kb_per_frame": 5.53
+      "bytes": 461208,
+      "kb": 450.4,
+      "kb_per_frame": 4.5
     },
     {
       "name": "waiting",
@@ -52,9 +54,9 @@
       "frames": 100,
       "fps": 10,
       "colors": 96,
-      "bytes": 566220,
-      "kb": 552.9,
-      "kb_per_frame": 5.53
+      "bytes": 469407,
+      "kb": 458.4,
+      "kb_per_frame": 4.58
     },
     {
       "name": "success",
@@ -63,9 +65,9 @@
       "frames": 100,
       "fps": 10,
       "colors": 96,
-      "bytes": 520296,
-      "kb": 508.1,
-      "kb_per_frame": 5.08
+      "bytes": 436478,
+      "kb": 426.2,
+      "kb_per_frame": 4.26
     },
     {
       "name": "error",
@@ -74,9 +76,9 @@
       "frames": 49,
       "fps": 10,
       "colors": 96,
-      "bytes": 217649,
-      "kb": 212.5,
-      "kb_per_frame": 4.34
+      "bytes": 173745,
+      "kb": 169.7,
+      "kb_per_frame": 3.46
     },
     {
       "name": "click",
@@ -85,9 +87,9 @@
       "frames": 100,
       "fps": 10,
       "colors": 96,
-      "bytes": 517453,
-      "kb": 505.3,
-      "kb_per_frame": 5.05
+      "bytes": 445974,
+      "kb": 435.5,
+      "kb_per_frame": 4.36
     },
     {
       "name": "sleep",
@@ -96,9 +98,9 @@
       "frames": 100,
       "fps": 10,
       "colors": 96,
-      "bytes": 219493,
-      "kb": 214.3,
-      "kb_per_frame": 2.14
+      "bytes": 171258,
+      "kb": 167.2,
+      "kb_per_frame": 1.67
     },
     {
       "name": "quota",
@@ -107,11 +109,176 @@
       "frames": 100,
       "fps": 10,
       "colors": 96,
-      "bytes": 701289,
-      "kb": 684.9,
-      "kb_per_frame": 6.85
+      "bytes": 611807,
+      "kb": 597.5,
+      "kb_per_frame": 5.97
+    },
+    {
+      "name": "click_happy",
+      "w": 164,
+      "h": 186,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 532593,
+      "kb": 520.1,
+      "kb_per_frame": 5.2
+    },
+    {
+      "name": "click_shy",
+      "w": 136,
+      "h": 160,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 652826,
+      "kb": 637.5,
+      "kb_per_frame": 6.38
+    },
+    {
+      "name": "click_angry",
+      "w": 136,
+      "h": 162,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 400007,
+      "kb": 390.6,
+      "kb_per_frame": 3.91
+    },
+    {
+      "name": "click_giggle",
+      "w": 139,
+      "h": 163,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 442643,
+      "kb": 432.3,
+      "kb_per_frame": 4.32
+    },
+    {
+      "name": "crab_walk",
+      "w": 158,
+      "h": 161,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 698089,
+      "kb": 681.7,
+      "kb_per_frame": 6.82
+    },
+    {
+      "name": "happy_run",
+      "w": 138,
+      "h": 162,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 647295,
+      "kb": 632.1,
+      "kb_per_frame": 6.32
+    },
+    {
+      "name": "coding",
+      "w": 132,
+      "h": 161,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 427870,
+      "kb": 417.8,
+      "kb_per_frame": 4.18
+    },
+    {
+      "name": "archive",
+      "w": 129,
+      "h": 159,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 296538,
+      "kb": 289.6,
+      "kb_per_frame": 2.9
+    },
+    {
+      "name": "stretch",
+      "w": 131,
+      "h": 163,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 392148,
+      "kb": 383.0,
+      "kb_per_frame": 3.83
+    },
+    {
+      "name": "yawn",
+      "w": 135,
+      "h": 162,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 445629,
+      "kb": 435.2,
+      "kb_per_frame": 4.35
+    },
+    {
+      "name": "wake_up",
+      "w": 148,
+      "h": 185,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 492248,
+      "kb": 480.7,
+      "kb_per_frame": 4.81
+    },
+    {
+      "name": "hum",
+      "w": 207,
+      "h": 194,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 600443,
+      "kb": 586.4,
+      "kb_per_frame": 5.86
+    },
+    {
+      "name": "eat_token",
+      "w": 213,
+      "h": 163,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 610625,
+      "kb": 596.3,
+      "kb_per_frame": 5.96
+    },
+    {
+      "name": "bubble",
+      "w": 188,
+      "h": 177,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 413083,
+      "kb": 403.4,
+      "kb_per_frame": 4.03
+    },
+    {
+      "name": "quota_worry",
+      "w": 134,
+      "h": 161,
+      "frames": 100,
+      "fps": 10,
+      "colors": 96,
+      "bytes": 320306,
+      "kb": 312.8,
+      "kb_per_frame": 3.13
     }
   ],
-  "total_bytes": 4254095,
-  "total_kb": 4154.4
+  "total_bytes": 10906364,
+  "total_kb": 10650.7
 }

@@ -33,7 +33,7 @@
 | `host-plugin/bin/nova-buddy.js` | CLI：`auth opendesign`、`test-push`、`test-choreo`、`test-tts`、`power` | — |
 | `tools/sim/` | Mac 模拟器：同一套 `ui/` 源码，`-DNOVA_HOST_SIM`，输出 PNG | 像素基线 47 张 |
 | `tools/` | `check_all.sh` 总回归、`power_probe.mjs`、`asr_probe.mjs`、`rec_receiver.mjs`、`usb_shot.py`、`verify_state_payload.mjs`、`pio.sh` | 见 §9 |
-| `assets/pets/nova/` → `data/pets/nova/` | 9 个 `.nva` 动画包；`tools/prep_data.sh` 打成 LittleFS 镜像 | 改动画名要同步 `nva.h` 枚举与 `page_home` 用法 |
+| `assets/pets/nova/` → `data/pets/nova/` | 24 个 `.nva` 动画包（10.4MB，spiffs 分区 12MB）；`tools/prep_data.sh` 打成 LittleFS 镜像 | 改动画名要同步 `nva.h` 枚举与 `page_home` 用法 |
 | `deploy/mosquitto/` | broker 的 docker-compose 与配置 | — |
 | `attic/` | 硬件点屏验证页，不参与编译 | — |
 
@@ -232,7 +232,7 @@ flowchart TD
 | | `model` `title` `tool` `errMsg` | ≤32 / ≤40 / ≤24 / ≤136B，主屏码头用 |
 | `sessions` | `items[≤4]` | 每项 `{id,name,cwd,st∈{run,wait,err,idle},el,act,note,steps[≤3]{t,s,a}}`；顶层 `lastSay` `lastAgo` |
 | `approval` | `id` `tool` `reason` `ttl` | `reason`≤140；可选 `sess` `note`；`approval_end` 只要 `id` |
-| `choreo` | `mood` `steps[≤6]` | 每步 `{x∈[80,288],speed:walk/run,anim,dur(ms),say}`；`anim` 只认 9 枚举（`ai.js:VALID_ANIMS` 与 `proto.cpp:animNameToIdx` 必须同步） |
+| `choreo` | `mood` `steps[≤6]` | 每步 `{x∈[80,288],speed:walk/run,anim,dur(ms),say}`；`anim` 只认 24 枚举（`ai.js:VALID_ANIMS` / `proto.cpp:kAnimNames` / `nva.h:NvaAnimKey` 三处必须逐项同步，未知回落 0=idle） |
 | `tts` | `id` `seq` `tot` `b64` | 1800B ADPCM/片；设备上限 `98304B`，超了整条静默丢 |
 | `chat` | `asr` | `{t,id,ok,text/err}` → 草稿卡 |
 | | `delivery` | `{t,id,kind:sent/run/reply/fail/mute,pos,secs/ago,target,name,text}` |
@@ -558,7 +558,7 @@ flowchart TD
 | `sessions` 载荷 / 看板目标选择 | CHAT 页会话卡、草稿锁会话 | 中 | 切目标 + 目标失效场景 |
 | `net.cpp` 的 `SUFFIXES` | 订阅与 `protoApplyMessage` 必须同步 | 高 | 12 个主题逐条收包 |
 | `hw/bus.cpp` 周期 / 顺序 | 触摸延迟、I2C 掉线恢复 | 中 | 触摸拖拽 + 电池/RTC 读数 |
-| `anim/nva.cpp` 解码缓冲 | 帧撕裂、内存（2×MAX_FRAME_PIXELS + xorScratch） | 高 | 9 个状态各播一圈 |
+| `anim/nva.cpp` 解码缓冲 | 帧撕裂、内存（2×MAX_FRAME_PIXELS + xorScratch；常驻槽仍只有 IDLE/SUCCESS/ERROR 3 个） | 高 | 24 个动作各播一圈 |
 | `hw/display.cpp` `pushRect` | 花屏 / 丢列 / 撕裂 | 高 | 各页脏矩形 + 全屏 |
 | `pages.h` 新增 `UiAction` | `handleAction` 的 switch 必须补齐 | 中 | 新交互 + 现有交互回归 |
 | `settings.h` 新字段 | NVS 键 + 默认值 + prefs | 中 | 断电重启仍生效 |

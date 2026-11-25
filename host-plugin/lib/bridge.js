@@ -159,6 +159,15 @@ function fmtStepClock(msAgo) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+// AI 导演的上下文用：Token 数太大，直接念原始数字既长又没直觉。
+function compactTokenCount(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '0';
+  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿`;
+  if (v >= 1e4) return `${(v / 1e4).toFixed(1)}万`;
+  return String(Math.round(v));
+}
+
 export function createNovaBridge(options = {}) {
   const brokerUrl = options.brokerUrl || process.env.NOVA_MQTT_URL || 'mqtt://192.168.31.15:1883';
   const fallbackMs = Number(options.fallbackMs ?? 20000);
@@ -460,7 +469,14 @@ export function createNovaBridge(options = {}) {
     const ocPct = ocCard?.bars?.[0]?.pct;
     const ocInfo = ocPct != null ? `，OpenCode本周已用${ocPct}%` : '';
     const modInfo = st.model ? `，模型=${st.model}` : '';
-    return `触发=${reason}，DSH运行=${st.run}，等待=${st.wait}，会话=${st.sess}${modInfo}，${ds}${ocInfo}`;
+    // 今日 Token 烧了多少：导演要靠这个决定排不排 eat_token（干饭）。
+    // days 是 [MM/DD, 总数] 的升序数组，取最后一天就是最近一天。
+    const days = Array.isArray(tokensPayload?.days) ? tokensPayload.days : [];
+    const lastDay = days.length > 0 ? days[days.length - 1] : null;
+    const tokInfo = Array.isArray(lastDay) && lastDay.length >= 2
+      ? `，Token(${lastDay[0]})=${compactTokenCount(lastDay[1])}`
+      : '';
+    return `触发=${reason}，DSH运行=${st.run}，等待=${st.wait}，会话=${st.sess}${modInfo}，${ds}${ocInfo}${tokInfo}`;
   }
 
   async function refreshChoreo(reason = 'timer', minCooldownMs = 0) {

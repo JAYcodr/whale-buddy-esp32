@@ -30,9 +30,16 @@ DEFAULT_COLORS = 96
 DEFAULT_FPS = 10
 ALPHA_CUTOFF = 26
 KEYFRAME_INTERVAL = 25
-STAB_DIFF_MAX = 7
+# 时空稳帧阈值：相邻帧同一像素的 max(RGB) 差 ≤ 阈值就沿用上一帧的调色板索引。
+# 24 个高清包在 7 的时候是 12.4MB，塞不进 12MB 的 spiffs 分区；抬到 12 后
+# 10.65MB（省 16%），肉眼看不出差别 —— 它只压掉抗锯齿边缘与渐变的逐帧抖动，
+# 不改变轮廓与动作。关键帧（第 0 帧、每 25 帧）不受影响；但非关键帧会被
+# AOD 定格取用，所以 3 张 page_aod* 像素基线随本次重转更新过。
+STAB_DIFF_MAX = 12
 
-# 核心动画：设备侧状态机用得到的那些，按 dsh-pet config.jsonc 的 workStatus 语义对齐
+# 核心动画：设备侧状态机用得到的那些，按 dsh-pet config.jsonc 的 workStatus 语义对齐。
+# 顺序 = src/anim/nva.h 的 NvaAnimKey 0..23（前 9 项与旧版 100% 兼容），
+# 改这里必须同步 src/anim/nva.h、src/net/proto.cpp、host-plugin/lib/ai.js。
 CORE = {
     "idle": "待机呼吸休闲",
     "thinking": "工作状态-思考冒泡",
@@ -43,6 +50,21 @@ CORE = {
     "click": "点击回应-元气挥手",
     "sleep": "睡觉-循环",
     "quota": "余额-钱袋满溢",
+    "click_happy": "点击回应-开心跃动",
+    "click_shy": "点击回应-害羞惊讶",
+    "click_angry": "点击回应-傲娇生气",
+    "click_giggle": "点击回应-挠痒咯咯笑",
+    "crab_walk": "螃蟹走路",
+    "happy_run": "开心小跑",
+    "coding": "写代码",
+    "archive": "工作状态-清点归档",
+    "stretch": "超大伸懒腰",
+    "yawn": "哈欠连天",
+    "wake_up": "打瞌睡被惊醒",
+    "hum": "悠闲哼歌",
+    "eat_token": "吃Token",
+    "bubble": "鲸鱼吐泡泡特效",
+    "quota_worry": "余额-数金皱眉",
 }
 
 
@@ -285,6 +307,8 @@ def main() -> None:
             "fps": args.fps,
             "median": False,
             "xor_delta": True,
+            "stab_diff": STAB_DIFF_MAX,
+            "keyframe_interval": KEYFRAME_INTERVAL,
         },
         "anims": results,
         "total_bytes": total,
