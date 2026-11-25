@@ -141,6 +141,7 @@ Agent 突然想执行 `rm -rf` 或者敏感工具时，无论你当前停在哪�
 | [`HANDOFF.md`](HANDOFF.md) | 最近实测数字、已知未修问题、验收路径 |
 | [`docs/MOTION-CONTEXT.md`](docs/MOTION-CONTEXT.md) | 动效曲线与参数；`docs/动效细腻化任务书.md` 是专项验收标准 |
 | [`docs/pet-expressiveness-plan.md`](docs/pet-expressiveness-plan.md) | 24 动作 / 16MB 分区的任务书：动作语义、镜像白名单、四端对齐表 |
+| [`docs/VOICE-AUDIO.md`](docs/VOICE-AUDIO.md) | 换 / 加机内语音条：本地 TTS 生成、参考音切换、响度与烧录 |
 
 ### 1. 没买开发板？先在电脑上跑一遍看看
 

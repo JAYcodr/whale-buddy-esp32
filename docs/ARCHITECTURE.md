@@ -34,7 +34,7 @@
 | `tools/sim/` | Mac 模拟器：同一套 `ui/` 源码，`-DNOVA_HOST_SIM`，输出 PNG | 像素基线 51 项（49 页 + 2 项局部重绘） |
 | `tools/` | `check_all.sh` 总回归、`power_probe.mjs`、`asr_probe.mjs`、`rec_receiver.mjs`、`usb_shot.py`、`verify_state_payload.mjs`、`pio.sh` | 见 §9 |
 | `assets/pets/nova/` → `data/pets/nova/` | 24 个 `.nva` 动画包（10.4MB，spiffs 分区 12MB）；`tools/prep_data.sh` 打成 LittleFS 镜像 | 改动画名要同步 `nva.h` 枚举与 `page_home` 用法 |
-| `assets/audio/` → `data/audio/` | 17 条 `.adp` 语音（392KB）：boot / run / tap0-2 + 12 条点击·唤醒变体；`node tools/assets/gen_voice.mjs` 用本机听书值守（本地 Qwen3-TTS）重生成 | 响度锁 RMS≈-20dB、峰值≤-7dB（小喇叭会破）；改文本要同时改 `page_home.cpp` 的台词表 |
+| `assets/audio/` → `data/audio/` | 17 条 `.adp` 语音（392KB）：boot / run / tap0-2 + 12 条点击·唤醒变体；`node tools/assets/gen_voice.mjs` 用本机听书值守（本地 Qwen3-TTS）重生成；流程见 [VOICE-AUDIO.md](VOICE-AUDIO.md) | 响度锁 RMS≈-20dB、峰值≤-7dB（小喇叭会破）；改文本要同时改 `page_home.cpp` 的台词表 |
 | `deploy/mosquitto/` | broker 的 docker-compose 与配置 | — |
 | `attic/` | 硬件点屏验证页，不参与编译 | — |
 

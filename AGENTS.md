@@ -12,6 +12,7 @@ Nova Buddy = ESP32-S3（368×448 AMOLED）桌面副屏 + DSH 宿主插件。设�
 | [`docs/MOTION-CONTEXT.md`](docs/MOTION-CONTEXT.md) | 改动效曲线 / 时长 | 缓动体系与参数 |
 | [`docs/动效细腻化任务书.md`](docs/动效细腻化任务书.md) | 做动效专项 | 逐条验收标准 |
 | [`docs/pet-expressiveness-plan.md`](docs/pet-expressiveness-plan.md) | 动 24 个动作 / 16MB 分区 | 动作语义、镜像白名单、四端对齐表 |
+| [`docs/VOICE-AUDIO.md`](docs/VOICE-AUDIO.md) | 换 / 加机内语音条 | 本地 TTS 生成、参考音切换与还原、响度、打包烧录 |
 | [`docs/design/`](docs/design/) · [`docs/previews/`](docs/previews/) | 看设计稿 / 真机截图 | 语音看板原型、各页截图 |
 | [`docs/upstream/`](docs/upstream/) | 只在追 fork 差异时 | fork 前基线，已废弃 |
 
@@ -25,6 +26,7 @@ Nova Buddy = ESP32-S3（368×448 AMOLED）桌面副屏 + DSH 宿主插件。设�
 | 编译 / 烧录 | `bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8` |
 | LittleFS 资源打包 | `bash tools/prep_data.sh` |
 | 机内语音条 | `node tools/assets/gen_voice.mjs`（本机听书值守 → 本地 Qwen3-TTS），写完再 `bash tools/prep_data.sh` |
+| 语音条解码 | `node tools/assets/nvad_decode.mjs <x.adp> <x.wav>`（核对内容/响度用） |
 | 宿主插件测试 | `cd host-plugin && npm test` |
 | 真机指标 | 串口 `{"cmd":"stat"}`；采样 `node tools/power_probe.mjs --id <ID> --minutes 30` |
 
