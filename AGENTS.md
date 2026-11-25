@@ -11,6 +11,7 @@ Nova Buddy = ESP32-S3（368×448 AMOLED）桌面副屏 + DSH 宿主插件。设�
 | [`HANDOFF.md`](HANDOFF.md) | 接着上一轮活干 | 最近实测数字、已知未修问题、验收路径 |
 | [`docs/MOTION-CONTEXT.md`](docs/MOTION-CONTEXT.md) | 改动效曲线 / 时长 | 缓动体系与参数 |
 | [`docs/动效细腻化任务书.md`](docs/动效细腻化任务书.md) | 做动效专项 | 逐条验收标准 |
+| [`docs/pet-expressiveness-plan.md`](docs/pet-expressiveness-plan.md) | 动 24 个动作 / 16MB 分区 | 动作语义、镜像白名单、四端对齐表 |
 | [`docs/design/`](docs/design/) · [`docs/previews/`](docs/previews/) | 看设计稿 / 真机截图 | 语音看板原型、各页截图 |
 | [`docs/upstream/`](docs/upstream/) | 只在追 fork 差异时 | fork 前基线，已废弃 |
 
@@ -20,7 +21,7 @@ Nova Buddy = ESP32-S3（368×448 AMOLED）桌面副屏 + DSH 宿主插件。设�
 |---|---|
 | 全量回归（改代码必跑） | `bash tools/check_all.sh` |
 | 全页渲染 PNG | `bash tools/sim/run.sh` → `tools/sim/out/` |
-| 像素基线对比 | `bash tools/sim/check.sh`（47 张） |
+| 像素基线对比 | `bash tools/sim/check.sh`（51 项） |
 | 编译 / 烧录 | `bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8` |
 | LittleFS 资源打包 | `bash tools/prep_data.sh` |
 | 宿主插件测试 | `cd host-plugin && npm test` |
@@ -31,5 +32,7 @@ Nova Buddy = ESP32-S3（368×448 AMOLED）桌面副屏 + DSH 宿主插件。设�
 - **资源排他**：I2C 只 `task_bus`；canvas 只 `task_ui`；MQTT 句柄只 `task_net`；`.nva` 解码缓冲只 `task_decode`。
 - **协议约定**：`err` 只能是字面量 `true`；`approval` / `choreo` / `tts` / `chat` / `mic_ack` 不 retain；审批同 `id` 必须幂等。
 - **像素基线是验收口径**：改视觉就同步更新 `tools/sim/baseline.txt` 并在提交正文说明；没改视觉别动。
+- 动作枚举五处同序、只许追加：`nva.h` / `nva.cpp:ANIM_NAMES` / `proto.cpp:kAnimNames` / `ai.js:VALID_ANIMS` / `page_home.cpp:kDemoTags`。
+- 16MB 分区（`no_ota_16mb.csv`）只挂在 1.8 env，`spiffs` label 不能改名。
 - `src/` 里不许出现裸 `368`（`check_all.sh` 会拦），屏参只放 `src/boards/`。
 - 提交信息用 `[修复] / [新增] / [文档] / [工具]` 前缀 + 中文短句，正文写「原因 / 影响」。

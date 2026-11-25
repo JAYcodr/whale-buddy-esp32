@@ -138,7 +138,7 @@ graph TD
 | `ui/page_*.cpp` | 七页绘制 / 点按 / 滚动惯性 | theme · icons · nva · state · settings | 点按返回 `UiAction`，逻辑回 main |
 | `ui/transition.cpp` | 180ms 双缓存滑屏合成 | display · canvas · easing | 只在切页时 |
 | `ui/theme.cpp` · `aafont_data.cpp` | 色板、组件、4-bpp 字体 | — | 字体 6.7MB，不进逻辑 |
-| `anim/nva.cpp` | `.nva` 解析、zlib、XOR 帧差、双缓冲、`task_decode` | theme | 解码只写后缓冲 |
+| `anim/nva.cpp` | `.nva`（NVA2）解析、zlib、XOR 帧差、双缓冲、`task_decode`；24 动作，常驻 IDLE/SUCCESS/ERROR 3 槽，其余走共享流式槽 `s_streamPack` | theme | 解码只写后缓冲；单帧 `w*h ≤ 220×224` |
 | `audio/sfx.cpp` | 提示音序列 | hw/audio | — |
 | `hw/bus.cpp` | I2C 唯一主：触摸 / 电量 / RTC / IMU / 扩展 IO / 麦克风增益 | power · rtc · imu · input · expander · audio | 任何 I2C 都走它 |
 | `hw/display.cpp` | QSPI 推送（全屏 / 矩形 / 亮度） | expander · power | 约束见 §5 |
@@ -232,7 +232,7 @@ flowchart TD
 | | `model` `title` `tool` `errMsg` | ≤32 / ≤40 / ≤24 / ≤136B，主屏码头用 |
 | `sessions` | `items[≤4]` | 每项 `{id,name,cwd,st∈{run,wait,err,idle},el,act,note,steps[≤3]{t,s,a}}`；顶层 `lastSay` `lastAgo` |
 | `approval` | `id` `tool` `reason` `ttl` | `reason`≤140；可选 `sess` `note`；`approval_end` 只要 `id` |
-| `choreo` | `mood` `steps[≤6]` | 每步 `{x∈[80,288],speed:walk/run,anim,dur(ms),say}`；`anim` 只认 24 枚举（`ai.js:VALID_ANIMS` / `proto.cpp:kAnimNames` / `nva.h:NvaAnimKey` 三处必须逐项同步，未知回落 0=idle） |
+| `choreo` | `mood` `steps[≤6]` | 每步 `{x∈[80,288],speed:walk/run,anim,dur(ms),say}`；宿主收口 `mood≤20`、`say≤18` 字、`dur 10–24s`（设备兜底 1.5–30s）；`anim` 只认 24 枚举（清单见 §4.2），未知回落 `0=idle` |
 | `tts` | `id` `seq` `tot` `b64` | 1800B ADPCM/片；设备上限 `98304B`，超了整条静默丢 |
 | `chat` | `asr` | `{t,id,ok,text/err}` → 草稿卡 |
 | | `delivery` | `{t,id,kind:sent/run/reply/fail/mute,pos,secs/ago,target,name,text}` |
@@ -394,7 +394,7 @@ sequenceDiagram
         DEV->>DEV: s_choreoAnim = step.anim；step.say → 气泡 8.5s
         DEV->>NVA: nvaSetState(anim) → 通知解码 → 播满一圈推进下一步
     end
-    Note over DEV: 仅 run==0 && wait==0 && 无审批 && choreoEnabled 时执行；<br/>用户点过屏后 s_userTargetLock 接管
+    Note over DEV: 仅 run==0 && wait==0 && 无审批 && choreoEnabled && 非 SLEEP/YAWN 时执行；<br/>用户点过屏后 s_userTargetLock 接管，休息态不起步
 ```
 
 ---
@@ -436,7 +436,40 @@ stateDiagram-v2
 
 环序 `kPageRing = TOKENS → HOME → QUOTA → RANK → DETAIL → CHAT`（`nav.cpp`）；滑动阈值 `|dx| ≥ 48 && |dx| > |dy|`。SETTINGS 在环外，从 DETAIL 或 Key1 进。
 
-### 4.2 电源与帧率
+### 4.2 HOME 舞台与 24 动作
+
+动作顺序 `0..23` 是硬契约（0..8 与旧版逐项兼容，新动作只能追加）：
+`idle thinking working waiting success error click sleep quota` · `click_happy click_shy click_angry click_giggle` · `crab_walk happy_run coding archive` · `stretch yawn wake_up hum eat_token bubble quota_worry`。
+五处枚举必须同序：`nva.h:NvaAnimKey`、`nva.cpp:ANIM_NAMES`、`proto.cpp:kAnimNames`（带 `static_assert`）、`ai.js:VALID_ANIMS`、`page_home.cpp:kDemoTags`；资产侧 `convert_pet.py:CORE` 只需名字集合一致（文件名即键）。语义与镜像白名单见 [pet-expressiveness-plan.md](pet-expressiveness-plan.md) §1。
+
+**调度优先级**（`main.cpp`，自上而下、先命中先定）
+
+| # | 条件 | 动作 | 说明 |
+|---|---|---|---|
+| 1 | AOD 生效 | AOD 定格姿势 | 主状态机与任务结束 oneShot 都**不许**调 `nvaSetState` |
+| 2 | 审批浮层 / `wait>0` | WAITING | 中断一切点击/一次性动画 |
+| 3 | 串口 `demo` 或点状态胶囊 | demo `0..23` | 再点一圈回到自动 |
+| 4 | 局部点击动画 | click_* / click_angry / wake_up | 见交互表，最长 13.5s 兜底 |
+| 5 | 任务完成 / 异常 | SUCCESS / ERROR | 一次性：SUCCESS 13.5s、ERROR 8.5s |
+| 6 | `run>0` | 由 `lastTool` 映射 CODING / ARCHIVE / WORKING / THINKING | 关键词表在 `pageHomeWorkAnimForTool` |
+| 7 | 正在走动 | CRAB_WALK / HAPPY_RUN | 小跑 92 px/s、漫步 38 px/s，hop 压到 2.0f |
+| 8 | 闲置 | 75s→YAWN、90s→SLEEP（电池 30s / 45s） | 进入 AOD 前先困 |
+| 9 | 有剧本 | choreo `step.anim` | 休息态不推步 |
+| 10 | 其余 | 巡游池 HUM / BUBBLE / STRETCH / QUOTA（余额 <15 或订阅条 ≥80% 换 QUOTA_WORRY）/ EAT_TOKEN（今日 ≥1 亿）/ THINKING（有会话） | 播满 1 cycle 换一个，回 IDLE 停 2 cycle |
+
+**交互**
+
+| 操作 | 结果 |
+|---|---|
+| 点宠物（清醒） | `click / click_happy / click_shy / click_giggle` 轮换，防连播 + 专属台词 |
+| 8s 内连戳 ≥3 次 | `click_angry` + 傲娇台词，连击清零 |
+| 点宠物（SLEEP / YAWN） | `wake_up` + 唤醒台词 |
+| 点舞台空白 | 小跑到落点（`s_userTargetLock`，14s 后恢复巡游） |
+| 点状态胶囊 | 切 demo，到头回自动 |
+
+**表现规则**：镜像只对 14 个白名单动作生效（带文字/道具的 10 个不镜像，`spriteAllowsMirror`）；spark、Zzz、气泡只在当前帧框 `curX0..curY1` 内画，推送区域取上一帧框 ∪ 本帧框，越界的粒子直接丢；绘制与命中判定必须用同一组 `burnOffset`。
+
+### 4.3 电源与帧率
 
 ```mermaid
 stateDiagram-v2
@@ -468,7 +501,7 @@ stateDiagram-v2
 - **DFS**：`LIVELY` 240；`ADAPTIVE` 有插电或活跃需求 240，否则 80；`LONG_BATT` 熄屏 80、审批 160、其余 80；AOD 一律 80。
 - **WiFi**：审批 / 配网 / 录音上传 / 交互后 5s 内 `WIFI_PS_NONE`，其余 `MAX_MODEM`；电池下按 RSSI 三档降发射功率（13/17/20dBm），插电满功率。
 
-### 4.3 配网与在线
+### 4.4 配网与在线
 
 ```mermaid
 stateDiagram-v2
@@ -522,6 +555,7 @@ flowchart TD
 | `pushRect` | 列/行偶对齐；宽 <18 会丢列；宽 ≥240 整行带零拷贝；其余走 64KB 内部 SRAM 条带 |
 | 脏矩形口径 | 只推「内容真正活动的带」：鲸鱼只在 88px 里动，早期推 194px = 白搬 58%（27ms） |
 | CHAT 页 | 无脏矩形：`recGen/chatGen/boardGen` 任一变化 → 全屏；录音中按 83ms 节流刷电平 |
+| HOME 舞台 | 上一帧框 ∪ 本帧框；spark / Zzz / 气泡都在并集内画，超出即丢（不留残影） |
 
 ---
 
@@ -543,6 +577,11 @@ flowchart TD
 | 12 | 中文字段截断用 `novaSafeUtf8Copy` | 半个 UTF-8 字符 → 花屏方块 |
 | 13 | 设备上行 JSON 受 448B 限制；下行不受（读缓冲 4096） | 上行截断成非法 JSON，宿主静默丢包 |
 | 14 | 审批浮层期间 `animPage=false` | 驱动动画把浮层画回去覆盖 |
+| 15 | SLEEP / YAWN 期间本地巡游与 choreo 都必须停步（`resting` 闸） | 熟睡的宠物被拉着「梦游」、顶着 Zzz 说元气台词 |
+| 16 | 动作表五处同序，`0..8` 不许改序，新动作只追加 | 资产文件名、协议名、导演白名单三者错位，播出错动作 |
+| 17 | 镜像只对 14 个白名单动作生效；新动作默认不镜像 | 带文字/道具的动作左右翻转后文字反了 |
+| 18 | 舞台绘制与命中都用 `burnOffset`；粒子/气泡不许越出脏矩形 | 按钮点歪 2px、粒子残影 |
+| 19 | 16MB 分区只覆盖 1.8 env，`spiffs` label 不可改名 | 其他板 8MB 装不下 24 包；改名后 `LittleFS.begin()` 挂载失败 |
 
 ---
 
@@ -564,6 +603,10 @@ flowchart TD
 | `settings.h` 新字段 | NVS 键 + 默认值 + prefs | 中 | 断电重启仍生效 |
 | `hw/audio.cpp` 录音 / 增益 | 录音电平、mic 上传 | 中 | `node tools/rec_receiver.mjs` |
 | 帧率策略（`targetFps`） | 流畅度、功耗、`pushUs` | 中 | 每页 `{"cmd":"stat"}` 看 `pushUs` |
+| `page_home.cpp` 交互 / 动作 / 脏矩形 | HOME 表现、AOD 表盘、点击热区 | 中高 | `bash tools/sim/check.sh`（`page_home_*` 基线）+ 真机戳戳乐 |
+| 动作枚举 / 名字表（5 处） | 资产、协议、LLM 导演 | 中 | `bash tools/test_proto.sh` + `cd host-plugin && npm test`（choreo） |
+| `convert_pet.py` / `no_ota_16mb.csv` | 资产体积与分区 | 高 | 重转 → `bash tools/prep_data.sh` → 全量烧录并确认 LittleFS 挂载 |
+| AOD 进出与局部重绘条件 | 表盘、熄屏、功耗 | 中 | 停在各页进/出 AOD，确认没有局部分支往表盘上画 |
 
 ---
 
