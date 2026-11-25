@@ -931,6 +931,9 @@ export function createNovaBridge(options = {}) {
       data = JSON.parse(buf.toString('utf8'));
     } catch {
       warn(`nova-buddy: mic/${sub} 载荷不是合法 JSON`);
+      if (sub === 'end') {
+        publishTo(id, 'mic_ack', { id: 0, ok: false, missing: 0, err: '结束包解析失败' }, { qos: 1, retain: false });
+      }
       return;
     }
     if (sub === 'start') {
@@ -938,9 +941,15 @@ export function createNovaBridge(options = {}) {
       return;
     }
     const res = micReassembler.end(id, data);
-    if (!res) return;
+    if (!res) {
+      warn('nova-buddy: mic/end 缺少有效 id');
+      publishTo(id, 'mic_ack', { id: 0, ok: false, missing: 0, err: '结束包解析失败' }, { qos: 1, retain: false });
+      return;
+    }
     if (!res.ok) {
-      publishTo(id, 'mic_ack', { id: res.id, ok: false, missing: res.missing }, { qos: 1, retain: false });
+      const ack = { id: res.id, ok: false, missing: res.missing };
+      if (res.err) ack.err = sanitizeOneLine(res.err, 60);
+      publishTo(id, 'mic_ack', ack, { qos: 1, retain: false });
       return;
     }
     publishTo(id, 'mic_ack', { id: res.id, ok: true, file: 'mimo_asr', missing: 0 }, { qos: 1, retain: false });

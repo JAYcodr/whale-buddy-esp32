@@ -222,6 +222,22 @@ export function createMicReassembler(opts = {}) {
       };
     }
 
+    const endBytes = Number(endMeta?.bytes) > 0 ? Number(endMeta.bytes) : 0;
+    const expectedBytes = endBytes || session.expectedBytes || 0;
+    if (
+      (session.expectedBytes > 0 && endBytes > 0 && session.expectedBytes !== endBytes) ||
+      (expectedBytes > 0 && pcm.length !== expectedBytes)
+    ) {
+      return {
+        id: clipId,
+        ok: false,
+        wav: null,
+        missing: 0,
+        err: '音频不完整',
+        meta: session.meta || endMeta,
+      };
+    }
+
     const wav = buildWavBuffer(pcm, session.sr, session.ch, session.bits);
     return {
       id: clipId,
@@ -344,7 +360,12 @@ export async function transcribeMiMoWav(wav, apiKey, opts = {}) {
     if (err?.name === 'AbortError') {
       return { ok: false, err: '识别超时', ms };
     }
-    return { ok: false, err: '识别失败', ms };
+    const detail = String(err?.message || '')
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 60);
+    return { ok: false, err: detail || '识别失败', ms };
   } finally {
     clearTimeout(timer);
   }

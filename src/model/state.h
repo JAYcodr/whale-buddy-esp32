@@ -230,6 +230,7 @@ struct NovaState {
   uint16_t   recClipPermille;
   char       recLastFile[40];
   char       recErr[32];
+  uint32_t   recWaitStartMs;
   uint32_t   recGen;
 
   // Multi-turn voice chat (CHAT page) & Command Block Mode (Session Board)
@@ -263,6 +264,7 @@ void novaStateInit(const char* devId, const char* fwVer);
 void novaStateRead(NovaState* out);
 void novaSafeUtf8Copy(char* dst, size_t cap, const char* src);
 void novaChatAppend(NovaState& st, bool isUser, uint16_t id, const char* text);
+bool novaRecCheckWaitTimeout(NovaState& st, uint32_t nowMs);
 const BoardSession* novaBoardFind(const NovaState& st, const char* id);
 const BoardSession* novaBoardDefaultTarget(const NovaState& st);
 const BoardSession* novaBoardCycleTarget(const NovaState& st, const char* curId);

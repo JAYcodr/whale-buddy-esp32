@@ -103,6 +103,16 @@ describe('MiMo ASR helpers & chunk reassembly', () => {
     now += 61_000;
     reassembler.evictStale();
     assert.equal(reassembler.size(), 0);
+
+    // Byte length mismatch (all chunks arrived, but fewer bytes than declared)
+    reassembler.start('DEV1', { id: 10, sr: 16000, ch: 1, bits: 16, bytes: 64, chunks: 2 });
+    reassembler.chunk('DEV1', makeMicChunkPacket(10, 0, 2, p0));
+    reassembler.chunk('DEV1', makeMicChunkPacket(10, 1, 2, p1));
+    const shortRes = reassembler.end('DEV1', { id: 10, chunks: 2, bytes: 64 });
+    assert.equal(shortRes.ok, false);
+    assert.equal(shortRes.wav, null);
+    assert.equal(shortRes.missing, 0);
+    assert.equal(shortRes.err, '音频不完整');
   });
 
   it('resolves XIAOMI_API_KEY in order: env -> DSH_CREDENTIALS -> aiCfg.tts.apiKey', async () => {
@@ -158,6 +168,16 @@ describe('MiMo ASR helpers & chunk reassembly', () => {
     });
     assert.equal(emptyRes.ok, false);
     assert.equal(emptyRes.err, '未识别到语音');
+
+    const longErr = `ECONNREFUSED 127.0.0.1:443\n${'x'.repeat(80)}`;
+    const netErrRes = await transcribeMiMoWav(wav, 'test-key', {
+      fetch: async () => {
+        throw new Error(longErr);
+      },
+    });
+    assert.equal(netErrRes.ok, false);
+    assert.ok(netErrRes.err.includes('ECONNREFUSED'));
+    assert.ok(netErrRes.err.length <= 60);
   });
 });
 
@@ -282,6 +302,31 @@ describe('Nova Bridge mic ASR + chat_send + chat_tts', () => {
     const ack3 = mockClient.published.find((p) => p.topic === 'nova/D93468/mic_ack' && p.payload.id === 3);
     assert.deepEqual(ack3.payload, { id: 3, ok: false, missing: 1 });
     assert.equal(mockClient.published.some((p) => p.topic === 'nova/D93468/chat' && p.payload.id === 3), false);
+
+    // Clip 4: short byte count -> mic_ack ok:false without calling ASR
+    const asrCallsBeforeShort = asrCalls;
+    mockClient.emit('message', 'nova/D93468/mic/start', Buffer.from(JSON.stringify({ id: 4, chunks: 1, bytes: 64 })));
+    mockClient.emit('message', 'nova/D93468/mic/chunk', makeMicChunkPacket(4, 0, 1, pcmA));
+    mockClient.emit('message', 'nova/D93468/mic/end', Buffer.from(JSON.stringify({ id: 4, chunks: 1, bytes: 64 })));
+    await flushMicrotasks();
+
+    const ack4 = mockClient.published.find((p) => p.topic === 'nova/D93468/mic_ack' && p.payload.id === 4);
+    assert.deepEqual(ack4.payload, { id: 4, ok: false, missing: 0, err: '音频不完整' });
+    assert.equal(asrCalls, asrCallsBeforeShort);
+    assert.equal(mockClient.published.some((p) => p.topic === 'nova/D93468/chat' && p.payload.id === 4), false);
+
+    // Non-JSON mic/end -> still sends mic_ack ok:false instead of silently dropping
+    const ackCountBeforeBadEnd = mockClient.published.filter((p) => p.topic === 'nova/D93468/mic_ack').length;
+    mockClient.emit('message', 'nova/D93468/mic/end', Buffer.from('{bad-json'));
+    await flushMicrotasks();
+    const acksAfterBadEnd = mockClient.published.filter((p) => p.topic === 'nova/D93468/mic_ack');
+    assert.equal(acksAfterBadEnd.length, ackCountBeforeBadEnd + 1);
+    assert.deepEqual(acksAfterBadEnd[acksAfterBadEnd.length - 1].payload, {
+      id: 0,
+      ok: false,
+      missing: 0,
+      err: '结束包解析失败',
+    });
 
     await bridge.stop();
   });

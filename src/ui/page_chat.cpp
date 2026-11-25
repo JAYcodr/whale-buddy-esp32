@@ -657,7 +657,10 @@ void drawDock(NovaCanvas& c, const NovaState& st) {
                          upBuf, ui::COL_ACCENT, ui::COL_CARD);
     ui::drawProgressBar(c, (int16_t)(r.x + 22), (int16_t)(r.y + 32),
                         (int16_t)(r.w - 44), 5, st.recUploadPct, ui::COL_ACCENT, ui::COL_TRACK);
-  } else if (st.recState == 3 || st.recState == 4) {
+  } else if (st.recState == 3) {
+    ui::aaFillRoundRect(c, r.x, r.y, r.w, r.h, 24, ui::COL_CARD, ui::COL_AMBER);
+    ui::drawTextCenteredInRect(c, ui::fontCjk16(), r, "等待回执...", ui::COL_AMBER, ui::COL_CARD);
+  } else if (st.recState == 4) {
     ui::aaFillRoundRect(c, r.x, r.y, r.w, r.h, 24, ui::COL_CARD, ui::COL_AMBER);
     ui::drawTextCenteredInRect(c, ui::fontCjk16(), r, "识别中...", ui::COL_AMBER, ui::COL_CARD);
   } else if (st.chatDraftActive) {
@@ -750,8 +753,7 @@ bool pageChatIsHoldBtn(int16_t x, int16_t y, const NovaState& st) {
 }
 
 bool pageChatCanStartHold(const NovaState& st) {
-  return !st.chatDraftActive && st.recState != 1 && st.recState != 2 &&
-         st.recState != 3 && st.recState != 4;
+  return !st.chatDraftActive && st.recState != 1 && st.recState != 2;
 }
 
 void pageChatDraw(NovaCanvas& c, const NovaState& st) {

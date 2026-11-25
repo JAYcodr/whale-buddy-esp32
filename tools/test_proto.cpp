@@ -289,28 +289,79 @@ int main() {
     CHECK(protoBuildPowerEvent(pwrBuf, 96, maxEv) == 0);
   }
 
-  // ── 6. 录音回传确认载荷（mic_ack）────────────────────────────────
+  // ── 6. 录音回传确认载荷（mic_ack）与编号守卫 ─────────────────────
   {
     novaStateInit("testdev", "0.5.0");
+    // 未开始录音（recClipId == 0）时，旧回执直接丢弃。
     const char* okAck = "{\"id\":101,\"ok\":true,\"file\":\"rec_001_24dB_3.4s.wav\",\"missing\":0}";
+    CHECK(!protoApplyMessage("mic_ack", okAck, std::strlen(okAck), 2900));
+
+    novaStateWithLock([](NovaState& s) {
+      s.recState = 3;
+      s.recClipId = 101;
+      s.recWaitStartMs = 2950;
+    });
     CHECK(protoApplyMessage("mic_ack", okAck, std::strlen(okAck), 3000));
     NovaState st;
     novaStateRead(&st);
     CHECK(st.recState == 4);
+    CHECK(st.recWaitStartMs == 3000);
     CHECK(st.recSavedCount == 1);
     CHECK(std::strcmp(st.recLastFile, "rec_001_24dB_3.4s.wav") == 0);
     CHECK(st.recErr[0] == '\0');
 
     // Duplicate clipId does not double-count recSavedCount.
-    CHECK(protoApplyMessage("mic_ack", okAck, std::strlen(okAck), 3100));
+    CHECK(!protoApplyMessage("mic_ack", okAck, std::strlen(okAck), 3100));
     novaStateRead(&st);
     CHECK(st.recSavedCount == 1);
 
+    // 编号不一致的旧回执不得覆盖当前状态。
+    const char* staleAck = "{\"id\":99,\"ok\":false,\"missing\":1}";
+    CHECK(!protoApplyMessage("mic_ack", staleAck, std::strlen(staleAck), 3150));
+    novaStateRead(&st);
+    CHECK(st.recState == 4);
+
+    novaStateWithLock([](NovaState& s) {
+      s.recState = 3;
+      s.recClipId = 102;
+    });
     const char* badAck = "{\"id\":102,\"ok\":false,\"missing\":3}";
     CHECK(protoApplyMessage("mic_ack", badAck, std::strlen(badAck), 3200));
     novaStateRead(&st);
     CHECK(st.recState == 5);
     CHECK(std::strstr(st.recErr, "3") != nullptr);
+
+    // 宿主解析结束包失败时发出 id=0, ok=false：等待回执态应收下错误态。
+    novaStateWithLock([](NovaState& s) {
+      s.recState = 3;
+      s.recClipId = 103;
+      s.recErr[0] = '\0';
+    });
+    const char* parseFailAck = "{\"id\":0,\"ok\":false,\"missing\":0,\"err\":\"结束包解析失败\"}";
+    CHECK(protoApplyMessage("mic_ack", parseFailAck, std::strlen(parseFailAck), 3300));
+    novaStateRead(&st);
+    CHECK(st.recState == 5);
+    CHECK(std::strcmp(st.recErr, "结束包解析失败") == 0);
+
+    // 超时兜底：状态 3 / 4 超过 10s 落到错误态 5。
+    novaStateWithLock([](NovaState& s) {
+      s.recState = 3;
+      s.recClipId = 104;
+      s.recWaitStartMs = 1000;
+      s.recErr[0] = '\0';
+      CHECK(!novaRecCheckWaitTimeout(s, 10999));
+      CHECK(s.recState == 3);
+      CHECK(novaRecCheckWaitTimeout(s, 11000));
+      CHECK(s.recState == 5);
+      CHECK(std::strcmp(s.recErr, "回执超时") == 0);
+
+      s.recState = 4;
+      s.recWaitStartMs = 2000;
+      s.recErr[0] = '\0';
+      CHECK(novaRecCheckWaitTimeout(s, 12000));
+      CHECK(s.recState == 5);
+      CHECK(std::strcmp(s.recErr, "识别超时") == 0);
+    });
   }
 
   // ── 7. 多轮对话协议（chat asr/reply + chat_send/chat_tts 构造）───
@@ -322,11 +373,18 @@ int main() {
     CHECK(st.nChatMsgs == 0);
     CHECK(!st.chatDraftActive);
 
-    // 7a. ASR 成功
+    // 7a. ASR 成功（先验证未录音/旧编号会被丢弃）
     const char* asrOk = "{\"t\":\"asr\",\"id\":42,\"ok\":true,\"text\":\"查一下当前状态\",\"ms\":610}";
+    CHECK(!protoApplyMessage("chat", asrOk, std::strlen(asrOk), 3900));
+    novaStateWithLock([](NovaState& s) {
+      s.recState = 4;
+      s.recClipId = 42;
+      s.recWaitStartMs = 3950;
+    });
     CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 4000));
     novaStateRead(&st);
     CHECK(st.recState == 0);
+    CHECK(st.recWaitStartMs == 0);
     CHECK(st.chatDraftActive);
     CHECK(st.chatDraftId == 42);
     CHECK(st.chatDraftStartMs == 4000);
@@ -335,7 +393,24 @@ int main() {
     CHECK(st.recGen == 1);
     CHECK(st.chatGen == 1);
 
+    // 7a-2. 迟到的旧 ASR 不得覆盖正在录的新句子或已有草稿
+    novaStateWithLock([](NovaState& s) {
+      s.chatDraftActive = false;
+      s.chatDraftText[0] = '\0';
+      s.recState = 1;
+      s.recClipId = 45;
+    });
+    CHECK(!protoApplyMessage("chat", asrOk, std::strlen(asrOk), 4050));
+    novaStateRead(&st);
+    CHECK(st.recState == 1);
+    CHECK(!st.chatDraftActive);
+
     // 7b. ASR 空文本 / 失败
+    novaStateWithLock([](NovaState& s) {
+      s.recState = 4;
+      s.recClipId = 43;
+      s.chatDraftActive = false;
+    });
     const char* asrEmpty = "{\"t\":\"asr\",\"id\":43,\"ok\":true,\"text\":\"   \"}";
     CHECK(protoApplyMessage("chat", asrEmpty, std::strlen(asrEmpty), 4100));
     novaStateRead(&st);
@@ -343,6 +418,10 @@ int main() {
     CHECK(!st.chatDraftActive);
     CHECK(std::strcmp(st.recErr, "未识别到语音") == 0);
 
+    novaStateWithLock([](NovaState& s) {
+      s.recState = 4;
+      s.recClipId = 44;
+    });
     const char* asrFail = "{\"t\":\"asr\",\"id\":44,\"ok\":false,\"err\":\"识别超时\"}";
     CHECK(protoApplyMessage("chat", asrFail, std::strlen(asrFail), 4200));
     novaStateRead(&st);
@@ -351,6 +430,7 @@ int main() {
 
     // 7c. Reply 成功 + 队列左移（超过 MAX_CHAT_MSGS = 8）
     novaStateWithLock([](NovaState& s) {
+      s.recState = 0;
       s.chatWaitingReply = true;
       for (int i = 0; i < MAX_CHAT_MSGS; i++) {
         char msg[24];
@@ -424,6 +504,10 @@ int main() {
     CHECK(st.lastSayAgeSec == 120);
 
     // 未手动选目标时，ASR 成功应跳过 WAIT，优先锁定 IDLE 会话 (s3)
+    novaStateWithLock([](NovaState& s) {
+      s.recState = 4;
+      s.recClipId = 7;
+    });
     const char* asrOk = "{\"t\":\"asr\",\"id\":7,\"ok\":true,\"text\":\"继续弄\"}";
     CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 5100));
     novaStateRead(&st);
@@ -434,6 +518,8 @@ int main() {
     novaStateWithLock([](NovaState& s) {
       std::strcpy(s.boardTargetId, "s1");
       s.chatDraftActive = false;
+      s.recState = 4;
+      s.recClipId = 7;
     });
     CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 5200));
     novaStateRead(&st);
@@ -443,6 +529,8 @@ int main() {
     novaStateWithLock([](NovaState& s) {
       std::strcpy(s.boardTargetId, "s2");
       s.chatDraftActive = false;
+      s.recState = 4;
+      s.recClipId = 7;
     });
     CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 5300));
     novaStateRead(&st);

@@ -3,6 +3,7 @@
 #include "log.h"
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <Wire.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
@@ -429,11 +430,25 @@ static void beepTask(void*) {
   }
 }
 
+static uint16_t loadAndBumpBootEpoch() {
+  Preferences prefs;
+  uint8_t seq = 1;
+  if (prefs.begin("nova_rec", false)) {
+    seq = (uint8_t)((prefs.getUChar("boot_seq", 0) + 1u) & 0xFFu);
+    if (seq == 0) seq = 1;  // 0 保留作无效/未录音编号
+    prefs.putUChar("boot_seq", seq);
+    prefs.end();
+  }
+  return (uint16_t)seq << 8;
+}
+
 bool hwAudioInit() {
 #if BOARD_HAS_PA_CTRL
   pinMode(PIN_PA_CTRL, OUTPUT);
   digitalWrite(PIN_PA_CTRL, LOW);  // Keep speaker amp powered down until audio plays
 #endif
+
+  s_nextClipId = loadAndBumpBootEpoch();
 
   if (!i2sInit())          { Serial.println("hwAudio: I2S init failed");   return false; }
   if (!es8311CodecInit())  { Serial.println("hwAudio: ES8311 init failed"); return false; }
@@ -499,7 +514,10 @@ bool hwAudioRecStart(uint8_t gainDb) {
   if (!busy) {
     s_recSnap.recording    = true;
     s_recSnap.clipReady    = false;
-    s_recSnap.clipId       = ++s_nextClipId;
+    uint16_t nextId = (uint16_t)(s_nextClipId + 1u);
+    if (nextId == 0) nextId = 1;
+    s_nextClipId           = nextId;
+    s_recSnap.clipId       = nextId;
     s_recSnap.gainDb       = gainDb;
     s_recSnap.liveLevel    = 0;
     s_recSnap.durMs        = 0;

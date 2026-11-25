@@ -561,6 +561,7 @@ void uiTaskFn(void*) {
         s.recClipPermille = recSnap.clipPermille;
         s.recState = 2;  // UPLOADING
         s.recUploadPct = 0;
+        s.recWaitStartMs = 0;
         s.recErr[0] = '\0';
         s.recGen++;
       });
@@ -635,10 +636,20 @@ void uiTaskFn(void*) {
     };
 
     const bool chatBusy = (st.recState == 1) || (st.recState == 2) ||
-                          (st.recState == 3) || st.chatDraftActive ||
-                          st.chatWaitingReply;
+                          (st.recState == 3) || (st.recState == 4) ||
+                          st.chatDraftActive || st.chatWaitingReply;
     if (chatBusy) {
       lastInteractMs = nowMs;
+    }
+    if (st.recState == 3 || st.recState == 4) {
+      bool timedOut = false;
+      novaStateWithLock([&](NovaState& s) {
+        timedOut = novaRecCheckWaitTimeout(s, nowMs);
+      });
+      if (timedOut) {
+        novaStateRead(&st);
+        needFull = true;
+      }
     }
     if (st.boardToast[0] && nowMs >= st.boardToastStartMs &&
         (uint32_t)(nowMs - st.boardToastStartMs) >= 1500u) {
@@ -1063,8 +1074,11 @@ void uiTaskFn(void*) {
           } else {
             uint8_t g = st.recGainDb ? st.recGainDb : 24;
             if (hwAudioRecStart(g)) {
+              const HwRecSnapshot startedRec = hwAudioRecSnapshot();
               novaStateWithLock([&](NovaState& s) {
                 s.recState = 1;
+                s.recClipId = startedRec.clipId;
+                s.recWaitStartMs = 0;
                 s.recLevel = 0;
                 s.recDurMs = 0;
                 s.recErr[0] = '\0';
@@ -1300,8 +1314,11 @@ void uiTaskFn(void*) {
             uint8_t g = settingsGet().micGainDb ? settingsGet().micGainDb : 24;
             if (hwAudioRecStart(g)) {
               chatHoldActive = true;
+              const HwRecSnapshot startedRec = hwAudioRecSnapshot();
               novaStateWithLock([&](NovaState& s) {
                 s.recState = 1;
+                s.recClipId = startedRec.clipId;
+                s.recWaitStartMs = 0;
                 s.recLevel = 0;
                 s.recDurMs = 0;
                 s.recGainDb = g;

@@ -254,10 +254,12 @@ void runPendingMicUpload() {
   novaStateWithLock([&](NovaState& st) {
     if (!endOk) {
       st.recState = 5;
+      st.recWaitStartMs = 0;
       snprintf(st.recErr, sizeof(st.recErr), "结束包失败");
     } else if (st.recState == 2) {
       st.recState = 3;  // SENT_WAIT_ACK
       st.recUploadPct = 100;
+      st.recWaitStartMs = millis();
     }
     st.recGen++;
   });
@@ -321,8 +323,7 @@ void netTaskFn(void*) {
   }
 
   s_mqtt.onMessage(onMqttMessage);
-  s_mqtt.setKeepAlive(30);
-  s_mqtt.setTimeout(1000);
+  s_mqtt.setOptions(30, false, 1000);
 
   uint32_t retryBackoffMs = 2000;
   uint32_t nextConnectAttemptMs = 0;

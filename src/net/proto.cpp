@@ -1,4 +1,5 @@
 #include "net/proto.h"
+#include "log.h"
 #include "model/aod_policy.h"
 #include "model/battery_model.h"
 #include <ArduinoJson.h>
@@ -329,29 +330,52 @@ bool applyTtsChunk(JsonDocument& doc) {
 #endif
 }
 
-bool applyMicAck(JsonDocument& doc) {
-  static uint16_t s_lastAckId = 0;
+bool applyMicAck(JsonDocument& doc, uint32_t nowMs) {
   uint16_t id = (uint16_t)(doc["id"] | 0u);
   bool ok = doc["ok"] | false;
   const char* file = doc["file"] | "";
   uint16_t missing = (uint16_t)(doc["missing"] | 0u);
+  bool applied = false;
   novaStateWithLock([&](NovaState& st) {
+    if (st.recClipId == 0) {
+      NOVA_LOG(W, "proto", "drop mic_ack id=%u (no active clip)\n", (unsigned)id);
+      return;
+    }
+    if (id == 0) {
+      if (ok) {
+        NOVA_LOG(W, "proto", "drop mic_ack id=0 ok=true cur=%u\n", (unsigned)st.recClipId);
+        return;
+      }
+      if (st.recState != 2 && st.recState != 3) {
+        NOVA_LOG(W, "proto", "drop mic_ack id=0 ok=false state=%u\n", (unsigned)st.recState);
+        return;
+      }
+    } else if (id != st.recClipId) {
+      NOVA_LOG(W, "proto", "drop stale mic_ack id=%u cur=%u\n", (unsigned)id, (unsigned)st.recClipId);
+      return;
+    } else if (st.recState != 2 && st.recState != 3) {
+      NOVA_LOG(W, "proto", "drop duplicate/late mic_ack id=%u state=%u\n",
+               (unsigned)id, (unsigned)st.recState);
+      return;
+    }
+
+    applied = true;
     if (ok) {
       st.recState = 4;  // SAVED
-      if (id == 0 || id != s_lastAckId) {
-        if (id != 0) s_lastAckId = id;
-        st.recSavedCount++;
-      }
+      st.recWaitStartMs = nowMs;
+      st.recSavedCount++;
       if (file[0]) safeStrCopy(st.recLastFile, sizeof(st.recLastFile), file);
       st.recErr[0] = '\0';
     } else {
       st.recState = 5;  // ERR
+      st.recWaitStartMs = 0;
       if (missing > 0) snprintf(st.recErr, sizeof(st.recErr), "丢包 %u 块", (unsigned)missing);
       else safeStrCopy(st.recErr, sizeof(st.recErr), doc["err"] | "保存失败");
     }
     st.recGen++;
+    st.lastMqttRxMs = nowMs;
   });
-  return true;
+  return applied;
 }
 
 BoardSessState parseBoardState(const char* s) {
@@ -437,7 +461,20 @@ bool applyChat(JsonDocument& doc, uint32_t nowMs) {
   const char* err = doc["err"] | "";
 
   if (strcmp(t, "asr") == 0) {
+    bool applied = false;
     novaStateWithLock([&](NovaState& st) {
+      if (st.recClipId == 0 || id == 0 || id != st.recClipId) {
+        NOVA_LOG(W, "proto", "drop stale asr id=%u cur=%u\n", (unsigned)id, (unsigned)st.recClipId);
+        return;
+      }
+      if (st.recState == 0 || st.recState == 1 || st.chatDraftActive) {
+        NOVA_LOG(W, "proto", "drop unexpected asr id=%u state=%u draft=%u\n",
+                 (unsigned)id, (unsigned)st.recState, st.chatDraftActive ? 1u : 0u);
+        return;
+      }
+
+      applied = true;
+      st.recWaitStartMs = 0;
       if (ok && hasNonWhitespace(text)) {
         st.recState = 0;
         st.chatDraftActive = true;
@@ -468,7 +505,7 @@ bool applyChat(JsonDocument& doc, uint32_t nowMs) {
       st.boardGen++;
       st.lastMqttRxMs = nowMs;
     });
-    return true;
+    return applied;
   }
 
   if (strcmp(t, "delivery") == 0) {
@@ -536,9 +573,11 @@ bool applyChat(JsonDocument& doc, uint32_t nowMs) {
         st.recErr[0] = '\0';
         if (st.recState == 5) st.recState = 0;
       } else {
-        st.recState = 5;
         const char* failTxt = (err && err[0]) ? err : "回复失败";
-        safeStrCopy(st.recErr, sizeof(st.recErr), failTxt);
+        if (st.recState == 0 || st.recState == 5) {
+          st.recState = 5;
+          safeStrCopy(st.recErr, sizeof(st.recErr), failTxt);
+        }
         st.chatDelivery.kind = ChatDelivKind::FAIL;
         safeStrCopy(st.chatDelivery.text, sizeof(st.chatDelivery.text), failTxt);
       }
@@ -578,7 +617,7 @@ bool protoApplyMessage(const char* suffix, const char* payload, size_t len, uint
   if (strcmp(suffix, "time") == 0)         return applyTime(doc);
   if (strcmp(suffix, "choreo") == 0)       return applyChoreo(doc, nowMs);
   if (strcmp(suffix, "tts") == 0)          return applyTtsChunk(doc);
-  if (strcmp(suffix, "mic_ack") == 0)      return applyMicAck(doc);
+  if (strcmp(suffix, "mic_ack") == 0)      return applyMicAck(doc, nowMs);
   if (strcmp(suffix, "chat") == 0)         return applyChat(doc, nowMs);
   return false;
 }

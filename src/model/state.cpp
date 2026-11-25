@@ -88,6 +88,17 @@ void novaChatAppend(NovaState& st, bool isUser, uint16_t id, const char* text) {
   novaSafeUtf8Copy(m.text, sizeof(m.text), text);
 }
 
+bool novaRecCheckWaitTimeout(NovaState& st, uint32_t nowMs) {
+  if ((st.recState != 3 && st.recState != 4) || st.recWaitStartMs == 0) return false;
+  if (nowMs < st.recWaitStartMs || (uint32_t)(nowMs - st.recWaitStartMs) < 10000u) return false;
+  const bool waitAck = (st.recState == 3);
+  st.recState = 5;
+  st.recWaitStartMs = 0;
+  snprintf(st.recErr, sizeof(st.recErr), "%s", waitAck ? "回执超时" : "识别超时");
+  st.recGen++;
+  return true;
+}
+
 const BoardSession* novaBoardFind(const NovaState& st, const char* id) {
   if (!id || !id[0]) return nullptr;
   const uint8_t n = (st.nBoardSessions <= MAX_BOARD_SESSIONS)
