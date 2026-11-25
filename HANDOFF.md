@@ -1,6 +1,6 @@
 # Nova Buddy — 交接
 
-仓库：`/Volumes/hamelin-ssd/gemini工作区/nova-buddy`（GitHub `JAYcodr/whale-buddy-esp32`，分支 `feature/v060-pet-expressiveness`）
+仓库：`/Volumes/hamelin-ssd/gemini工作区/nova-buddy`（GitHub `JAYcodr/whale-buddy-esp32`，分支 `main`）
 插件：`host-plugin/`（`dsh-plugin-nova-buddy` v0.3.0），通过 symlink 装入 `~/.dsh/profiles/desktop`
 环境：DeepSeek Harness `0.2.2-rc.5`，profile `desktop`；Node v25.9.0
 设备：Waveshare ESP32-S3 Touch AMOLED 1.8（SH8601 + FT3168），deviceId `D93468`，IP 192.168.31.219
@@ -287,4 +287,4 @@ bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload
 
 ## Git
 
-分支 `feature/v060-pet-expressiveness`，包含 0.6.0 的 24 动作表现力升级（16MB 分区、资产与协议底座、舞台交互与状态机联动）。验证通过后合进 `main`。
+主分支 `main`，已合入 0.6.0 的 24 动作表现力升级（16MB 分区、资产与协议底座、舞台交互与状态机联动）。

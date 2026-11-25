@@ -1810,8 +1810,10 @@ void uiTaskFn(void*) {
               const QuotaCard& card = st.cards[i];
               if (strcmp(card.kind, "bal") == 0 && card.val < 15.0) {
                 quotaWorry = true;
-              } else if (strcmp(card.kind, "win") == 0 && card.nBars > 0 && card.bars[0].pct >= 80) {
-                quotaWorry = true;
+              } else if (strcmp(card.kind, "win") == 0) {
+                for (uint8_t b = 0; b < card.nBars && b < 2; b++) {
+                  if (card.bars[b].pct >= 80) quotaWorry = true;
+                }
               }
             }
             pool[nPool++] = NvaAnimKey::HUM;

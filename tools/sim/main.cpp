@@ -853,6 +853,24 @@ int main(int argc, char** argv) {
       return 1;
     }
 
+    // 睡眠 / 哈欠期间新到或进行中的 LLM 剧本不得拉起梦游走动
+    NovaSettings choreoCfg;
+    st.nChoreoSteps = 1;
+    st.choreoGen = 99;
+    st.choreoSteps[0].x = 268;
+    st.choreoSteps[0].run = false;
+    st.choreoSteps[0].anim = (uint8_t)NvaAnimKey::HUM;
+    st.choreoSteps[0].durMs = 12000;
+    std::strcpy(st.choreoSteps[0].say, "摸鱼哼歌~");
+    nvaSetState(NvaAnimKey::SLEEP, false, true);
+    st.nowMs = 110000u;
+    pageHomeDrawStage(canvas, st, choreoCfg, 100, nullptr, nullptr, nullptr, nullptr);
+    if (failIf(!pageHomeIsWalking() && pageHomeChoreoAnim() == -1,
+               "SLEEP blocks choreo sleepwalking")) {
+      std::fclose(manifest);
+      return 1;
+    }
+
     // 空地点击触发快速小跑
     UiAction runAct = pageHomeTap(92, 200, st);
     if (failIf(runAct.kind == UiAction::PET_TAP && runAct.value == 1 &&

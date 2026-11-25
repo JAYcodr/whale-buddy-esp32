@@ -5,7 +5,7 @@
 #include "model/aod_policy.h"
 #include "model/battery_model.h"
 
-constexpr const char* NOVA_FW_VER = "0.5.0";
+constexpr const char* NOVA_FW_VER = "0.6.0";
 
 enum class HomePageKind : uint8_t {
   PET   = 0,

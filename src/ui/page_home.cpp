@@ -290,6 +290,16 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
   if (dtMs > 120u) dtMs = 120u;
   s_prevRoamMs = st.nowMs;
 
+  const NvaAnimKey active = nvaActiveState();
+  const bool resting = (s_demoAnim == (int)NvaAnimKey::SLEEP ||
+                        s_demoAnim == (int)NvaAnimKey::YAWN ||
+                        active == NvaAnimKey::SLEEP ||
+                        active == NvaAnimKey::YAWN);
+  if (resting && !s_userTargetLock) {
+    s_targetX = s_petX;
+    s_runSpeed = false;
+  }
+
   float diff = s_targetX - s_petX;
   float adiff = diff < 0 ? -diff : diff;
   if (adiff > 6.0f) s_facingRight = (diff > 0.0f);
@@ -327,8 +337,10 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
   }
 
   // Execute LLM choreography script when enabled and in autonomous idle/patrol mode.
+  // 犯困/熟睡期间（75s..AOD，或关闭 AOD 后的长静置）必须暂停剧本推步，
+  // 否则下一步 step.x / step.say 会把熟睡中的诺瓦拉起来“梦游螃蟹步”并顶着 Zzz 弹元气台词。
   if (cfg.choreoEnabled && st.nChoreoSteps > 0 && s_demoAnim < 0 && st.run == 0 && st.wait == 0 &&
-      !st.approvalActive && !s_userTargetLock) {
+      !st.approvalActive && !s_userTargetLock && !resting) {
     if (!s_choreoStepInit) {
       if (s_choreoIdx >= st.nChoreoSteps) s_choreoIdx = 0;
       const ChoreoStep& step = st.choreoSteps[s_choreoIdx];
@@ -370,9 +382,7 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
 
   // Built-in local fallback patrol when no LLM script is active.
   if (s_petX == s_targetX && (int32_t)(st.nowMs - s_nextRoamMs) >= 0 && st.wait == 0 && !st.approvalActive) {
-    const NvaAnimKey active = nvaActiveState();
-    if (s_demoAnim == (int)NvaAnimKey::SLEEP || s_demoAnim == (int)NvaAnimKey::YAWN ||
-        active == NvaAnimKey::SLEEP || active == NvaAnimKey::YAWN) {
+    if (resting) {
       s_nextRoamMs = st.nowMs + 12000u;
       return;
     }
