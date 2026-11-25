@@ -1,6 +1,6 @@
 # Nova Buddy — 架构参考（AI 改动入口）
 
-> **同步**：2026-11-25 · HEAD `44503c1` · 固件 `0.5.0` · 插件 `0.3.0`
+> **同步**：2026-11-26 · 分支 `feature/v060-pet-expressiveness` · 固件 `0.6.0` · 插件 `0.3.0`
 > **读者**：AI 与改动者。只回答三件事：**代码在哪、契约是什么、改一处会碰坏什么**。需求与取舍在 [NOVA-BUDDY-PLAN.md](NOVA-BUDDY-PLAN.md)。
 > **维护**：契约变了先改 §3 再改代码；新增模块/任务/主题同步 §2/§7/§8；图里不许出现代码已删除的名字。
 > **图**：[docs/diagrams/](diagrams/) 是下列 mermaid 的 PNG 导出；两者冲突以本文件为准。
@@ -14,7 +14,7 @@
 |---|---|
 | 形态 | 桌面副屏 + 桌面宠物：Mac 侧算事实（凭据、会话、出网），ESP32 侧管感觉（像素、动画、声音） |
 | 设备 | Waveshare ESP32-S3-Touch-AMOLED-1.8：368×448 SH8601 QSPI、FT3168 触摸、AXP2101 电源、PCF85063 RTC、QMI8658 IMU、ES8311 音频 |
-| 固件 | Arduino / PlatformIO，`env:waveshare-esp32s3-touch-amoled-1-8`；全局 `-O2`；8MB 无 OTA；`.nva` 动画在 LittleFS |
+| 固件 | Arduino / PlatformIO，`env:waveshare-esp32s3-touch-amoled-1-8`；全局 `-O2`；1.8" 16MB 无 OTA（`no_ota_16mb.csv`，spiffs 12MB；其余板仍 8MB）；`.nva` 动画在 LittleFS |
 | 宿主 | DSH 插件 `host-plugin/`：`dsh-plugin-nova-buddy@0.3.0`，ESM，运行依赖只有 `mqtt` |
 | 链路 | WiFi + MQTT（局域网匿名 broker）；主题 `nova/<deviceId>/…`；QoS1；retain 按主题；LWT 发 `hello {online:false}` |
 | 七页 | HOME 宠物 / QUOTA 额度 / RANK 榜单 / DETAIL 心跳 / SETTINGS 设置 / TOKENS 鲸鱼 / CHAT 语音看板 |
@@ -31,7 +31,7 @@
 | `host-plugin/lib/asr.js` | mic 分片重组 + MiMo ASR | 60s 过期淘汰 |
 | `host-plugin/lib/power.js` | 电源事件日志、续航/充电估算 | 只写 `~/.dsh/nova-buddy/` |
 | `host-plugin/bin/nova-buddy.js` | CLI：`auth opendesign`、`test-push`、`test-choreo`、`test-tts`、`power` | — |
-| `tools/sim/` | Mac 模拟器：同一套 `ui/` 源码，`-DNOVA_HOST_SIM`，输出 PNG | 像素基线 47 张 |
+| `tools/sim/` | Mac 模拟器：同一套 `ui/` 源码，`-DNOVA_HOST_SIM`，输出 PNG | 像素基线 51 项（49 页 + 2 项局部重绘） |
 | `tools/` | `check_all.sh` 总回归、`power_probe.mjs`、`asr_probe.mjs`、`rec_receiver.mjs`、`usb_shot.py`、`verify_state_payload.mjs`、`pio.sh` | 见 §9 |
 | `assets/pets/nova/` → `data/pets/nova/` | 24 个 `.nva` 动画包（10.4MB，spiffs 分区 12MB）；`tools/prep_data.sh` 打成 LittleFS 镜像 | 改动画名要同步 `nva.h` 枚举与 `page_home` 用法 |
 | `deploy/mosquitto/` | broker 的 docker-compose 与配置 | — |
@@ -185,7 +185,7 @@ flowchart TD
     G --> H["排空 InputEvent<br/>TOUCH / KEY1 / AXP 手势"]
     H --> I["nav.onTap / onSwipe → UiAction"]
     I --> J["handleAction<br/>切页 / 设置 / 审批 / chat / 宠物点击"]
-    J --> K["动画状态机<br/>审批›demo›click›oneShot›run›walk›sleep›choreo›bgCycle"]
+    J --> K["动画状态机<br/>审批›demo(0..23)›click›oneShot›run(工具感知)›walk(蟹步/小跑)›yawn/sleep›choreo›bgCycle"]
     K --> L["nvaTick → 通知 task_decode"]
     L --> M["比较各 gen / 时间 / 电量 / burnStep → needFull?"]
     M -->|是| N["nav.draw 全屏 → hwDisplayPush"]
@@ -586,7 +586,7 @@ flowchart TD
 
 | 目的 | 命令 |
 |---|---|
-| **总回归**（改代码后必跑） | `bash tools/check_all.sh` —— proto / battery / AOD / settings 单测 + 状态载荷 + 录音自检 + 宿主 `node --test`（46）+ 47 张像素基线 + 裸 `368` 检查 |
+| **总回归**（改代码后必跑） | `bash tools/check_all.sh` —— proto / battery / AOD / settings 单测 + 状态载荷 + 录音自检 + 宿主 `node --test`（57）+ 51 项像素基线 + 裸 `368` 检查 |
 | 只跑像素基线 | `bash tools/sim/check.sh`；出全部页面 PNG：`bash tools/sim/run.sh` → `tools/sim/out/` |
 | 协议载荷 | `node tools/verify_state_payload.mjs` |
 | 宿主单测 | `cd host-plugin && npm test` |

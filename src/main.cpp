@@ -300,6 +300,7 @@ void uiTaskFn(void*) {
   bool     key1LongFired = false;
   uint32_t lastInteractMs = millis();
   bool     clickAnimActive = false;
+  NvaAnimKey clickAnimKey = NvaAnimKey::CLICK;
   uint32_t clickSafetyEndMs = 0;
   uint32_t lastTapVoiceMs = 0;
   bool     oneShotActive = false;
@@ -307,6 +308,7 @@ void uiTaskFn(void*) {
   NvaAnimKey oneShotKey = NvaAnimKey::SUCCESS;
   NvaAnimKey bgAutoKey = NvaAnimKey::IDLE;
   NvaAnimKey bgLastNonIdle = NvaAnimKey::QUOTA;
+  uint8_t    bgPoolCursor = 0;
   uint32_t   bgNextSwitchCycle = 2;
 
   uint32_t lastApGen = 0;
@@ -348,7 +350,7 @@ void uiTaskFn(void*) {
   bool     lastDetailTempCap = false;
   uint32_t lastDetailDrawMs = 0;
   uint8_t  lastBurnStep = 0;
-  bool     lastSleepState = false;
+  uint8_t  lastRestPose = 0;
   uint32_t curCpuMhz = getCpuFrequencyMhz();
 
   uint32_t frame = 0;
@@ -975,9 +977,15 @@ void uiTaskFn(void*) {
             static constexpr const char* kTapVoices[3] = {
               "/audio/tap0.adp", "/audio/tap1.adp", "/audio/tap2.adp"
             };
+            const NvaAnimKey tapKey =
+                (act.extra >= 0 && act.extra < (int)NvaAnimKey::COUNT)
+                    ? (NvaAnimKey)act.extra
+                    : NvaAnimKey::CLICK;
+            clickAnimKey = tapKey;
             clickAnimActive = true;
+            oneShotActive = false;
             clickSafetyEndMs = nowMs + 13500u;
-            nvaSetState(NvaAnimKey::CLICK, true, true);
+            if (!aodActive) nvaSetState(clickAnimKey, true, true);
             if ((nowMs - lastTapVoiceMs) >= 800u) {
               lastTapVoiceMs = nowMs;
               if (!sfxSpeakFile(kTapVoices[tapVoiceIdx % 3], cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
@@ -986,6 +994,8 @@ void uiTaskFn(void*) {
               tapVoiceIdx++;
             }
           } else if (act.value == 1) {
+            clickAnimActive = false;
+            oneShotActive = false;
             if ((nowMs - lastTapVoiceMs) >= 800u) {
               lastTapVoiceMs = nowMs;
               if (!sfxSpeakFile("/audio/run.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
@@ -1619,7 +1629,7 @@ void uiTaskFn(void*) {
     hwPowerSetScreenOn(!(screenOff || dimmedForNap));
 
     // Detect task completion to celebrate cleanly or show error expression.
-    if (lastRunCount > 0 && st.run == 0 && !st.approvalActive) {
+    if (lastRunCount > 0 && st.run == 0 && !st.approvalActive && !aodActive) {
       if (st.turnError) {
         oneShotKey = NvaAnimKey::ERROR;
         oneShotSafetyEndMs = nowMs + 8500u;
@@ -1638,7 +1648,9 @@ void uiTaskFn(void*) {
     uint32_t quotaBucket = (nav.currentPage() == UiPage::QUOTA && st.quotaRxMs > 0 && nowMs > st.quotaRxMs)
                              ? ((nowMs - st.quotaRxMs) / 15000u)
                              : 0u;
-    bool curSleepState = (nvaActiveState() == NvaAnimKey::SLEEP);
+    const NvaAnimKey curAnim = nvaActiveState();
+    const uint8_t curRestPose = (curAnim == NvaAnimKey::SLEEP) ? 2u
+                              : ((curAnim == NvaAnimKey::YAWN) ? 1u : 0u);
 
     // Battery percentage is smoothed and slewed by the estimator, so 1% moves
     // take >=10-25s; keep a 10s rate limit unless crossing color thresholds or
@@ -1668,7 +1680,7 @@ void uiTaskFn(void*) {
         battChanged || powerStateChanged || detailPowerChanged ||
         (!aodActive && st.lastMqttRxMs != lastMqttRxSeen) || isStale != lastStaleFlag ||
         staleBucket != lastStaleShownSec || quotaBucket != lastQuotaBucket ||
-        burnStep != lastBurnStep || curSleepState != lastSleepState) {
+        burnStep != lastBurnStep || curRestPose != lastRestPose) {
       lastStateGen      = st.stateGen;
       lastQuotaGen      = st.quotaGen;
       lastRankGen       = st.rankGen;
@@ -1694,7 +1706,7 @@ void uiTaskFn(void*) {
       lastDetailTempCap = st.chargeTempCapped;
       lastDetailDrawMs  = nowMs;
       lastBurnStep      = burnStep;
-      lastSleepState    = curSleepState;
+      lastRestPose      = curRestPose;
       needFull          = true;
     }
     if (!aodActive && !screenOff && !dimmedForNap && !st.approvalActive &&
@@ -1742,26 +1754,26 @@ void uiTaskFn(void*) {
       needFull = true;
     }
 
-    // Drive all 9 Nova animation states cleanly: play one-shots & choreo steps to full cycle end
+    // Drive all 24 Nova animation states cleanly: play one-shots & choreo steps to full cycle end
     // (inspired by dsh-pet AnimationFlow & aipets Director / ClipSelector).
     int demoIdx = pageHomeDemoOverride();
     int choreoAnim = pageHomeChoreoAnim();
-    if (!aodActive && (st.approvalActive || st.wait > 0)) {
+    if (aodActive) {
+      // AOD 期间宠物定格：姿势由上面的 aodPose 逻辑统一设置，严禁在主状态机调 nvaSetState。
+    } else if (st.approvalActive || st.wait > 0) {
       clickAnimActive = false;
       oneShotActive = false;
       nvaSetState(NvaAnimKey::WAITING, false);
-    } else if (aodActive) {
-      // AOD 期间宠物定格：姿势由上面的 aodPose 逻辑统一设置，这里什么都不做。
-    } else if (demoIdx >= 0 && demoIdx <= 8) {
+    } else if (demoIdx >= 0 && demoIdx < (int)NvaAnimKey::COUNT) {
       clickAnimActive = false;
       oneShotActive = false;
       nvaSetState((NvaAnimKey)demoIdx, false);
     } else if (clickAnimActive) {
-      if ((nvaActiveState() == NvaAnimKey::CLICK && nvaIsEnded()) ||
+      if ((nvaActiveState() == clickAnimKey && nvaIsEnded()) ||
           (int32_t)(nowMs - clickSafetyEndMs) >= 0) {
         clickAnimActive = false;
       } else {
-        nvaSetState(NvaAnimKey::CLICK, true);
+        nvaSetState(clickAnimKey, true);
       }
     } else if (oneShotActive) {
       if ((nvaActiveState() == oneShotKey && nvaIsEnded()) ||
@@ -1774,21 +1786,49 @@ void uiTaskFn(void*) {
 
     if (!aodActive && !st.approvalActive && st.wait == 0 && demoIdx < 0 &&
         !clickAnimActive && !oneShotActive) {
+      const uint32_t idleMs = (nowMs >= lastInteractMs) ? (nowMs - lastInteractMs) : 0u;
+      const uint32_t sleepAtMs = snap.battery.usbPresent ? 90000u : 45000u;
+      const uint32_t yawnAtMs  = sleepAtMs - 15000u;
       if (st.run > 0) {
-        nvaSetState(NvaAnimKey::WORKING, false);
+        nvaSetState(pageHomeWorkAnimForTool(st.lastTool), false);
       } else if (pageHomeIsWalking()) {
-        nvaSetState(NvaAnimKey::THINKING, false);
-      } else if ((nowMs - lastInteractMs) >= (snap.battery.usbPresent ? 90000u : 45000u)) {
+        nvaSetState(pageHomeIsRunning() ? NvaAnimKey::HAPPY_RUN : NvaAnimKey::CRAB_WALK, false);
+      } else if (idleMs >= sleepAtMs) {
         nvaSetState(NvaAnimKey::SLEEP, false);
-      } else if (choreoAnim >= 0 && choreoAnim <= 8) {
+      } else if (idleMs >= yawnAtMs) {
+        nvaSetState(NvaAnimKey::YAWN, false);
+      } else if (choreoAnim >= 0 && choreoAnim < (int)NvaAnimKey::COUNT) {
         nvaSetState((NvaAnimKey)choreoAnim, false);
       } else {
         uint32_t cyc = nvaLoopCycles();
         if (cyc >= bgNextSwitchCycle) {
           if (bgAutoKey == NvaAnimKey::IDLE) {
-            NvaAnimKey next = (st.sess > 0 && bgLastNonIdle != NvaAnimKey::THINKING)
-                                ? NvaAnimKey::THINKING
-                                : (bgLastNonIdle != NvaAnimKey::QUOTA ? NvaAnimKey::QUOTA : NvaAnimKey::WAITING);
+            NvaAnimKey pool[8];
+            uint8_t nPool = 0;
+            bool quotaWorry = false;
+            for (uint8_t i = 0; i < st.nCards && i < 3; i++) {
+              const QuotaCard& card = st.cards[i];
+              if (strcmp(card.kind, "bal") == 0 && card.val < 15.0) {
+                quotaWorry = true;
+              } else if (strcmp(card.kind, "win") == 0 && card.nBars > 0 && card.bars[0].pct >= 80) {
+                quotaWorry = true;
+              }
+            }
+            pool[nPool++] = NvaAnimKey::HUM;
+            pool[nPool++] = NvaAnimKey::BUBBLE;
+            pool[nPool++] = NvaAnimKey::STRETCH;
+            pool[nPool++] = quotaWorry ? NvaAnimKey::QUOTA_WORRY : NvaAnimKey::QUOTA;
+            if (st.nTokenDays > 0 && st.tokenDays[st.nTokenDays - 1].tokens >= 100000000ULL) {
+              pool[nPool++] = NvaAnimKey::EAT_TOKEN;
+            }
+            if (st.sess > 0) {
+              pool[nPool++] = NvaAnimKey::THINKING;
+            }
+            bgPoolCursor = (uint8_t)((bgPoolCursor + 1) % nPool);
+            if (nPool > 1 && pool[bgPoolCursor] == bgLastNonIdle) {
+              bgPoolCursor = (uint8_t)((bgPoolCursor + 1) % nPool);
+            }
+            NvaAnimKey next = pool[bgPoolCursor];
             bgAutoKey = next;
             bgLastNonIdle = next;
             bgNextSwitchCycle = cyc + 1;  // play 1 full ~10s cycle before switching back

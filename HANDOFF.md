@@ -1,11 +1,11 @@
 # Nova Buddy — 交接
 
-仓库：`/Volumes/hamelin-ssd/gemini工作区/nova-buddy`（GitHub `JAYcodr/whale-buddy-esp32`，分支 `feature/v050-aod`）
+仓库：`/Volumes/hamelin-ssd/gemini工作区/nova-buddy`（GitHub `JAYcodr/whale-buddy-esp32`，分支 `feature/v060-pet-expressiveness`）
 插件：`host-plugin/`（`dsh-plugin-nova-buddy` v0.3.0），通过 symlink 装入 `~/.dsh/profiles/desktop`
 环境：DeepSeek Harness `0.2.2-rc.5`，profile `desktop`；Node v25.9.0
 设备：Waveshare ESP32-S3 Touch AMOLED 1.8（SH8601 + FT3168），deviceId `D93468`，IP 192.168.31.219
 Broker：`mqtt://192.168.31.15:1883`
-固件版本：`0.5.0`（AOD + 观测）；当前 git HEAD 见 `git log -1`
+固件版本：`0.6.0`（24 动作表现力升级 + 16MB 分区）；当前 git HEAD 见 `git log -1`
 
 ---
 
@@ -206,6 +206,18 @@ Broker：`mqtt://192.168.31.15:1883`
 6. **别把宿主 `run/wait` 塞回闲置判定**：那是"有没有任务"，不是"有没有人"。5 小时的长任务会让屏亮一整天，这正是 AOD 要解决的。
 7. **AOD 是整屏浮层，必须禁掉所有局部重绘**（与 `dockExpanded && turnError` 浮层同一条规矩）。`animPage` 早就有 `!aodActive`，但 `tokensPage` 和榜单列表分支漏过 —— 停在鲸群页进表盘时，鱼群会按 AOD 的 4fps 继续往表盘上画（2026-11-23 真机抓到，表盘中间一排游动的鱼）。**新增任何 `pageXxxDrawStage` 局部路径时，条件里都要带 `!aodActive`。**
 
+---
+
+## 宠物表现力升级（0.6.0 · 24 动作）
+
+- **16MB 分区与资产**：1.8 寸板切换至 `no_ota_16mb.csv`（`spiffs` 分区 12MB），`data/pets/nova/` 共 24 个 NVA2 动作包（10.4MB，稳帧阈值 `STAB_DIFF_MAX = 12`）。PSRAM 常驻槽维持 `IDLE / SUCCESS / ERROR` 3 个不变，其余 21 个走流式按需加载槽 `s_streamPack`。
+- **24 动作四端对齐**：`src/anim/nva.h`（`NvaAnimKey` 0..23、`COUNT = 24`）、`src/anim/nva.cpp`（`ANIM_NAMES`）、`src/net/proto.cpp`（`kAnimNames` + `static_assert`）、`host-plugin/lib/ai.js`（`VALID_ANIMS`）、`src/ui/page_home.cpp`（`kDemoTags`、`spriteAllowsMirror`）逐项同步。
+- **舞台交互与状态机联动**：
+  - **戳戳乐**：清醒态点按在 `{CLICK, CLICK_HAPPY, CLICK_SHY, CLICK_GIGGLE}` 中轮换防连播并配专属台词；8 秒内连戳 ≥ 3 次触发 `CLICK_ANGRY` 并清零连击；`SLEEP` / `YAWN` 态戳醒触发 `WAKE_UP`。
+  - **移动与镜像**：`CRAB_WALK`（漫步）/ `HAPPY_RUN`（小跑，由 `pageHomeIsRunning()` 暴露），程序叠加 `hop` 压到 `2.0f`；`spriteAllowsMirror` 严格屏蔽带文字/道具/钱袋的非对称动作（`14 true / 10 false`）。
+  - **工具感知 + 两段犯困 + 巡游池**：`st.run > 0` 按 `st.lastTool` 映射 `CODING / ARCHIVE / WORKING / THINKING`；入睡前 15s（USB 75..90s、电池 30..45s）先 `YAWN`（「犯困打哈欠...」）再 `SLEEP`（舞台右上飘出 `Zzz` 微粒子，严格包在 `curX0..curY1` 脏矩形内）；无 AI 剧本时 `bgAutoKey` 轮换 `HUM / BUBBLE / STRETCH` + `QUOTA / QUOTA_WORRY`（余额 <15 或订阅 ≥80%）+ `EAT_TOKEN`（今日 ≥1 亿）。
+  - **防烧屏对齐**：`statusPillRect(st)` 与舞台点按热区统一跟随 `burnOffsetX/Y(st.burnInStep)`；AOD 期间主状态机及任务结束 `oneShot` 严禁调 `nvaSetState`。
+
 ## 测试
 
 ```bash
@@ -251,7 +263,7 @@ bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload
 {"cmd":"reprov"}                  # 进配网模式（会断网，MQTT 掉线）
 {"cmd":"page","page":"quota"}     # 切页：home/quota/rank/detail/settings/settings_aod/settings_sound/settings_batt/tokens
 {"cmd":"tap","x":184,"y":406}     # 注入点击，走 nav.onTap + handleAction 与真实触屏同路径
-{"cmd":"demo","anim":3}           # 强制动画状态
+{"cmd":"demo","anim":3}           # 强制动画状态（0..23，-1 恢复自动）
 {"cmd":"aod","on":0|1|2}          # AOD：关/仅插电/常开（写 NVS）
 {"cmd":"aodidle","sec":30}        # 进入阈值（30..600s）
 {"cmd":"aodforce","on":1}         # 验收用：不管宿主 run 计数直接进 AOD
@@ -275,4 +287,4 @@ bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8 -t upload
 
 ## Git
 
-分支 `feature/v050-aod`，包含 0.5.0 的 AOD + 观测 + 宿主文案清洗。验证通过后 ff 合进 `main`。
+分支 `feature/v060-pet-expressiveness`，包含 0.6.0 的 24 动作表现力升级（16MB 分区、资产与协议底座、舞台交互与状态机联动）。验证通过后合进 `main`。

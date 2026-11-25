@@ -62,6 +62,7 @@ struct UiAction {
   };
   Kind kind = NONE;
   int  value = 0;
+  int  extra = 0;
 };
 
 // 设置类 UiAction → kSettings：命中则校准后写入并 settingsSave()。
@@ -76,6 +77,8 @@ int pageHomeDemoOverride();  // -1 = auto, >=0 = NvaAnimKey index
 void pageHomeSetDemoOverride(int idx);
 int pageHomeChoreoAnim();    // -1 = none, >=0 = NvaAnimKey index from LLM script
 bool pageHomeIsWalking();
+bool pageHomeIsRunning();
+NvaAnimKey pageHomeWorkAnimForTool(const char* tool);
 void pageHomeTriggerSquash(uint32_t nowMs);
 
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st);

@@ -1,4 +1,4 @@
-page_home edc2bb04
+page_home 91336704
 page_quota 4654159c
 page_rank a0c48fdb
 page_detail f615c867
@@ -9,9 +9,9 @@ page_settings_open 90dc8a86
 page_settings_opts 12814404
 page_settings_confirm 7ce72733
 page_approval 07818ad0
-page_home_dock f4c309f0
-page_home_dock_err 2d81b484
-page_home_dock_detail 8a1900a9
+page_home_dock 09b860e4
+page_home_dock_err 3810f784
+page_home_dock_detail 5983d0e5
 page_home_ap f05fee84
 page_home_ap_burn 3200a734
 page_quota_empty f27044c0
@@ -21,7 +21,7 @@ page_quota_reauth 3ad8497b
 page_quota_fetcherr a49be378
 page_rank_scrolled 0bde2aef
 page_settings_muted 87b73861
-page_home_charging 01c12d11
+page_home_charging 70d62911
 page_detail_charging 509c6b27
 page_detail_full 24d4d2b6
 page_detail_limited 30ae56b8
@@ -44,4 +44,8 @@ page_chat_run ff82a22a
 page_chat_reply 9c6f7881
 page_chat_fail 1836adf0
 page_chat_mute a487db14
+page_home_coding cc13f023
+page_home_yawn a5eb1077
+page_home_sleep_zzz a8515181
 page_tokens_local ok
+page_home_stage_local ok

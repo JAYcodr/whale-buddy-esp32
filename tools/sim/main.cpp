@@ -499,6 +499,28 @@ static void mutateChatMute(NovaState& st, NovaSettings& cfg) {
   std::strcpy(st.chatDelivery.targetId, "s1");
 }
 
+static void mutateHomeCoding(NovaState& st, NovaSettings&) {
+  st.run = 1;
+  st.wait = 0;
+  std::snprintf(st.lastTool, sizeof(st.lastTool), "edit");
+  std::snprintf(st.sessTitle, sizeof(st.sessTitle), "表现力状态机");
+  std::snprintf(st.msg, sizeof(st.msg), "edit: src/ui/page_home.cpp");
+}
+
+static void mutateHomeYawn(NovaState& st, NovaSettings&) {
+  st.run = 0;
+  st.wait = 0;
+  st.activeModel[0] = '\0';
+  st.msg[0] = '\0';
+}
+
+static void mutateHomeSleepZzz(NovaState& st, NovaSettings&) {
+  st.run = 0;
+  st.wait = 0;
+  st.activeModel[0] = '\0';
+  st.msg[0] = '\0';
+}
+
 int main(int argc, char** argv) {
   std::string outDir = (argc > 1) ? argv[1] : "tools/sim/out";
   Arduino_Canvas canvas(UI_W, UI_H, nullptr);
@@ -525,6 +547,8 @@ int main(int argc, char** argv) {
     bool aod = false;
     uint8_t openId = 0;     // 设置页：展开哪一行（RowId，0 = 不展开）
     uint8_t confirmId = 0;  // 设置页：哪一行进二次确认
+    int8_t anim = -1;       // 非 AOD 首页展示指定 NvaAnimKey
+    uint8_t animTicks = 0;
   };
   Case cases[] = {
     { "home", UiPage::HOME, false, 0, 6500, nullptr, nullptr },
@@ -573,6 +597,9 @@ int main(int argc, char** argv) {
     { "chat_reply", UiPage::CHAT, false, 0, 6500, mutateChatReply, nullptr },
     { "chat_fail", UiPage::CHAT, false, 0, 6500, mutateChatFail, nullptr },
     { "chat_mute", UiPage::CHAT, false, 0, 6500, mutateChatMute, nullptr },
+    { "home_coding", UiPage::HOME, false, 0, 6500, mutateHomeCoding, nullptr, false, 0, 0, (int8_t)NvaAnimKey::CODING, 16 },
+    { "home_yawn", UiPage::HOME, false, 0, 6500, mutateHomeYawn, nullptr, false, 0, 0, (int8_t)NvaAnimKey::YAWN, 22 },
+    { "home_sleep_zzz", UiPage::HOME, false, 0, 6500, mutateHomeSleepZzz, nullptr, false, 0, 0, (int8_t)NvaAnimKey::SLEEP, 18 },
   };
 
   for (const auto& cs : cases) {
@@ -598,6 +625,12 @@ int main(int argc, char** argv) {
       for (int i = 0; i < 3; i++) nvaTick(cs.drawNowMs + (uint32_t)i * 120u);
       pageHomeDrawAod(canvas, st, cs.drawNowMs);
     } else {
+      if (cs.anim >= 0) {
+        nvaSetState((NvaAnimKey)cs.anim, false, true);
+        for (uint8_t i = 0; i < cs.animTicks; i++) {
+          nvaTick(cs.drawNowMs + (uint32_t)i * 120u);
+        }
+      }
       nav.draw(canvas, st, cfg, 24, cs.drawNowMs);
     }
     if (cs.afterDraw) cs.afterDraw();
@@ -654,6 +687,179 @@ int main(int argc, char** argv) {
       return 1;
     }
     std::fprintf(manifest, "page_tokens_local ok\n");
+  }
+
+  // page_home_stage_local：主屏舞台局部重绘契约 —— Zzz / 火花 / 气泡 / 防烧屏偏移
+  // 必须严格落在返回的脏矩形内，且脏矩形不许越过舞台边界 [0..UI_W, 62..304]。
+  {
+    NovaState st;
+    populateSample(st);
+    st.run = 0;
+    st.wait = 0;
+    st.activeModel[0] = '\0';
+    st.msg[0] = '\0';
+    NovaSettings cfg;
+    nav.setPage(UiPage::HOME);
+    nvaSetState(NvaAnimKey::SLEEP, false, true);
+    for (int i = 0; i < 6; i++) nvaTick(6500u + (uint32_t)i * 120u);
+    nav.draw(canvas, st, cfg, 24, 6500);
+
+    // 触发火花与气泡后再切回 SLEEP，同时在最不利防烧屏偏移下验证两帧局部重绘。
+    pageHomeTap(184, 220, st);
+    nvaSetState(NvaAnimKey::SLEEP, false, true);
+    for (int i = 0; i < 4; i++) nvaTick(7300u + (uint32_t)i * 120u);
+
+    constexpr uint16_t kSentinel = 0xA55A;
+    uint16_t* fb = canvas.getFramebuffer();
+    const uint8_t burnSteps[2] = { 0, 7 };
+    for (int step = 0; step < 2; step++) {
+      st.burnInStep = burnSteps[step];
+      st.nowMs = 10100u + (uint32_t)step * 100u;
+      for (size_t i = 0; i < (size_t)UI_W * UI_H; i++) fb[i] = kSentinel;
+
+      int16_t dx = 0, dy = 0, dw = 0, dh = 0;
+      pageHomeDrawStage(canvas, st, cfg, (uint32_t)(25 + step), &dx, &dy, &dw, &dh);
+      if (dw <= 0 || dh <= 0 || dx < 0 || dy < 62 || dx + dw > UI_W || dy + dh > 304) {
+        std::printf("page_home_stage_local: dirty rect out of stage bounds (%d,%d %dx%d)\n",
+                    dx, dy, dw, dh);
+        std::fclose(manifest);
+        return 1;
+      }
+      size_t outside = 0, inside = 0;
+      int firstX = -1, firstY = -1;
+      for (int y = 0; y < UI_H; y++) {
+        for (int x = 0; x < UI_W; x++) {
+          const bool in = (x >= dx && x < dx + dw && y >= dy && y < dy + dh);
+          const size_t idx = (size_t)y * UI_W + x;
+          if (in) {
+            if (fb[idx] != kSentinel) inside++;
+          } else if (fb[idx] != kSentinel) {
+            if (outside == 0) { firstX = x; firstY = y; }
+            outside++;
+          }
+        }
+      }
+      if (outside != 0) {
+        std::printf("page_home_stage_local: %zu pixels written outside rect at step %d "
+                    "(first at %d,%d; rect=%d,%d %dx%d)\n",
+                    outside, step, firstX, firstY, dx, dy, dw, dh);
+        std::fclose(manifest);
+        return 1;
+      }
+      if (inside == 0) {
+        std::printf("page_home_stage_local: stage drew nothing at step %d\n", step);
+        std::fclose(manifest);
+        return 1;
+      }
+    }
+    std::fprintf(manifest, "page_home_stage_local ok\n");
+  }
+
+  // 主屏交互与状态映射自检：覆盖工作姿势分类、睡醒惊醒、4 动作轮换、8 秒连戳傲娇与胶囊烧屏偏移。
+  {
+    auto failIf = [&](bool ok, const char* msg) -> bool {
+      if (!ok) {
+        std::printf("home_logic check failed: %s\n", msg);
+        return true;
+      }
+      return false;
+    };
+    if (failIf(pageHomeWorkAnimForTool("") == NvaAnimKey::THINKING, "empty tool -> THINKING") ||
+        failIf(pageHomeWorkAnimForTool("edit_file") == NvaAnimKey::CODING, "edit_file -> CODING") ||
+        failIf(pageHomeWorkAnimForTool("BASH") == NvaAnimKey::CODING, "BASH -> CODING") ||
+        failIf(pageHomeWorkAnimForTool("Write") == NvaAnimKey::CODING, "Write -> CODING") ||
+        failIf(pageHomeWorkAnimForTool("grep_search") == NvaAnimKey::ARCHIVE, "grep_search -> ARCHIVE") ||
+        failIf(pageHomeWorkAnimForTool("ReadFile") == NvaAnimKey::ARCHIVE, "ReadFile -> ARCHIVE") ||
+        failIf(pageHomeWorkAnimForTool("browser") == NvaAnimKey::WORKING, "browser -> WORKING")) {
+      std::fclose(manifest);
+      return 1;
+    }
+
+    NovaState st;
+    populateSample(st);
+    st.run = 0;
+    st.wait = 0;
+    st.nowMs = 20000;
+
+    // 睡眠 / 哈欠态点按宠物 -> WAKE_UP
+    nvaSetState(NvaAnimKey::SLEEP, false, true);
+    if (failIf(pageHomeTap(184, 220, st).extra == (int)NvaAnimKey::WAKE_UP, "SLEEP -> WAKE_UP")) {
+      std::fclose(manifest);
+      return 1;
+    }
+    st.nowMs = 30000;
+    nvaSetState(NvaAnimKey::YAWN, false, true);
+    if (failIf(pageHomeTap(184, 220, st).extra == (int)NvaAnimKey::WAKE_UP, "YAWN -> WAKE_UP")) {
+      std::fclose(manifest);
+      return 1;
+    }
+
+    // 清醒态间隔 >8s 连续点按：4 动作轮换且不连播同一个
+    nvaSetState(NvaAnimKey::IDLE, false, true);
+    int seenMask = 0;
+    int prevTap = -1;
+    for (int i = 0; i < 4; i++) {
+      st.nowMs = 50000u + (uint32_t)i * 9000u;
+      UiAction act = pageHomeTap(184, 220, st);
+      bool inPool = (act.extra == (int)NvaAnimKey::CLICK ||
+                     act.extra == (int)NvaAnimKey::CLICK_HAPPY ||
+                     act.extra == (int)NvaAnimKey::CLICK_SHY ||
+                     act.extra == (int)NvaAnimKey::CLICK_GIGGLE);
+      if (failIf(act.kind == UiAction::PET_TAP && act.value == 0 && inPool && act.extra != prevTap,
+                 "awake 4-tap rotation without repeat")) {
+        std::fclose(manifest);
+        return 1;
+      }
+      prevTap = act.extra;
+      if (act.extra == (int)NvaAnimKey::CLICK) seenMask |= 1;
+      else if (act.extra == (int)NvaAnimKey::CLICK_HAPPY) seenMask |= 2;
+      else if (act.extra == (int)NvaAnimKey::CLICK_SHY) seenMask |= 4;
+      else if (act.extra == (int)NvaAnimKey::CLICK_GIGGLE) seenMask |= 8;
+    }
+    if (failIf(seenMask == 0x0F, "all 4 click animations visited")) {
+      std::fclose(manifest);
+      return 1;
+    }
+
+    // 8 秒内连续戳 3 次 -> CLICK_ANGRY，并清零连击计数
+    st.nowMs = 100000u;
+    UiAction t1 = pageHomeTap(184, 220, st);
+    st.nowMs = 102000u;
+    UiAction t2 = pageHomeTap(184, 220, st);
+    st.nowMs = 104000u;
+    UiAction t3 = pageHomeTap(184, 220, st);
+    st.nowMs = 105000u;
+    UiAction t4 = pageHomeTap(184, 220, st);
+    if (failIf(t1.extra != (int)NvaAnimKey::CLICK_ANGRY &&
+               t2.extra != (int)NvaAnimKey::CLICK_ANGRY &&
+               t3.extra == (int)NvaAnimKey::CLICK_ANGRY &&
+               t4.extra != (int)NvaAnimKey::CLICK_ANGRY,
+               "8s 3-hit combo triggers CLICK_ANGRY and resets")) {
+      std::fclose(manifest);
+      return 1;
+    }
+
+    // Demo 胶囊支持 0..23 切换与烧屏偏移热区
+    pageHomeSetDemoOverride(23);
+    if (failIf(pageHomeDemoOverride() == 23, "demo override 23")) {
+      std::fclose(manifest);
+      return 1;
+    }
+    st.burnInStep = 7;  // ox=+2, oy=+1
+    UiAction pillWrap = pageHomeTap(86 + 2, 308 + 1, st);
+    if (failIf(pillWrap.kind == UiAction::PET_TAP && pillWrap.value == 2 &&
+               pageHomeDemoOverride() == -1, "pill wrap at 23 -> -1 with burnOffset")) {
+      std::fclose(manifest);
+      return 1;
+    }
+
+    // 空地点击触发快速小跑
+    UiAction runAct = pageHomeTap(92, 200, st);
+    if (failIf(runAct.kind == UiAction::PET_TAP && runAct.value == 1 &&
+               pageHomeIsWalking() && pageHomeIsRunning(), "empty stage tap -> running")) {
+      std::fclose(manifest);
+      return 1;
+    }
   }
 
   std::fclose(manifest);

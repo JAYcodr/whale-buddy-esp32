@@ -2,6 +2,7 @@
 #include "ui/pages.h"
 #include "anim/nva.h"
 #include "ui/theme.h"
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -112,6 +113,26 @@ ui::Rect apCancelPortalRect(const NovaState& st) {
                    BTN_CANCEL_PORTAL.w, BTN_CANCEL_PORTAL.h };
 }
 
+ui::Rect statusPillRect(const NovaState& st) {
+  return ui::Rect{ (int16_t)(PILL_RECT.x + ui::burnOffsetX(st.burnInStep)),
+                   (int16_t)(PILL_RECT.y + ui::burnOffsetY(st.burnInStep)),
+                   PILL_RECT.w, PILL_RECT.h };
+}
+
+bool containsCaseInsensitive(const char* haystack, const char* needle) {
+  if (!haystack || !needle || !needle[0]) return false;
+  for (; *haystack; haystack++) {
+    const char* a = haystack;
+    const char* b = needle;
+    while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+      a++;
+      b++;
+    }
+    if (*b == '\0') return true;
+  }
+  return false;
+}
+
 float    s_petX             = 184.0f;
 float    s_targetX          = 184.0f;
 bool     s_runSpeed         = false;
@@ -140,18 +161,37 @@ char     s_bubbleBuf[64]    = "";
 uint32_t s_bubbleUntilMs    = 0;
 uint32_t s_pendingBubbleMs  = 0;
 
+uint32_t   s_comboTimes[2]  = {};
+uint8_t    s_comboCount     = 0;
+uint8_t    s_clickPoolIdx   = 0;
+NvaAnimKey s_lastClickKey   = NvaAnimKey::COUNT;
+
 int16_t s_prevX0 = 72, s_prevY0 = 62, s_prevX1 = 296, s_prevY1 = 304;
 bool    s_hasPrevBox = false;
 
-const char* const kPetQuotes[] = {
+const char* const kClickWaveQuotes[] = {
   "在呢主人!",
-  "摸摸头~",
+  "随时待命哦~",
+};
+const char* const kClickHappyQuotes[] = {
+  "摸摸头充满电!",
   "今天也要加油!",
-  "收到指令啦",
+};
+const char* const kClickShyQuotes[] = {
+  "突然戳我干嘛呀~",
+  "咦，别一直盯着看!",
+};
+const char* const kClickGiggleQuotes[] = {
+  "嘿嘿，好痒呀~",
+  "哈哈，别挠啦!",
+};
+const char* const kClickAngryQuotes[] = {
+  "别老戳人家啦!",
+  "再戳要生气咯!",
 };
 const char* const kWakeQuotes[] = {
-  "唔...醒啦，主人好!",
-  "睡饱啦，随时待命!",
+  "呜哇! 没在偷懒!",
+  "唔...醒啦主人!",
 };
 uint8_t s_quoteIdx = 0;
 
@@ -206,8 +246,25 @@ float calcSquashScaleY(uint32_t nowMs) {
 }
 
 bool spriteAllowsMirror(NvaAnimKey k) {
-  return k == NvaAnimKey::IDLE || k == NvaAnimKey::CLICK ||
-         k == NvaAnimKey::SUCCESS || k == NvaAnimKey::SLEEP;
+  switch (k) {
+    case NvaAnimKey::IDLE:
+    case NvaAnimKey::SUCCESS:
+    case NvaAnimKey::CLICK:
+    case NvaAnimKey::SLEEP:
+    case NvaAnimKey::CLICK_HAPPY:
+    case NvaAnimKey::CLICK_SHY:
+    case NvaAnimKey::CLICK_GIGGLE:
+    case NvaAnimKey::CRAB_WALK:
+    case NvaAnimKey::HAPPY_RUN:
+    case NvaAnimKey::STRETCH:
+    case NvaAnimKey::YAWN:
+    case NvaAnimKey::WAKE_UP:
+    case NvaAnimKey::HUM:
+    case NvaAnimKey::BUBBLE:
+      return true;
+    default:
+      return false;
+  }
 }
 
 void drawSpark(NovaCanvas& c, int16_t x, int16_t y, uint16_t col, int16_t size) {
@@ -313,7 +370,9 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
 
   // Built-in local fallback patrol when no LLM script is active.
   if (s_petX == s_targetX && (int32_t)(st.nowMs - s_nextRoamMs) >= 0 && st.wait == 0 && !st.approvalActive) {
-    if (s_demoAnim == (int)NvaAnimKey::SLEEP) {
+    const NvaAnimKey active = nvaActiveState();
+    if (s_demoAnim == (int)NvaAnimKey::SLEEP || s_demoAnim == (int)NvaAnimKey::YAWN ||
+        active == NvaAnimKey::SLEEP || active == NvaAnimKey::YAWN) {
       s_nextRoamMs = st.nowMs + 12000u;
       return;
     }
@@ -336,17 +395,17 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
 
   float diff = s_targetX - s_petX;
   bool walking = (diff < -1.2f || diff > 1.2f);
-  int16_t hop = walking ? (int16_t)(fabsf(sinf(frame * 0.28f)) * 5.0f) : 0;
+  int16_t hop = walking ? (int16_t)(fabsf(sinf(frame * 0.28f)) * 2.0f) : 0;
   const int16_t bottomY = PET_BASE_Y + oy - hop;
 
   const int16_t sprW = nvaFrameWidth();
   const int16_t sprH = nvaFrameHeight();
   int16_t halfW = (sprW / 2) + 12;
-  if (halfW < 84) halfW = 84;
+  if (halfW < 88) halfW = 88;
   int16_t curX0 = cx - halfW;
   int16_t curX1 = cx + halfW;
   int16_t curY0 = bottomY - sprH - 12;
-  int16_t curY1 = PET_BASE_Y + 6;
+  int16_t curY1 = PET_BASE_Y + oy + 6;
 
   bool showBubble = (s_bubbleBuf[0] && s_bubbleUntilMs != 0 && (int32_t)(s_bubbleUntilMs - st.nowMs) > 0);
   if (s_bubbleBuf[0] && !showBubble && s_bubbleUntilMs != 0) {
@@ -363,7 +422,6 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
     if (bx < 12) bx = 12;
     if (bx + bw > UI_W - 12) bx = UI_W - 12 - bw;
 
-    int16_t sprH = nvaFrameHeight();
     by = bottomY - sprH - 36;
     if (by < STAGE_TOP + 4) by = STAGE_TOP + 4;
     if (by > STAGE_BOTTOM - 34) by = STAGE_BOTTOM - 34;
@@ -396,7 +454,7 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
     float a = t * (busy ? 1.25f : 0.65f) + i * 2.0944f;
     int16_t px = cx + (int16_t)(cosf(a) * 76.0f);
     int16_t py = (bottomY - 88) + (int16_t)(sinf(a * 1.15f) * 38.0f);
-    if (px >= 4 && px < UI_W - 4 && py >= STAGE_TOP + 4 && py < STAGE_BOTTOM - 4) {
+    if (px >= curX0 + 3 && px <= curX1 - 3 && py >= curY0 + 3 && py <= curY1 - 3) {
       ui::aaFillCircle(c, px, py, (i & 1) ? 2 : 3, (i & 1) ? ui::COL_MINT : ui::COL_ACCENT);
     }
   }
@@ -408,18 +466,38 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
       int d = 44 + (int)(prog * 38.0f);
       int16_t sx = cx + (int16_t)(cosf(a) * d);
       int16_t sy = (bottomY - 92) + (int16_t)(sinf(a) * d) - (int16_t)(prog * 12.0f);
-      if (sx > 6 && sx < UI_W - 6 && sy > STAGE_TOP + 6 && sy < STAGE_BOTTOM - 6) {
+      if (sx >= curX0 + 4 && sx <= curX1 - 4 && sy >= curY0 + 4 && sy <= curY1 - 4) {
         drawSpark(c, sx, sy, (i & 1) ? ui::COL_MINT : ui::COL_GOLD, (s_sparkFrames > 12) ? 3 : 2);
       }
     }
     s_sparkFrames--;
   }
 
-  bool flipX = s_facingRight && spriteAllowsMirror(nvaActiveState());
+  const NvaAnimKey activeState = nvaActiveState();
+  const bool flipX = s_facingRight && spriteAllowsMirror(activeState);
   float squashY = calcSquashScaleY(st.nowMs);
   if (!nvaDraw(c, cx, bottomY, flipX, squashY)) {
     ui::aaFillCircle(c, cx, bottomY - 76, 36, auraCol);
     ui::aaFillCircle(c, cx - 10, bottomY - 86, 9, rgb565(224, 246, 255));
+  }
+
+  // 熟睡阶段在头顶斜上方画缓慢上浮淡出的 Zzz 微粒子，严格包在脏矩形 curX0..curY1 内。
+  if (activeState == NvaAnimKey::SLEEP) {
+    const float dir = flipX ? -1.0f : 1.0f;
+    for (int i = 0; i < 3; i++) {
+      float u = fmodf((float)frame * 0.022f + (float)i * 0.333f, 1.0f);
+      float env = (u < 0.25f) ? (u / 0.25f) : (1.0f - (u - 0.25f) / 0.75f);
+      if (env < 0.08f) continue;
+      uint8_t alpha = (uint8_t)(env * 210.0f);
+      uint16_t zCol = ui::blend565(ui::COL_BG, (i == 1) ? ui::COL_ACCENT : ui::COL_VIOLET, alpha);
+      int16_t zx = (int16_t)(cx + dir * (28.0f + u * 24.0f + sinf(u * 6.283f) * 3.0f))
+                   - (flipX ? 10 : 0);
+      int16_t zy = (int16_t)(bottomY - 116 - u * 34.0f);
+      if (zx < curX0 + 2 || zx + 14 > curX1 - 2) continue;
+      if (zy - 16 < curY0 + 2 || zy + 2 > curY1 - 2) continue;
+      if (showBubble && zy - 16 < by + 30 && zx + 14 > bx - 2 && zx < bx + bw + 2) continue;
+      ui::drawText(c, ui::fontAscii14(), zx, zy, (u > 0.55f) ? "Z" : "z", zCol, ui::COL_BG);
+    }
   }
 
   if (showBubble) {
@@ -440,24 +518,36 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
   uint16_t dotCol = ui::COL_ACCENT;
   char tagBuf[48] = "待机陪伴中";
   if (s_demoAnim >= 0) {
-    static constexpr const char* kDemoTags[9] = {
-      "展示: 待机", "展示: 思考", "展示: 编码",
+    static constexpr const char* const kDemoTags[] = {
+      "展示: 待机", "展示: 思考", "展示: 忙碌",
       "展示: 等待", "展示: 庆祝", "展示: 委屈",
-      "展示: 互动", "展示: 打盹", "展示: 舞动",
+      "展示: 挥手", "展示: 熟睡", "展示: 富足",
+      "展示: 跃动", "展示: 害羞", "展示: 傲娇", "展示: 挠痒",
+      "展示: 蟹步", "展示: 小跑", "展示: 敲码", "展示: 归档",
+      "展示: 懒腰", "展示: 哈欠", "展示: 惊醒",
+      "展示: 哼歌", "展示: 干饭", "展示: 冒泡", "展示: 算账",
     };
+    static_assert(sizeof(kDemoTags) / sizeof(kDemoTags[0]) == (size_t)NvaAnimKey::COUNT,
+                  "kDemoTags 必须与 NvaAnimKey::COUNT 同步");
     dotCol = ui::COL_VIOLET;
-    copyUtf8Safe(tagBuf, sizeof(tagBuf), kDemoTags[s_demoAnim % 9]);
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), kDemoTags[s_demoAnim % (int)NvaAnimKey::COUNT]);
   } else if (st.wait > 0) {
     dotCol = ui::COL_AMBER;
     copyUtf8Safe(tagBuf, sizeof(tagBuf), "等待确认");
   } else if (st.run > 0) {
     dotCol = ui::COL_MINT;
+    const NvaAnimKey work = pageHomeWorkAnimForTool(st.lastTool);
     if (st.activeModel[0]) {
+      const char* verb = (work == NvaAnimKey::CODING) ? "敲码"
+                       : (work == NvaAnimKey::ARCHIVE ? "归档" : "执行");
       char raw[48];
-      snprintf(raw, sizeof(raw), "执行 · %s", st.activeModel);
+      snprintf(raw, sizeof(raw), "%s · %s", verb, st.activeModel);
       ui::fitUtf8Line(c, ui::fontCjk14(), raw, 224, tagBuf, sizeof(tagBuf));
     } else {
-      copyUtf8Safe(tagBuf, sizeof(tagBuf), "思考执行中");
+      const char* label = (work == NvaAnimKey::CODING) ? "努力敲码中"
+                        : (work == NvaAnimKey::ARCHIVE ? "清点归档中"
+                        : (work == NvaAnimKey::WORKING ? "忙碌处理中" : "思考执行中"));
+      copyUtf8Safe(tagBuf, sizeof(tagBuf), label);
     }
   } else if (st.turnError) {
     dotCol = ui::COL_RED;
@@ -465,6 +555,9 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
   } else if (nvaActiveState() == NvaAnimKey::SLEEP) {
     dotCol = ui::COL_VIOLET;
     copyUtf8Safe(tagBuf, sizeof(tagBuf), "打盹小憩中");
+  } else if (nvaActiveState() == NvaAnimKey::YAWN) {
+    dotCol = ui::COL_VIOLET;
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), "犯困打哈欠...");
   } else if (cfg.choreoEnabled && st.nChoreoSteps > 0 && st.choreoMood[0]) {
     dotCol = ui::COL_ACCENT;
     copyUtf8Safe(tagBuf, sizeof(tagBuf), st.choreoMood);
@@ -491,7 +584,7 @@ int pageHomeDemoOverride() {
 }
 
 void pageHomeSetDemoOverride(int idx) {
-  s_demoAnim = (idx >= 0 && idx <= 8) ? idx : -1;
+  s_demoAnim = (idx >= 0 && idx < (int)NvaAnimKey::COUNT) ? idx : -1;
 }
 
 int pageHomeChoreoAnim() {
@@ -501,6 +594,27 @@ int pageHomeChoreoAnim() {
 bool pageHomeIsWalking() {
   float diff = s_targetX - s_petX;
   return (diff < -1.2f || diff > 1.2f);
+}
+
+bool pageHomeIsRunning() {
+  return s_runSpeed && pageHomeIsWalking();
+}
+
+NvaAnimKey pageHomeWorkAnimForTool(const char* tool) {
+  if (!tool || !tool[0]) return NvaAnimKey::THINKING;
+  static constexpr const char* const kCodingTools[] = {
+    "edit", "write", "patch", "bash", "terminal", "cmd", "create",
+  };
+  for (const char* kw : kCodingTools) {
+    if (containsCaseInsensitive(tool, kw)) return NvaAnimKey::CODING;
+  }
+  static constexpr const char* const kArchiveTools[] = {
+    "read", "grep", "glob", "search", "find", "list", "fetch",
+  };
+  for (const char* kw : kArchiveTools) {
+    if (containsCaseInsensitive(tool, kw)) return NvaAnimKey::ARCHIVE;
+  }
+  return NvaAnimKey::WORKING;
 }
 
 void pageHomeTriggerSquash(uint32_t nowMs) {
@@ -795,9 +909,10 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     return UiAction{ UiAction::DOCK_TOGGLE, 0 };
   }
 
-  if (PILL_RECT.contains(x, y)) {
+  const ui::Rect pillR = statusPillRect(st);
+  if (pillR.contains(x, y)) {
     if (s_demoAnim < 0) s_demoAnim = 1;
-    else if (s_demoAnim >= 8) s_demoAnim = -1;
+    else if (s_demoAnim >= (int)NvaAnimKey::COUNT - 1) s_demoAnim = -1;
     else s_demoAnim++;
     s_pendingSquashTap = true;
     setBubble((s_demoAnim < 0) ? "恢复自动状态" : "切换动作!", 3500u, st.nowMs);
@@ -805,21 +920,61 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
   }
 
   if (y >= STAGE_TOP && y <= STAGE_BOTTOM) {
-    int16_t curX = (int16_t)(s_petX + 0.5f);
+    const int16_t ox = ui::burnOffsetX(st.burnInStep);
+    const int16_t oy = ui::burnOffsetY(st.burnInStep);
+    int16_t curX = (int16_t)(s_petX + 0.5f) + ox;
     int16_t dx = x - curX;
     if (dx < 0) dx = -dx;
-    if (dx <= 68 && y >= 104) {
+    if (dx <= 68 && y >= (int16_t)(104 + oy)) {
       s_sparkFrames = 24;
       s_pendingSquashTap = true;
-      if (nvaActiveState() == NvaAnimKey::SLEEP) {
+      const NvaAnimKey cur = nvaActiveState();
+      if (cur == NvaAnimKey::SLEEP || cur == NvaAnimKey::YAWN) {
+        s_comboCount = 0;
         setBubble(kWakeQuotes[s_quoteIdx % 2], 5500u, st.nowMs);
-      } else {
-        setBubble(kPetQuotes[s_quoteIdx % 4], 6500u, st.nowMs);
+        s_quoteIdx++;
+        return UiAction{ UiAction::PET_TAP, 0, (int)NvaAnimKey::WAKE_UP };
       }
+
+      uint8_t kept = 0;
+      for (uint8_t i = 0; i < s_comboCount; i++) {
+        if (st.nowMs >= s_comboTimes[i] && (st.nowMs - s_comboTimes[i]) <= 8000u) {
+          s_comboTimes[kept++] = s_comboTimes[i];
+        }
+      }
+      s_comboCount = kept;
+      if (s_comboCount >= 2) {
+        s_comboCount = 0;
+        setBubble(kClickAngryQuotes[s_quoteIdx % 2], 6000u, st.nowMs);
+        s_quoteIdx++;
+        return UiAction{ UiAction::PET_TAP, 0, (int)NvaAnimKey::CLICK_ANGRY };
+      }
+
+      s_comboTimes[s_comboCount++] = st.nowMs;
+      static constexpr NvaAnimKey kClickPool[4] = {
+        NvaAnimKey::CLICK,
+        NvaAnimKey::CLICK_HAPPY,
+        NvaAnimKey::CLICK_SHY,
+        NvaAnimKey::CLICK_GIGGLE,
+      };
+      s_clickPoolIdx = (uint8_t)((s_clickPoolIdx + 1) % 4);
+      if (kClickPool[s_clickPoolIdx] == s_lastClickKey || kClickPool[s_clickPoolIdx] == cur) {
+        s_clickPoolIdx = (uint8_t)((s_clickPoolIdx + 1) % 4);
+      }
+      if (kClickPool[s_clickPoolIdx] == s_lastClickKey || kClickPool[s_clickPoolIdx] == cur) {
+        s_clickPoolIdx = (uint8_t)((s_clickPoolIdx + 1) % 4);
+      }
+      const NvaAnimKey chosen = kClickPool[s_clickPoolIdx];
+      s_lastClickKey = chosen;
+      const char* quote = kClickWaveQuotes[s_quoteIdx % 2];
+      if (chosen == NvaAnimKey::CLICK_HAPPY) quote = kClickHappyQuotes[s_quoteIdx % 2];
+      else if (chosen == NvaAnimKey::CLICK_SHY) quote = kClickShyQuotes[s_quoteIdx % 2];
+      else if (chosen == NvaAnimKey::CLICK_GIGGLE) quote = kClickGiggleQuotes[s_quoteIdx % 2];
       s_quoteIdx++;
-      return UiAction{ UiAction::PET_TAP, 0 };
+      setBubble(quote, 6500u, st.nowMs);
+      return UiAction{ UiAction::PET_TAP, 0, (int)chosen };
     }
-    int16_t tx = x;
+    int16_t tx = (int16_t)(x - ox);
     if (tx < PET_MIN_X) tx = PET_MIN_X;
     if (tx > PET_MAX_X) tx = PET_MAX_X;
     s_targetX = (float)tx;
@@ -840,8 +995,9 @@ bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettin
     *out = apCancelPortalRect(st);
     return true;
   }
-  if (PILL_RECT.contains(x, y)) {
-    *out = PILL_RECT;
+  const ui::Rect pillR = statusPillRect(st);
+  if (pillR.contains(x, y)) {
+    *out = pillR;
     return true;
   }
   return false;
