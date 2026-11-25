@@ -105,7 +105,7 @@ Agent 突然想执行 `rm -rf` 或者敏感工具时，无论你当前停在哪�
 ├── host-plugin/           # DSH MQTT 桥接插件：会话注入（bridge.js）、ASR（asr.js）、编排与压缩（ai.js）、ADPCM（adpcm.js）
 ├── deploy/mosquitto/      # Eclipse Mosquitto 2.0 Docker Compose 配置示例
 ├── tools/
-│   ├── assets/            # .nva 动画转换工具
+│   ├── assets/            # .nva 动画转换（convert_pet.py）与机内语音条生成（gen_voice.mjs）
 │   ├── fonts/             # 4-bpp 字体生成脚本 (gen_aafonts.py)
 │   ├── sim/               # Mac 本机 Clang PNG 模拟器（没有开发板也能一键出全页渲染图）
 │   ├── icons/             # 图标 SVG 与 gen_icons.py（生成 src/ui/icons_data.cpp）

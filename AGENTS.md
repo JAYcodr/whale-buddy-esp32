@@ -24,6 +24,7 @@ Nova Buddy = ESP32-S3（368×448 AMOLED）桌面副屏 + DSH 宿主插件。设�
 | 像素基线对比 | `bash tools/sim/check.sh`（51 项） |
 | 编译 / 烧录 | `bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8` |
 | LittleFS 资源打包 | `bash tools/prep_data.sh` |
+| 机内语音条 | `node tools/assets/gen_voice.mjs`（本机听书值守 → 本地 Qwen3-TTS），写完再 `bash tools/prep_data.sh` |
 | 宿主插件测试 | `cd host-plugin && npm test` |
 | 真机指标 | 串口 `{"cmd":"stat"}`；采样 `node tools/power_probe.mjs --id <ID> --minutes 30` |
 

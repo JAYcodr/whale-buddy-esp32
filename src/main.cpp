@@ -974,7 +974,8 @@ void uiTaskFn(void*) {
           break;
         case UiAction::PET_TAP:
           if (act.value == 0) {
-            static constexpr const char* kTapVoices[3] = {
+            // 老固件 LittleFS 里只有 tap0-2，换了 assets 但没重刷文件系统时回退到旧三条。
+            static constexpr const char* kLegacyTapVoices[3] = {
               "/audio/tap0.adp", "/audio/tap1.adp", "/audio/tap2.adp"
             };
             const NvaAnimKey tapKey =
@@ -988,9 +989,24 @@ void uiTaskFn(void*) {
             if (!aodActive) nvaSetState(clickAnimKey, true, true);
             if ((nowMs - lastTapVoiceMs) >= 800u) {
               lastTapVoiceMs = nowMs;
-              if (!sfxSpeakFile(kTapVoices[tapVoiceIdx % 3], cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
-                sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+              // 每条语音条与气泡台词同源：<variant>_<0|1>.adp（aux 来自 page_homeTap）。
+              const char* voiceBase = "click_wave";
+              switch (tapKey) {
+                case NvaAnimKey::CLICK_HAPPY:  voiceBase = "click_happy";  break;
+                case NvaAnimKey::CLICK_SHY:    voiceBase = "click_shy";    break;
+                case NvaAnimKey::CLICK_GIGGLE: voiceBase = "click_giggle"; break;
+                case NvaAnimKey::CLICK_ANGRY:  voiceBase = "click_angry";  break;
+                case NvaAnimKey::WAKE_UP:      voiceBase = "wake";         break;
+                default: break;
               }
+              char voicePath[40];
+              snprintf(voicePath, sizeof(voicePath), "/audio/%s_%d.adp", voiceBase, act.aux & 1);
+              bool spoke = sfxSpeakFile(voicePath, cfg.soundPct, st.hour, st.timeValid, cfg.quietHours);
+              if (!spoke) {
+                spoke = sfxSpeakFile(kLegacyTapVoices[tapVoiceIdx % 3], cfg.soundPct,
+                                     st.hour, st.timeValid, cfg.quietHours);
+              }
+              if (!spoke) sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
               tapVoiceIdx++;
             }
           } else if (act.value == 1) {

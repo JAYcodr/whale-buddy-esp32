@@ -34,6 +34,7 @@
 | `tools/sim/` | Mac 模拟器：同一套 `ui/` 源码，`-DNOVA_HOST_SIM`，输出 PNG | 像素基线 51 项（49 页 + 2 项局部重绘） |
 | `tools/` | `check_all.sh` 总回归、`power_probe.mjs`、`asr_probe.mjs`、`rec_receiver.mjs`、`usb_shot.py`、`verify_state_payload.mjs`、`pio.sh` | 见 §9 |
 | `assets/pets/nova/` → `data/pets/nova/` | 24 个 `.nva` 动画包（10.4MB，spiffs 分区 12MB）；`tools/prep_data.sh` 打成 LittleFS 镜像 | 改动画名要同步 `nva.h` 枚举与 `page_home` 用法 |
+| `assets/audio/` → `data/audio/` | 17 条 `.adp` 语音（392KB）：boot / run / tap0-2 + 12 条点击·唤醒变体；`node tools/assets/gen_voice.mjs` 用本机听书值守（本地 Qwen3-TTS）重生成 | 响度锁 RMS≈-20dB、峰值≤-7dB（小喇叭会破）；改文本要同时改 `page_home.cpp` 的台词表 |
 | `deploy/mosquitto/` | broker 的 docker-compose 与配置 | — |
 | `attic/` | 硬件点屏验证页，不参与编译 | — |
 
@@ -467,6 +468,8 @@ stateDiagram-v2
 | 点舞台空白 | 小跑到落点（`s_userTargetLock`，14s 后恢复巡游） |
 | 点状态胶囊 | 切 demo，到头回自动 |
 
+**语音条**：点击/唤醒音频与气泡同源，`/audio/<variant>_<0|1>.adp`（`click_wave` / `click_happy` / `click_shy` / `click_giggle` / `click_angry` / `wake`）；文件缺失时回退旧 `tap0-2`，所以换资产没重刷 LittleFS 也不会哑。
+
 **表现规则**：镜像只对 14 个白名单动作生效（带文字/道具的 10 个不镜像，`spriteAllowsMirror`）；spark、Zzz、气泡只在当前帧框 `curX0..curY1` 内画，推送区域取上一帧框 ∪ 本帧框，越界的粒子直接丢；绘制与命中判定必须用同一组 `burnOffset`。
 
 ### 4.3 电源与帧率
@@ -636,5 +639,6 @@ flowchart TD
 | 真机截图 | `python3 tools/usb_shot.py`（USB CDC，NVSH 帧） |
 | 真机指标 | 串口 `{"cmd":"stat"}`；采样 `node tools/power_probe.mjs --id <ID> --minutes 30` |
 | 录音链路 | `node tools/rec_receiver.mjs`（收片存 WAV + 回 `mic_ack`）；识别对拍 `node tools/asr_probe.mjs` |
+| 机内语音条 | `node tools/assets/gen_voice.mjs [key…]`（本机 Qwen3-TTS + `host-plugin/assets/voice-ref.wav`）→ `assets/audio/*.adp`，再 `bash tools/prep_data.sh` |
 | 烧录 | `bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8` |
 | 本文图 | 抽出 mermaid 后 `mmdc -p /tmp/pptr.json -i x.mmd -o x.png -w 1500 -b white`（`pptr` 配置 `{"args":["--no-sandbox"]}`）；`-o /dev/null` 只验语法 |

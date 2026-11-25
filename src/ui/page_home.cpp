@@ -941,9 +941,10 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
       const NvaAnimKey cur = nvaActiveState();
       if (cur == NvaAnimKey::SLEEP || cur == NvaAnimKey::YAWN) {
         s_comboCount = 0;
-        setBubble(kWakeQuotes[s_quoteIdx % 2], 5500u, st.nowMs);
+        const int wakeQ = s_quoteIdx % 2;
+        setBubble(kWakeQuotes[wakeQ], 5500u, st.nowMs);
         s_quoteIdx++;
-        return UiAction{ UiAction::PET_TAP, 0, (int)NvaAnimKey::WAKE_UP };
+        return UiAction{ UiAction::PET_TAP, 0, (int)NvaAnimKey::WAKE_UP, wakeQ };
       }
 
       uint8_t kept = 0;
@@ -955,9 +956,10 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
       s_comboCount = kept;
       if (s_comboCount >= 2) {
         s_comboCount = 0;
-        setBubble(kClickAngryQuotes[s_quoteIdx % 2], 6000u, st.nowMs);
+        const int angryQ = s_quoteIdx % 2;
+        setBubble(kClickAngryQuotes[angryQ], 6000u, st.nowMs);
         s_quoteIdx++;
-        return UiAction{ UiAction::PET_TAP, 0, (int)NvaAnimKey::CLICK_ANGRY };
+        return UiAction{ UiAction::PET_TAP, 0, (int)NvaAnimKey::CLICK_ANGRY, angryQ };
       }
 
       s_comboTimes[s_comboCount++] = st.nowMs;
@@ -976,13 +978,14 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
       }
       const NvaAnimKey chosen = kClickPool[s_clickPoolIdx];
       s_lastClickKey = chosen;
-      const char* quote = kClickWaveQuotes[s_quoteIdx % 2];
-      if (chosen == NvaAnimKey::CLICK_HAPPY) quote = kClickHappyQuotes[s_quoteIdx % 2];
-      else if (chosen == NvaAnimKey::CLICK_SHY) quote = kClickShyQuotes[s_quoteIdx % 2];
-      else if (chosen == NvaAnimKey::CLICK_GIGGLE) quote = kClickGiggleQuotes[s_quoteIdx % 2];
+      const int clickQ = s_quoteIdx % 2;
+      const char* quote = kClickWaveQuotes[clickQ];
+      if (chosen == NvaAnimKey::CLICK_HAPPY) quote = kClickHappyQuotes[clickQ];
+      else if (chosen == NvaAnimKey::CLICK_SHY) quote = kClickShyQuotes[clickQ];
+      else if (chosen == NvaAnimKey::CLICK_GIGGLE) quote = kClickGiggleQuotes[clickQ];
       s_quoteIdx++;
       setBubble(quote, 6500u, st.nowMs);
-      return UiAction{ UiAction::PET_TAP, 0, (int)chosen };
+      return UiAction{ UiAction::PET_TAP, 0, (int)chosen, clickQ };
     }
     int16_t tx = (int16_t)(x - ox);
     if (tx < PET_MIN_X) tx = PET_MIN_X;

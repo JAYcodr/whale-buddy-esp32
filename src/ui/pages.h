@@ -63,6 +63,7 @@ struct UiAction {
   Kind kind = NONE;
   int  value = 0;
   int  extra = 0;
+  int  aux = 0;   // 附加参数：PET_TAP 点击时 = 语音条变体索引（0/1）
 };
 
 // 设置类 UiAction → kSettings：命中则校准后写入并 settingsSave()。
