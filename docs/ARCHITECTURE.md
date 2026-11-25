@@ -1,295 +1,250 @@
-# Nova Buddy — 架构参考
+# Nova Buddy — 架构参考（AI 改动入口）
 
-> **最后核对**: 见 `git log -1 -- docs/ARCHITECTURE.md`
-> **生成日期**: 2026-11-22
-> **生成方式**: architect-mermaid skill（读码 + mmdc 语法校验）
-> **图目录**: [docs/diagrams/](diagrams/)（13 张图的 PNG 导出，`-w 1500 -b white`，与本文 mermaid 源码一一对应）
-> **上游设计书**: [NOVA-BUDDY-PLAN.md](NOVA-BUDDY-PLAN.md)（需求与决策依据）；本文只描述**代码现在是什么样**
+> **同步**：2026-11-25 · HEAD `44503c1` · 固件 `0.5.0` · 插件 `0.3.0`
+> **读者**：AI 与改动者。只回答三件事：**代码在哪、契约是什么、改一处会碰坏什么**。需求与取舍在 [NOVA-BUDDY-PLAN.md](NOVA-BUDDY-PLAN.md)。
+> **维护**：契约变了先改 §3 再改代码；新增模块/任务/主题同步 §2/§7/§8；图里不许出现代码已删除的名字。
+> **图**：[docs/diagrams/](diagrams/) 是下列 mermaid 的 PNG 导出；两者冲突以本文件为准。
+> **入口**：[AGENTS.md](../AGENTS.md)（文档地图、常用命令、提交约定）。
 
 ---
 
-## 0. 项目速览
+## 0. 速览
 
 | 项 | 内容 |
 |---|---|
-| 形态 | 桌面副屏 + 桌面宠物。Mac 侧算事实，ESP32 侧管感觉 |
-| 设备 | Waveshare ESP32-S3-Touch-AMOLED-1.8（368×448，SH8601 QSPI + FT3168 触摸） |
-| 固件 | Arduino / PlatformIO（`env:waveshare-esp32s3-touch-amoled-1-8`），-O2，8MB 无 OTA 分区 |
-| 宿主 | DSH 插件 `host-plugin/`（`dsh-plugin-nova-buddy` v0.3.0，ESM，唯一运行依赖 `mqtt`） |
-| 链路 | WiFi + MQTT，broker 局域网匿名，`nova/<deviceId>/…`，QoS1 + retain + LWT |
-| 六条主线 | 宠物动画 / 订阅额度 / ModelDial 榜单 / 工具审批 / Token 统计 / 配置与配网 |
-| 关键约束 | I2C 只有 `task_bus` 能碰；canvas 只有 `task_ui` 能碰；`err` 字段只能是字面量 `true` |
+| 形态 | 桌面副屏 + 桌面宠物：Mac 侧算事实（凭据、会话、出网），ESP32 侧管感觉（像素、动画、声音） |
+| 设备 | Waveshare ESP32-S3-Touch-AMOLED-1.8：368×448 SH8601 QSPI、FT3168 触摸、AXP2101 电源、PCF85063 RTC、QMI8658 IMU、ES8311 音频 |
+| 固件 | Arduino / PlatformIO，`env:waveshare-esp32s3-touch-amoled-1-8`；全局 `-O2`；8MB 无 OTA；`.nva` 动画在 LittleFS |
+| 宿主 | DSH 插件 `host-plugin/`：`dsh-plugin-nova-buddy@0.3.0`，ESM，运行依赖只有 `mqtt` |
+| 链路 | WiFi + MQTT（局域网匿名 broker）；主题 `nova/<deviceId>/…`；QoS1；retain 按主题；LWT 发 `hello {online:false}` |
+| 七页 | HOME 宠物 / QUOTA 额度 / RANK 榜单 / DETAIL 心跳 / SETTINGS 设置 / TOKENS 鲸鱼 / CHAT 语音看板 |
 
-### 0.1 目录结构
+### 0.1 代码地图（宿主 / 工具；固件模块见 §2.1）
 
-```text
-nova-buddy/
-├── src/                       固件（PlatformIO 只在 src/ 下编译）
-│   ├── main.cpp               task_ui 全流程：串口命令、输入分发、动作、脏矩形决策、帧率与 DFS
-│   ├── anim/nva.{h,cpp}       .nva 包解析 + zlib + XOR 帧差 + 双缓冲 + task_decode
-│   ├── audio/sfx.{h,cpp}      提示音序列（调 hwTone / hwPlayAdpcmFile）
-│   ├── boards/                5 块板子的引脚与屏参（本项目只用 1.8）
-│   ├── hw/                    bus / display / input / audio / power / rtc / imu / expander / border
-│   ├── model/                 settings（NVS）+ state（互斥锁全局状态）
-│   ├── net/                   net.cpp（WiFiManager + MQTT 任务）+ proto.cpp（JSON 编解码）
-│   └── ui/                    canvas / theme / pages / nav / transition / aafont_data（6.9MB 字体）
-├── attic/                     p0_demo.{cpp,h}：硬件点屏验证页，不参与编译
-├── host-plugin/               DSH 插件
-│   ├── index.js               cordis 入口：inject tokenMeter，注册 3 个 global 监听
-│   ├── lib/bridge.js          会话聚合、审批仲裁、MQTT 发布与定时器
-│   ├── lib/fetchers.js        4 个出网抓取器 + 磁盘缓存（~/.dsh/nova-buddy/cache.json）
-│   ├── lib/tokens.js          session 日志 → 按日 token 聚合
-│   ├── lib/ai.js              LLM 动作剧本 + MiMo TTS → NVAD ADPCM
-│   ├── lib/adpcm.js           WAV → NVAD 4bit ADPCM
-│   ├── bin/nova-buddy.js      CLI：auth / test-push / test-choreo / test-tts
-│   └── test/                  见 package.json 的 test 脚本
-├── tools/
-│   ├── sim/                   Mac 主机 PNG 模拟器（共用同一套 ui/ 源码，-DNOVA_HOST_SIM）
-│   ├── assets/convert_pet.py  GIF/视频 → .nva
-│   ├── fonts/gen_aafonts.py   4-bpp 抗锯齿字体生成
-│   ├── usb_shot.py            USB CDC 截图（NVSH 帧）
-│   ├── verify_state_payload.mjs  state 载荷全链路断言（不需要真机/broker）
-│   ├── prep_data.sh           assets → data（LittleFS 镜像源目录）
-│   └── pio.sh                 PlatformIO 包装（绕开坏符号链接）
-├── assets/pets/nova/*.nva     9 个动画包；data/pets/nova 是打包产物
-├── deploy/mosquitto/          broker 的 docker-compose 与配置
-└── docs/                      设计书、架构（本文）、previews 截图
-```
+| 路径 | 职责 | 改动注意 |
+|---|---|---|
+| `host-plugin/index.js` | cordis 入口：inject `tokenMeter`、3 个 global 监听、装配 bridge | 见 §6-4 |
+| `host-plugin/lib/bridge.js` | 会话聚合、state/sessions 节流发布、审批仲裁、chat 投递、定时器 | 最大模块，改动风险最高 |
+| `host-plugin/lib/fetchers.js` | 余额 / OpenCode / OpenDesign / ModelDial 抓取与磁盘缓存 | 失败域独立 |
+| `host-plugin/lib/tokens.js` | 会话日志 → 按日 token 聚合 | 见 §6-5 |
+| `host-plugin/lib/ai.js` · `adpcm.js` | LLM 剧本 / 摘要 / TTS，WAV → NVAD ADPCM | 主备两路、15–25s 超时 |
+| `host-plugin/lib/asr.js` | mic 分片重组 + MiMo ASR | 60s 过期淘汰 |
+| `host-plugin/lib/power.js` | 电源事件日志、续航/充电估算 | 只写 `~/.dsh/nova-buddy/` |
+| `host-plugin/bin/nova-buddy.js` | CLI：`auth opendesign`、`test-push`、`test-choreo`、`test-tts`、`power` | — |
+| `tools/sim/` | Mac 模拟器：同一套 `ui/` 源码，`-DNOVA_HOST_SIM`，输出 PNG | 像素基线 47 张 |
+| `tools/` | `check_all.sh` 总回归、`power_probe.mjs`、`asr_probe.mjs`、`rec_receiver.mjs`、`usb_shot.py`、`verify_state_payload.mjs`、`pio.sh` | 见 §9 |
+| `assets/pets/nova/` → `data/pets/nova/` | 9 个 `.nva` 动画包；`tools/prep_data.sh` 打成 LittleFS 镜像 | 改动画名要同步 `nva.h` 枚举与 `page_home` 用法 |
+| `deploy/mosquitto/` | broker 的 docker-compose 与配置 | — |
+| `attic/` | 硬件点屏验证页，不参与编译 | — |
 
-> **上游残留已清理**：GIF 角色通道、18 个 ASCII 宠物、旧 BLE 桥接与旧 BLE 载荷/统计头文件、`main.cpp.m5stick.bak` 已在 `66f2255` 删除（需要时从 git 历史取回）；`ui/p0_demo.*` 已移到 `attic/`，不参与编译。`build_src_filter` 现在是显式白名单，新目录默认不进编译。
+### 0.2 配置与凭据
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| broker | 插件配置 `brokerUrl` → 环境 `NOVA_MQTT_URL` → 默认 `mqtt://192.168.31.15:1883` | 设备侧另存 NVS `brokerHost/brokerPort`（配网页写） |
+| 插件配置 | profile 插件条目：`deviceApproval`、`fallbackMs`、`ttsVoice`、`ttsStyle`、`quietHours`、`choreoIntervalMs`、`tokens`、`powerLog` | `index.js` 原样传给 bridge |
+| LLM / TTS | `~/.dsh/nova-buddy/config.json`：`llm.primary/fallback{name,url,apiKey,model,maxTokens,reasoningEffort}`、`tts{url,apiKey,model,voice,voiceRef,style,quietHours}` | 剧本、摘要、TTS 共用 |
+| ASR key | 环境 `XIAOMI_API_KEY` → `~/.dsh/.credentials.yaml` 同名 → `config.tts.apiKey` | `asr.js:loadMiMoApiKey` |
+| 抓取凭据 | DeepSeek key：环境 `DEEPSEEK_API_KEY` → `~/.dsh/nova-buddy/deepseek.key` → `~/.dsh/.credentials.yaml`；OpenCode 读 `~/.local/share/opencode/auth.json`；OpenDesign cookie 存 `~/.dsh/nova-buddy/opendesign.cookie`（600） | 401/403 → 该卡 `kind:'na'`，其余照常 |
+| 宿主缓存 | `~/.dsh/nova-buddy/`：`cache.json`、`tokens-cache.json`、`power-events.jsonl`、`power-summary.json`、`deepseek.key` | 缓存可删自动重建；key 文件别删 |
+| 设备设置 | NVS，键表 `src/model/settings.h:kSettings`（home/pwr/snd/brt/tts/quiet/choreo/sleep_s/chg_lim/chg_spd/aod/aod_idle/aod_night/mic_gain） | 键名逐字固定；`toHost` 的项同时是 `prefs` 的 JSON 键 |
+| 编译开关 | 1.8 env：`-O2`、`-fno-math-errno`、`ESP32QSPI_MAX_PIXELS_AT_ONCE=8192`、可选 `NOVA_SLIDE_EASE_QUART` | 去掉 `-fno-math-errno` 鲸群每像素走 libm，+30ms/帧 |
 
 ---
 
-## 1. 系统分层架构
+## 1. 分层与数据流
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'Menlo, monospace', 'fontSize': '12px'}}}%%
 graph TD
-    subgraph MAC["宿主 Mac · DSH 0.2.2-rc.5 · profile desktop"]
-        EVT(["ctx.on<br/>session/event · session/disposed<br/>approval/request"])
+    subgraph MAC["宿主 Mac · DSH 运行期"]
+        EVT(["session/event<br/>session/disposed<br/>approval/request"])
+        SESS["sessionController<br/>list / follow / prompt"]
         subgraph PLUG["host-plugin · dsh-plugin-nova-buddy"]
-            BRIDGE["bridge.js<br/>会话聚合 · 审批仲裁 · 节流发布"]
-            FETCH["fetchers.js<br/>DeepSeek / OpenCode / OpenDesign / ModelDial"]
-            TOKS["tokens.js<br/>会话日志聚合"]
-            AIJS["ai.js<br/>LLM 剧本 · MiMo TTS"]
+            BR["bridge.js<br/>会话聚合 · 审批仲裁<br/>chat 投递 · 定时发布"]
+            FET["fetchers.js<br/>余额 / OpenCode / OpenDesign / ModelDial"]
+            TOK["tokens.js<br/>会话日志 → 日 token"]
+            AI["ai.js + adpcm.js<br/>剧本 · 摘要 · TTS"]
+            ASR["asr.js<br/>mic 分片重组 · MiMo ASR"]
+            PWR["power.js<br/>电源事件日志 · 续航估算"]
         end
-        CACHE[("~/.dsh/nova-buddy/<br/>cache.json · *.key · cookie · config.json")]
+        FS[("~/.dsh/nova-buddy/<br/>cache · tokens-cache<br/>opendesign.cookie · power-*")]
     end
 
     subgraph LAN["局域网"]
-        BROKER[("Mosquitto<br/>192.168.31.15:1883<br/>QoS1 · retain · LWT")]
+        BRK[("Mosquitto<br/>192.168.31.15:1883<br/>QoS1 · retain · LWT")]
     end
 
     subgraph DEV["ESP32-S3 · 368×448 AMOLED"]
-        NETT["task_net<br/>WiFiManager + MQTT 客户端"]
-        PROTO["proto.cpp<br/>JSON 编解码"]
-        STATE[("NovaState<br/>全局 · 互斥锁")]
-        UIM["task_ui<br/>导航 · 渲染 · 推送"]
-        DEC["task_decode<br/>.nva zlib 解码"]
-        AUD["audio 任务<br/>提示音 / ADPCM"]
-        BUS["task_bus<br/>唯一 I2C 访问者"]
+        NET["task_net<br/>WiFiManager · MQTT"]
+        PROTO["proto.cpp<br/>JSON → 状态"]
+        STATE[("NovaState<br/>互斥锁")]
+        UI["task_ui<br/>导航 · 渲染 · 推送"]
+        DEC["task_decode<br/>.nva 解码"]
+        AUD["audio<br/>提示音 / ADPCM / 录音"]
+        BUS["task_bus<br/>唯一 I2C"]
         HW["hw/*<br/>SH8601 · FT3168 · AXP2101<br/>PCF85063 · QMI8658 · ES8311"]
     end
 
-    EVT --> BRIDGE
-    BRIDGE --> FETCH
-    BRIDGE --> TOKS
-    BRIDGE --> AIJS
-    FETCH --> CACHE
-    AIJS --> CACHE
-    BRIDGE -->|"publish 下行 9 个 topic"| BROKER
-    BROKER -->|"subscribe 上行 hello/up"| BRIDGE
-
-    BROKER -->|"TCP"| NETT
-    NETT --> PROTO
+    EVT --> BR
+    BR --> SESS
+    BR --> FET
+    BR --> TOK
+    BR --> AI
+    BR --> ASR
+    BR --> PWR
+    FET --> FS
+    TOK --> FS
+    PWR --> FS
+    BR -->|"下行 12 topic"| BRK
+    BRK -->|"hello · up · mic/*"| BR
+    BRK -->|TCP| NET
+    NET --> PROTO
     PROTO --> STATE
-    STATE --> UIM
-    UIM --> DEC
-    DEC -->|"front 帧缓冲"| UIM
-    BUS -->|"BusSnapshot + InputEvent 队列"| UIM
-    UIM -->|"hwTone / hwPlayAdpcmOwned"| AUD
-    UIM -->|"hwDisplayPush*"| HW
+    STATE --> UI
+    UI -->|"xTaskNotifyGive"| DEC
+    DEC -->|"front 帧 + 信号量"| UI
+    BUS -->|"BusSnapshot · InputEvent×32"| UI
+    AUD -->|"录音快照 PCM"| UI
+    UI -->|"netStartMicUpload"| NET
+    UI -->|"sfxPlay / hwTone / hwPlayAdpcm"| AUD
+    UI -->|"hwDisplayPush*"| HW
     BUS --> HW
     AUD --> HW
-    NETT -->|"netPublish* 走 tx 队列"| BROKER
+    NET -->|"netPublish* 走 tx 队列"| BRK
 
     classDef exp fill:#e3f2fd,stroke:#1565c0,stroke-width:1.5px,color:#1d1d1f
     classDef core fill:#fce4ec,stroke:#c2185b,stroke-width:1.5px,color:#1d1d1f
     classDef infra fill:#e8f5e9,stroke:#388e3c,stroke-width:1.5px,color:#1d1d1f
     classDef store fill:#fff3e0,stroke:#f57c00,stroke-width:1.5px,color:#1d1d1f
-    classDef ext fill:#fff8e1,stroke:#f57f17,stroke-dasharray: 5 5,color:#1d1d1f
-    class BRIDGE,FETCH,TOKS,AIJS,NETT,PROTO,UIM,DEC core
-    class EVT,BUS,PROTO exp
-    class BROKER,CACHE,STATE,HW store
+    class BR,FET,TOK,AI,ASR,PWR,NET,PROTO,UI,DEC core
+    class EVT,SESS,BUS exp
+    class BRK,FS,STATE,HW store
     class AUD infra
 ```
 
-**图注**：左边是事实来源（凭据、DSH 事件、出网抓取），右边是感觉（渲染、动画、音效）。**设备不碰网、不碰密钥**；Mac 不碰像素。跨界的唯一通道是 MQTT 上 11 个 topic（9 下行 + 2 上行）。
+**图注**：跨界只有 MQTT 一条路。设备不碰密钥与公网，Mac 不碰像素；`proto.cpp` 是下行数据变状态的唯一落点。
 
 ---
 
-## 2. 设备端源码依赖（文件级，不含未接入模块）
+## 2. 设备端：模块、任务与同步
 
-```mermaid
-graph LR
-    MAIN["main.cpp<br/>task_ui"]
-    NAV["ui/nav.cpp"]
-    PAGES["ui/pages.h<br/>page_*.cpp × 6"]
-    THEME["ui/theme.cpp"]
-    TRANS["ui/transition.cpp"]
-    NVA["anim/nva.cpp"]
-    SFX["audio/sfx.cpp"]
-    NET["net/net.cpp"]
-    PROTO["net/proto.cpp"]
-    ST["model/state"]
-    CFG["model/settings"]
-    BUS["hw/bus.cpp"]
-    DISP["hw/display.cpp"]
-    AUD["hw/audio.cpp"]
-    INP["hw/input.cpp"]
-    PWR["hw/power.cpp"]
-    RTC["hw/rtc.cpp"]
-    IMU["hw/imu.cpp"]
-    EXP["hw/expander.cpp"]
+### 2.1 模块与依赖
 
-    MAIN --> NAV
-    MAIN --> PAGES
-    MAIN --> NVA
-    MAIN --> SFX
-    MAIN --> NET
-    MAIN --> ST
-    MAIN --> CFG
-    MAIN --> BUS
-    MAIN --> DISP
-    NAV --> PAGES
-    NAV --> ST
-    PAGES --> THEME
-    PAGES --> NVA
-    PAGES --> ST
-    MAIN --> TRANS
-    TRANS --> DISP
-    NVA --> THEME
-    NET --> PROTO
-    NET --> CFG
-    NET --> ST
-    PROTO --> ST
-    PROTO --> CFG
-    PROTO --> RTC
-    PROTO --> AUD
-    PROTO --> BUS
-    BUS --> PWR
-    BUS --> RTC
-    BUS --> IMU
-    BUS --> INP
-    BUS --> EXP
-    DISP --> EXP
-    DISP --> PWR
-    INP --> EXP
-```
+| 模块 | 职责 | 直接依赖 | 边界 |
+|---|---|---|---|
+| `main.cpp` | task_ui：串口命令、输入分发、UiAction 执行、页面调度、脏矩形、帧率/DFS、AOD、录音上传状态机 | nav · pages · nva · sfx · net · state · settings · display · transition | 只有它能碰 canvas |
+| `ui/nav.cpp` | 页面环、滑动、绘制分发 | pages · state | 页面只画不改状态 |
+| `ui/page_*.cpp` | 七页绘制 / 点按 / 滚动惯性 | theme · icons · nva · state · settings | 点按返回 `UiAction`，逻辑回 main |
+| `ui/transition.cpp` | 180ms 双缓存滑屏合成 | display · canvas · easing | 只在切页时 |
+| `ui/theme.cpp` · `aafont_data.cpp` | 色板、组件、4-bpp 字体 | — | 字体 6.7MB，不进逻辑 |
+| `anim/nva.cpp` | `.nva` 解析、zlib、XOR 帧差、双缓冲、`task_decode` | theme | 解码只写后缓冲 |
+| `audio/sfx.cpp` | 提示音序列 | hw/audio | — |
+| `hw/bus.cpp` | I2C 唯一主：触摸 / 电量 / RTC / IMU / 扩展 IO / 麦克风增益 | power · rtc · imu · input · expander · audio | 任何 I2C 都走它 |
+| `hw/display.cpp` | QSPI 推送（全屏 / 矩形 / 亮度） | expander · power | 约束见 §5 |
+| `hw/audio.cpp` | ES8311 播放与录音、I2S | pins · ES8311 | 增益写寄存器只走 bus |
+| `hw/power.cpp` | AXP2101、充电策略、电源事件 | battery_model | 无 UI 依赖 |
+| `net/net.cpp` | WiFiManager、MQTT 任务、发送队列、mic 上传 | proto · settings · state | 不写业务字段，只写连接态 |
+| `net/proto.cpp` | JSON 编解码、`apply*`、`protoBuild*` | state · settings · rtc · audio · bus · battery_model · aod_policy | 下行唯一落点，持锁写 |
+| `model/state.cpp` | 全局态 + 互斥锁 + 整份拷贝 | — | 见 §6-6 |
+| `model/settings.cpp` | NVS 表驱动读写、迁移、`prefs` | log | 键名不可改 |
+| `model/battery_model.h` · `aod_policy.h` | 电量/充电、AOD 纯策略 | 无 Arduino 依赖 | 主机单测直接编译 |
 
-**图注**：`proto.cpp` 是唯一同时依赖 `state` + `settings` + `rtc` + `audio` + `bus` 的模块 —— 它是下行数据的落点，所有"网上的东西变成设备状态"的关系都从这里出发。`net.cpp` 不直接写 `NovaState` 的业务字段（只写连接状态），避免两个任务争一张表。
+### 2.2 任务划分
 
----
-
-## 3. RTOS 任务划分（核心：谁在做什么）
-
-| 任务 | 核 | 优先 | 栈 | 周期 / 触发 | 独占资源 | 干什么 |
+| 任务 | 核 | 优先 | 栈 | 触发 | 独占资源 | 职责 |
 |---|---|---|---|---|---|---|
-| `task_ui` | 1 | 5 | 10240 | deadline 16.6ms（按目标帧率变） | **canvas / framebuffer** | 串口命令、输入事件、动作分发、页面绘制、脏矩形推送、动画状态机、CPU DFS、熄屏/防烧屏 |
-| `task_bus` | 0 | 6 | 4096 | 20ms（4ms×5 切片，触摸 IRQ 提前打断） | **I2C 总线** | 触摸/按键/PEK 采样、电池（每 50 tick）、RTC（每 10 tick）、IMU 翻面判定；写 `BusSnapshot`，投 `InputEvent` 队列 |
-| `task_net` | 0 | 4 | 12288 | 25ms 轮询（配网时 10ms） | **WiFi / MQTT 句柄** | WiFiManager captive portal、MQTT 连接与退避重连、订阅 9 topic、收包→`protoApplyMessage`、排空发送队列、30s 上报 stat、PS 档位切换 |
-| `task_decode` | 1 | 3 | 8192 | `ulTaskNotifyTake` 事件驱动 | **.nva 解码缓冲** | zlib 解压 + XOR 帧差 → 写后缓冲，成功后切 `s_frontIdx` 供 UI 取用 |
-| `audio` | 任意 | 5 | 4096 | 队列（深 16） | **I2S / ES8311** | 提示音（带包络滑音）、ADPCM 文件/内存播放；`voiceGen` 代际号丢弃过期请求 |
-| `loop()` | — | — | — | — | — | 空转 `vTaskDelay(portMAX_DELAY)`，主循环已全部搬进任务 |
+| `task_ui` | 1 | 5 | 10240 | deadline 16.6ms（随目标帧率变） | **canvas / framebuffer** | 串口命令、输入事件、动作分发、七页绘制、脏矩形推送、动画状态机、DFS、熄屏/AOD |
+| `task_bus` | 0 | 6 | 4096 | 20ms（4ms×5 切片，触摸 IRQ 可打断） | **I2C** | 触摸/按键/PEK、电池（每 50 tick）、RTC（每 10 tick）、IMU 翻面；写 `BusSnapshot`、投 `InputEvent` |
+| `task_net` | 0 | 4 | 12288 | 25ms 轮询（配网 10ms） | **WiFi / MQTT 句柄** | 配网 portal、MQTT 连接与退避、订阅 12 topic、收包→`protoApplyMessage`、排空发送队列、30s 上报 stat、PS 档位、mic 分片上传 |
+| `task_decode` | 1 | 3 | 8192 | `ulTaskNotifyTake` | **.nva 解码缓冲** | zlib 解压 + XOR 帧差 → 后缓冲，成功后切 front 指针 |
+| `audio` | 无亲和 | 5 | 6144 | 队列（深 16） | **I2S / ES8311** | 提示音、ADPCM 播放、录音；`voiceGen` 代际号丢弃过期请求 |
+| `loop()` | — | — | — | — | — | `vTaskDelay(portMAX_DELAY)`，主循环已全部搬进任务 |
 
-```mermaid
-graph TB
-    subgraph CORE1["Core 1"]
-        UI["task_ui · prio 5<br/>16.6ms deadline"]
-        DEC["task_decode · prio 3<br/>事件驱动"]
-    end
-    subgraph CORE0["Core 0"]
-        BUS["task_bus · prio 6<br/>20ms"]
-        NET["task_net · prio 4<br/>事件驱动"]
-    end
-    subgraph ANY["无亲和"]
-        AUD["audio · prio 5<br/>队列驱动"]
-    end
+### 2.3 跨任务同步（三选一，别混用）
 
-    BUS -->|"InputEvent×32 队列"| UI
-    BUS -->|"BusSnapshot · portMUX"| UI
-    UI -->|"xTaskNotifyGive"| DEC
-    DEC -->|"front 帧 + 信号量"| UI
-    NET -->|"NovaState · 互斥锁"| UI
-    UI -->|"netPublish* / netRequest*"| NET
-    UI -->|"sfxPlay / hwTone"| AUD
-    NET -->|"hwBusRequestRtcWrite"| BUS
+| 机制 | 用于 | 规则 |
+|---|---|---|
+| 互斥锁 `novaStateWithLock` | `NovaState`（3KB+ 大结构） | 读写都整份拷贝；持锁期间不做 I2C / 推送 / 等队列 |
+| `portMUX` 临界区 | `BusSnapshot`（POD） | 只拷 POD，极短，不放业务分支 |
+| FreeRTOS 队列 / 通知 | `InputEvent`×32、音频队列、发送队列、解码通知 | 满了就丢并计数（`netPublishQueueDropCount` / `hwAudioQueueDropCount`），不回压 UI |
 
-    classDef c1 fill:#fce4ec,stroke:#c2185b,stroke-width:1.5px,color:#1d1d1f
-    classDef c0 fill:#e3f2fd,stroke:#1565c0,stroke-width:1.5px,color:#1d1d1f
-    classDef ax fill:#e8f5e9,stroke:#388e3c,stroke-width:1.5px,color:#1d1d1f
-    class UI,DEC c1
-    class BUS,NET c0
-    class AUD ax
-```
+`task_ui` 与 `task_decode` 同在 Core 1 是有意的：解码优先级低，取不到新帧就重播上一帧，**解压不许阻塞渲染**。
 
-**图注**：跨任务同步有三套机制，别混用 —— ① `BusSnapshot` 用 `portMUX` 临界区（只拷 POD、极短）；② `NovaState` 用互斥锁（结构体 3KB+，读也整份拷）；③ 事件/请求走 FreeRTOS 队列。`task_ui` 与 `task_decode` 同在 Core 1 是有意的：解码低优先级，取不到新帧就重复上一帧，**不许解压阻塞渲染**。
-
-### 3.1 `task_ui` 单帧流程
+### 2.4 `task_ui` 单帧
 
 ```mermaid
 flowchart TD
-    A["for(;;) · esp_task_wdt_reset"] --> B["pollSerialCommands<br/>shot / stat / page / tap / demo / reprov"]
-    B --> C["hwBusSnapshot + novaStateRead<br/>得到 BusSnapshot 与 NovaState 副本"]
-    C --> D["回写硬件字段<br/>fps/pushUs/heap/psram/电量/时间/RSSI"]
-    D --> E{"审批 TTL 过期?"}
+    A["for(;;) · esp_task_wdt_reset"] --> B["pollSerialCommands<br/>shot · stat · page · tap · demo · reprov · statrate · aodforce"]
+    B --> C["hwBusSnapshot + novaStateRead<br/>拿 BusSnapshot 与 NovaState 副本"]
+    C --> D["回写硬件字段<br/>fps / pushUs / heap / psram / 电量 / 时间 / RSSI / 忙时率"]
+    D --> E{"审批 TTL 到期?"}
     E -->|是| F["approvalActive=false · apGen++"]
     E -->|否| G["CPU DFS 决策<br/>240 / 160 / 80 MHz"]
     F --> G
-    G --> H{"apGen 变了?"}
-    H -->|"进入"| I["亮屏 + FADE 转场"]
-    H -->|"退出"| J["FADE 转场回原页"]
-    H -->|否| K["排空 InputEvent<br/>TOUCH/KEY1/AXP 手势识别"]
-    I --> K
-    J --> K
-    K --> L["nav.onTap / onSwipe → UiAction"]
-    L --> M["handleAction<br/>切页/设置/审批/宠物点击"]
-    M --> N["动画状态机<br/>审批>demo>click>oneShot>run>walk>sleep>choreo>bgCycle"]
-    N --> O["nvaTick → 通知 task_decode"]
-    O --> P["比较 N 个 gen / 时间 / 电量 / burnStep<br/>决定 needFull"]
-    P --> Q{"needFull?"}
-    Q -->|是| R["nav.draw 全屏 → hwDisplayPush"]
-    Q -->|否| S["按页走脏矩形<br/>rank 列表 / 主屏舞台 / token 带 / 审批进度条"]
-    R --> T["帧率统计 → deadline 排程 vTaskDelay"]
-    S --> T
-    T --> A
+    G --> H["排空 InputEvent<br/>TOUCH / KEY1 / AXP 手势"]
+    H --> I["nav.onTap / onSwipe → UiAction"]
+    I --> J["handleAction<br/>切页 / 设置 / 审批 / chat / 宠物点击"]
+    J --> K["动画状态机<br/>审批›demo›click›oneShot›run›walk›sleep›choreo›bgCycle"]
+    K --> L["nvaTick → 通知 task_decode"]
+    L --> M["比较各 gen / 时间 / 电量 / burnStep → needFull?"]
+    M -->|是| N["nav.draw 全屏 → hwDisplayPush"]
+    M -->|否| O["按页脏矩形<br/>settings / rank 列表 · 主屏舞台 · tokens 带 · 审批条 · 按下高亮"]
+    N --> P["帧率统计 → vTaskDelay 到下一 deadline"]
+    O --> P
+    P --> A
 ```
 
 ---
 
-## 4. 数据传递
+## 3. 协议（宿主 ↔ 设备）
 
-### 4.1 通道总表（MQTT 主题树）
+### 3.1 主题总表
 
-前缀 `nova/`，`<id>` = MAC 后 3 字节（如 `D93468`）。
+前缀 `nova/`，`<id>` = MAC 后 3 字节（例 `D93468`）。下行 12、上行 3 类。
 
-| Topic | 方向 | QoS | retain | 载荷要点 | 生产方 → 消费方 |
+| 主题 | 方向 | QoS | retain | 生产 → 消费 | 触发 |
 |---|---|---|---|---|---|
-| `state` | ↓ | 1 | ✅ | run/wait/sess/msg/ctx.pct/model/title/tool/err/errMsg（`msg`/`title` 由宿主清洗成单行短文本） | bridge.flushState → applyState |
-| `quota` | ↓ | 1 | ✅ | 3 张卡：bal / win(2 条 bar) / na(why) | 5min 定时 + 连接 + sync |
-| `rank` | ↓ | 1 | ✅ | 前 8 行 + src/lic/at | 6h TTL + force |
-| `tokens` | ↓ | 1 | ✅ | total/spanDays/cachePct/days[14] | 60s，内容不变不重发 |
-| `approval` | ↓ | 1 | ❌ | id/tool/reason/ttl | 事件驱动，**不能 retain** |
-| `approval_end` | ↓ | 1 | ❌ | id | 超时/浏览器先答了 |
-| `time` | ↓ | 0 | ✅ | epoch + tz | 30s 心跳 + hello 时 |
-| `choreo` | ↓ | 1 | ❌ | mood + `at` + ≤6 步 {x,speed,anim,dur,say} | 15min + turn-end 120s 冷却；**不 retain**（否则冷启动重放旧剧本），设备重连由 hello 补推 15 分钟内的 |
-| `tts` | ↓ | 1 | ❌ | id/seq/tot/b64（1800B 一片） | 事件驱动，分片 |
-| `hello` | ↑ | 1 | (LWT retain) | online + hello{w,h,fps,ip,pwr,aod} + prefs | 连接时 / LWT 断线 |
-| `up` | ↑ | 1 | ❌ | evt=decision/stat/prefs/sync；`stat` 含 drawFps/pushUs/idle/draws/pwr/brt/lcd/aod/cpu{ui,dec} | 设备主动，默认 30s（`{"cmd":"statrate"}` 可临时改密） |
+| `state` | ↓ | 1 | ✅ | `buildStatePayload` → `applyState` | 会话事件；同内容 5s 不重发，最短 400ms |
+| `sessions` | ↓ | 1 | ✅ | `buildSessionsPayload` → `applySessions` | 同 state，节流同 |
+| `quota` | ↓ | 1 | ✅ | `fetchAllQuota` → `applyQuota` | 连接 / 5min / `sync` |
+| `rank` | ↓ | 1 | ✅ | `fetchModelDialRank` → `applyRank` | 6h TTL / 强制刷新 |
+| `tokens` | ↓ | 1 | ✅ | `tokenCollector` → `applyTokens` | 60s，内容不变不发 |
+| `approval` | ↓ | 1 | ❌ | `onApprovalRequest` → `applyApproval` | 事件，**不许 retain** |
+| `approval_end` | ↓ | 1 | ❌ | `settleApproval` → `applyApprovalEnd` | 已裁决 / 超时 |
+| `time` | ↓ | 0 | ✅ | `pushTime` → `applyTime` | 30s 心跳 + hello |
+| `choreo` | ↓ | 1 | ❌ | `generateChoreography` → `applyChoreo` | 15min + turn-end 120s 冷却 |
+| `tts` | ↓ | 1 | ❌ | `publishTts` → `applyTtsChunk` | 事件，1800B/片 |
+| `chat` | ↓ | 1 | ❌ | `bridge` → `applyChat` | 事件：`asr` / `delivery` / `reply` |
+| `mic_ack` | ↓ | 1 | ❌ | `handleMicMessage` → `applyMicAck` | 每次录音 |
+| `hello` | ↑ | 1 | ✅(LWT) | 设备 → `handleHello` | 连接时 / 断线 LWT |
+| `up` | ↑ | 1 | ❌ | 设备 → `handleUp` | `decision` `stat` `prefs` `sync` `pwr` `chat_send` `chat_tts` |
+| `mic/start` `mic/chunk` `mic/end` | ↑ | 1 | ❌ | 设备 → `handleMicMessage` | 每次录音；片 = 6B 头 + 2048B PCM |
 
-> **为什么 `approval` 不 retain**：retain 会在设备重连时重放一条早该消失的审批，用户会看到幽灵弹窗。审批走 QoS1 在线投递 + 两端 TTL 自毁。
+### 3.2 载荷契约
 
-### 4.2 状态主链路（DSH 事件 → 屏幕）
+| 主题 | 字段 | 约束 |
+|---|---|---|
+| `state` | `run` `wait` `sess` | 会话计数；主会话按 `waiting > running > error > idle` 选 |
+| | `msg` | ≤112B 单行；**不许含「异常」**（设备拿它兜底判错） |
+| | `err` | **只能是字面量 `true`**；`1`、`"true"`、对象都会被 ArduinoJson 的默认值运算符取成 0 |
+| | `ctx.pct` | 0..100，`tokenMeter.contextPressure`，只在 turn/end、step/end 采样 |
+| | `model` `title` `tool` `errMsg` | ≤32 / ≤40 / ≤24 / ≤136B，主屏码头用 |
+| `sessions` | `items[≤4]` | 每项 `{id,name,cwd,st∈{run,wait,err,idle},el,act,note,steps[≤3]{t,s,a}}`；顶层 `lastSay` `lastAgo` |
+| `approval` | `id` `tool` `reason` `ttl` | `reason`≤140；可选 `sess` `note`；`approval_end` 只要 `id` |
+| `choreo` | `mood` `steps[≤6]` | 每步 `{x∈[80,288],speed:walk/run,anim,dur(ms),say}`；`anim` 只认 9 枚举（`ai.js:VALID_ANIMS` 与 `proto.cpp:animNameToIdx` 必须同步） |
+| `tts` | `id` `seq` `tot` `b64` | 1800B ADPCM/片；设备上限 `98304B`，超了整条静默丢 |
+| `chat` | `asr` | `{t,id,ok,text/err}` → 草稿卡 |
+| | `delivery` | `{t,id,kind:sent/run/reply/fail/mute,pos,secs/ago,target,name,text}` |
+| `mic_ack` | `id` `ok` `missing` `file` `err` | `missing`=缺片数；`ok=false` 直接进 ERR |
+| `up` | `hello` | `{online,hello{id,fw,w,h,fps,ip,pwr,aod,onSrc,offSrc},prefs}` |
+| | `stat` | `{fps,drop,heap,psram,mhz,rssi,mv,pct,chg,stage,tmp,drawFps,pushUs,idle,draws,pwr,brt,lcd,aod,tx,cpu{ui,dec}}` |
+| | `pwr` | `{seq,why,pct,raw,gauge,st,mv,vb,vs,ma,tmp,usb,chg,mohm,…}`；`why`∈boot/usb_in/usb_out/stage/probe/therm/low_bat |
+| | `decision` `chat_send` `chat_tts` | `{id,accept}` / `{id,toPc}`；`{id,text,target,mode:queue/steer}`；`{text}` |
+
+> 设备上行 JSON 装 `NetTxMsg.payload[448]`；下行无此限制（MQTT 读缓冲 4096，TTS 片靠它才收得下）。
+
+### 3.3 状态主链路
 
 ```mermaid
 sequenceDiagram
@@ -302,25 +257,18 @@ sequenceDiagram
     participant UI as task_ui
 
     DSH->>BR: session/event {turn/start, tool/call, turn/end…}
-    BR->>BR: sessions.set(sid, {running,lastTool,msg,ctxPct…})
-    BR->>BR: buildStatePayload（waiting>running>error 优先级选主会话）
-    Note over BR: 节流：同内容 5s 内不重发；<br/>距上次 <400ms 则挂 400ms 定时器
-    BR->>BRK: publish state (QoS1, retain)
+    BR->>BR: sessions.set(sid,{running,waiting,lastTool,msg,ctxPct…})
+    BR->>BR: buildStatePayload（waiting>running>error 选主会话）
+    Note over BR: 同内容 5s 内不重发；距上次 <400ms 则挂 400ms 定时器
+    BR->>BRK: publish state（QoS1，retain）
     BRK->>NET: TCP 推送
     NET->>NET: onMqttMessage 校验前缀，取 suffix
-    NET->>ST: protoApplyMessage → applyState（持锁写字段，stateGen++）
+    NET->>ST: protoApplyMessage → applyState（持锁写，stateGen++）
     ST-->>UI: 下一轮 novaStateRead 看到 stateGen 变化
-    UI->>UI: needFull=true → nav.draw 全屏
-    UI->>UI: hwDisplayPush（全屏 329KB）
+    UI->>UI: needFull=true → nav.draw 全屏 → hwDisplayPush
 ```
 
-**要点**
-- `err` 字段只能是字面量 `true`：`doc["err"] | false` 对 `1`/`"true"`/对象一律求值 0。异常原文走平级 `errMsg`。
-- `msg` 里**不许出现「异常」二字**：`applyState` 有 `strstr(st.msg, "异常")` 兜底判定，会误报。
-- `ctx.pct` 来自 `tokenMeter.contextPressure(session)`，只在 `turn/end` 与 `step/end` 两个事件点采样 —— DSH 没有 usage 事件。
-- 上下文占用必须**在派发路径外**求值 `ctx.tokenMeter`（`inject` 门槛），否则回调第一行就抛、被吞成 warn，表现是"事件到了但没执行"。
-
-### 4.3 审批闭环（唯一有真延迟要求的一条）
+### 3.4 审批闭环
 
 ```mermaid
 sequenceDiagram
@@ -329,81 +277,101 @@ sequenceDiagram
     participant BR as bridge.js
     participant BRK as Mosquitto
     participant DEV as 设备
-    participant U as 用户手指
+    participant U as 手指
 
-    DSH->>BR: approval/request (waterfall, prepend)
+    DSH->>BR: approval/request（waterfall，prepend）
     BR->>BR: 判 deviceApproval 与 onlineIds
     alt 无在线设备 / deviceApproval=off
-        BR->>DSH: next() 直接回浏览器
-    else 设备在线
-        BR->>BRK: publish approval (不 retain) + TTS「X 需要确认」
-        BR->>BR: 建 pendingApprovals[apId]，起 fallbackMs 定时器
+        BR->>DSH: next() 交回本机对话框
+    else 有设备
+        BR->>BRK: publish approval（不 retain）+ TTS「X 需要确认」
+        BR->>BR: pendingApprovals[id] + fallbackMs 定时器（默认 20000）
         BRK->>DEV: applyApproval → apGen++ / apTtlMs
-        DEV->>DEV: task_ui 检测 apGen → 亮屏 + FADE 弹窗 + 倒计时环
-        U->>DEV: 点「批准 / 拒绝 / 转电脑」
-        DEV->>BRK: up {evt:decision, id, accept|toPc}
+        DEV->>DEV: 亮屏 + FADE 弹窗 + 倒计时环
+        U->>DEV: 批准 / 拒绝 / 转电脑
+        DEV->>BRK: up {evt:decision,id,accept|toPc}
         BRK->>BR: handleUp → settleApproval
-        BR-->>DSH: resolve(allowed-once | rejected) 或 next()
-        DEV->>DEV: 关弹窗，播放 success/error/thinking 一次性动画
+        BR-->>DSH: allowed-once / rejected，或 next()
+        DEV->>DEV: 关弹窗，播 success/error/thinking
     end
-    Note over BR,DEV: 超时 → settleApproval(timeout) → 发 approval_end 清设备 → 返回 rejected（自动拒绝）<br/>浏览器先答 → 发 approval_end；mirror 模式下与设备决策 Promise.race
+    Note over BR,DEV: 超时 → settleApproval(timeout) → 发 approval_end → 返回 rejected<br/>浏览器先答 → 发 approval_end；mirror 模式与设备 Promise.race
 ```
 
-**默认值**（`index.js` 传入，与 `bridge.js` 内部缺省一致）：`deviceApproval='mirror'`、`fallbackMs=20000`。`mirror` = 设备与浏览器谁先答听谁的；`prefer` = 只等设备。**两种模式超时都返回 `rejected` 自动拒绝**，只有设备点「转电脑」（`toPc` / `fallback`）才走 `next()` 回落到本机对话框。
+| 项 | 行为 |
+|---|---|
+| 模式 | `mirror`（默认，谁先答听谁的）/ `prefer`（只等设备）/ `off`（不接管） |
+| 超时 | 两种模式都返回 `rejected`，**不再回退本机对话框** |
+| 转电脑 | 只有设备点「转电脑」（`toPc`）才 `next()` |
+| 重投 | 同 `id` 幂等：不重置 `apArrivedMs`、不 `apGen++` |
 
-设备侧 `applyApproval` 对同 id 重投幂等（QoS1 重发 / `cleanSession=false` 重连重放）：不重置 `apArrivedMs`、不 `apGen++`，避免倒计时重新满格、重播到达音，以及已收口的审批复活成幽灵弹窗。
+### 3.5 语音看板（按住说话 → 会话 → 回执）
 
-### 4.4 三条出网抓取支线
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 手指
+    participant DEV as page_chat
+    participant NET as task_net
+    participant BRK as Mosquitto
+    participant BR as bridge.js
+    participant ASR as asr.js → MiMo
+    participant SC as sessionController
+    participant AI as ai.js
+
+    U->>DEV: 按住「按住说话」→ hwAudioRecStart(gainDb)
+    U->>DEV: 松手（上滑=作废）→ hwAudioRecStop
+    DEV->>DEV: clipReady → recState=2(UPLOADING)
+    DEV->>NET: netStartMicUpload(pcm,samples,clipId,…)
+    NET->>BRK: mic/start{id,sr,ch,bits,bytes,chunks,gain,durMs,peakDb,rmsDb,clip}
+    NET->>BRK: mic/chunk ×N（6B 头 + 2048B PCM）
+    NET->>BRK: mic/end{id,chunks,bytes}
+    BRK->>BR: handleMicMessage → micReassembler（按 deviceId:clipId，60s 过期）
+    BR->>BRK: mic_ack{ok:true,file:'mimo_asr',missing:0}
+    BR->>ASR: buildWavBuffer → transcribeMiMoWav（15s 超时）
+    BR->>BRK: chat{t:asr,id,ok,text}
+    BRK->>DEV: applyChat → chatDraftActive，锁推荐会话
+    U->>DEV: 确认 / 改会话 → 发送
+    DEV->>BRK: up{evt:chat_send,id,text,target,mode}
+    BRK->>BR: handleChatSend
+    BR->>SC: list() 校验目标 → prompt({requestId,sessionId,mode}) + follow()
+    BR->>BRK: chat{t:delivery,kind:sent}
+    SC-->>BR: user/message(rpcId 匹配) → chat{t:delivery,kind:run}
+    SC-->>BR: turn/end → AI.summarizeSessionReply（≤40 显示宽）
+    BR->>BRK: chat{t:delivery,kind:reply,text} + tts(force)
+```
+
+设备录音状态：`0 IDLE → 1 RECORDING → 2 UPLOADING → 3 SENT_WAIT_ACK → 4 SAVED`，异常 `5 ERR`；`3`/`4` 超 10s 无对应回执 → `5`（"回执超时"/"识别超时"）。
+
+**投递规则**：目标 `waiting`（等审批）拒收回 `fail`；失效会话回 `fail`「请重选」；`queue` 排队、`steer` 打断；宿主 `pendingChatQueue` 上限 8 条、15s 过期。草稿必须锁真实会话（目标失效/等待审批时自动预选推荐会话）。
+
+### 3.6 TTS 链路
 
 ```mermaid
 flowchart LR
-    subgraph TRI["定时器 / 事件"]
-        T1["连接建立"]
-        T2["5 min"]
-        T3["6 h"]
-        T4["60 s"]
-        T5["sync 事件"]
-    end
-    T1 --> Q
-    T2 --> Q
-    T5 --> Q
-    T3 --> R
-    T4 --> K
-
-    subgraph FETCHERS["fetchers.js / tokens.js"]
-        Q["fetchAllQuota<br/>Promise.all 三路并发"]
-        R["fetchModelDialRank<br/>HTML 解析 + 6h 磁盘缓存"]
-        K["tokenCollector.refresh<br/>mtimeMs+size 增量扫描"]
-    end
-
-    Q --> D1["api.deepseek.com/user/balance<br/>Bearer DEEPSEEK_API_KEY"]
-    Q --> D2["opencode.ai/zen/go/v1/usage<br/>~/.local/share/opencode/auth.json"]
-    Q --> D3["amr-api.open-design.ai ×2<br/>session cookie + X-Vela-Workspace-Id"]
-    R --> D4["modeldial.com/api/v1/radar/latest.json<br/>失败回退 HTML 抓取"]
-    K --> D5["$DSH_HOME/sessions/**/session*.jsonl.zstd<br/>逐帧 zstdDecompressSync"]
-
-    D1 --> C[("cache.json / tokens-cache.json")]
-    D2 --> C
-    D3 --> C
-    D4 --> C
-    D5 --> C
-    C --> PUB["publish quota / rank / tokens<br/>QoS1 retain"]
-
-    classDef t fill:#f3e5f5,stroke:#7b1fa2
-    classDef f fill:#fce4ec,stroke:#c2185b
-    classDef x fill:#fff8e1,stroke:#f57f17,stroke-dasharray: 5 5
-    classDef s fill:#fff3e0,stroke:#f57c00
-    class T1,T2,T3,T4,T5 t
-    class Q,R,K f
-    class D1,D2,D3,D4,D5 x
-    class C s
+    A["文本<br/>clipForTts ≤40 显示宽"] --> B["MiMo TTS<br/>mimo-v2.5-tts / voiceclone"]
+    B --> C["WAV → NVAD 4bit ADPCM<br/>16kHz ≈ 8000 B/s"]
+    C --> D["base64 分片 1800B<br/>seq / tot"]
+    D -->|"nova/id/tts 不 retain"| E["applyTtsChunk<br/>PSRAM 累积，上限 98304 B"]
+    E --> F{"攒满 tot?"}
+    F -->|是| G["hwPlayAdpcmOwned"]
+    G --> H["audio 队列<br/>voiceGen 代际校验"]
+    H --> I["I2S → ES8311"]
+    F -->|"超限 / 错序 / 过期"| J["free + 静默丢弃"]
 ```
 
-**失败域是独立的**：某个源 401/403 → 该卡 `kind:'na'` + `why:'reauth'`，其余照常；超时 → 用缓存 + `ageSec`；OpenDesign 没 cookie → `no-session`，整页不阻塞。
+**两个上限**：① 单条 98304B ≈ 12s ≈ 43–55 汉字，超了整条丢弃**且无提示** → 所有 TTS 文本先 `clipForTts(≤40 显示宽)`；② `force:true` 跳过 4s 节流，必须配 `ttsDedupHit` 30s 去重。设备侧另有三道闸：`ttsEnabled`、`soundPct>0`、夜间静音（23–08）。
 
-**token 页为什么读日志不走 ctx**：`ctx.sessions.list()` 只列当前进程内的 live session，拿不到历史，而累计页要的正是历史。DSH 的 session 文件是逐条 append 的**多帧** zstd 流，`createZstdDecompress` 解完第一帧就报 `Unknown frame descriptor`，所以按 magic `28 B5 2F FD` 切帧逐帧 `zstdDecompressSync`。口径与 tokenMeter 对齐：同一 `(turn, step)` 后到样本**替换**前者；按事件 `time` 归日。缓存按 `mtimeMs + size` 增量（首扫 4.5s / 1094 会话，之后 ~100ms）。
+### 3.7 三条出网抓取支线
 
-### 4.5 宠物：从 LLM 剧本到动作
+| 支线 | 触发 | 数据源 | 缓存 / 失败域 |
+|---|---|---|---|
+| 额度 `quota` | 连接、5min、`sync` | DeepSeek 余额（Bearer key，走 DSH credentialsService）、OpenCode `auth.json`、OpenDesign cookie×2 | `cache.json`；单源 401/403 → 该卡 `na`+`reauth`；超时用缓存 + `ageSec`；无 cookie → `no-session` |
+| 榜单 `rank` | 6h TTL、强制刷新 | `modeldial.com/api/v1/radar/latest.json`，失败回退 HTML 解析 | `cache.json`，6h TTL |
+| Token `tokens` | 60s | `$DSH_HOME/sessions/**/session*.jsonl.zstd` | `tokens-cache.json`；按 `mtimeMs+size` 增量，首扫全量 |
+
+**token 页不走 `ctx.sessions`**：`list()` 只列当前进程 live session，拿不到历史。DSH 会话文件是逐条 append 的多帧 zstd 流，必须按 magic `28 B5 2F FD` 切帧逐帧解；口径与 tokenMeter 对齐（同 `(turn,step)` 后到替换，按事件 `time` 归日）。
+
+### 3.8 宠物剧本
 
 ```mermaid
 sequenceDiagram
@@ -418,63 +386,43 @@ sequenceDiagram
     TM->>AI: generateChoreography(上下文摘要)
     AI->>LLM: system=行为导演 + user=时间/运行数/余额/上轮动作
     LLM-->>AI: {"mood":…,"steps":[…]}
-    AI->>AI: normalizeChoreo：x∈[80,288]、dur∈[10s,24s]<br/>相邻/首尾去重、池内优先未用动作
-    AI-->>BR: {t:'choreo',mood,steps}
-    BR->>DEV: publish choreo (retain)
+    AI->>AI: normalizeChoreo：x∈[80,288]、dur 收口、去重、优先未用动作
+    AI-->>BR: {mood,steps}
+    BR->>DEV: publish choreo（不 retain）
     loop 每步
-        DEV->>DEV: updateRoam 取 step.x 当目标，走到位后按 step.durMs 计时
+        DEV->>DEV: updateRoam 取 step.x 为目标，到位后按 durMs 计时
         DEV->>DEV: s_choreoAnim = step.anim；step.say → 气泡 8.5s
-        DEV->>NVA: nvaSetState(anim) → 通知解码 → 播满一圈才推进下一步
+        DEV->>NVA: nvaSetState(anim) → 通知解码 → 播满一圈推进下一步
     end
-    Note over DEV: 只在 run==0 && wait==0 && 无审批 && choreoEnabled 时执行；<br/>用户点过屏幕后 s_userTargetLock 接管
+    Note over DEV: 仅 run==0 && wait==0 && 无审批 && choreoEnabled 时执行；<br/>用户点过屏后 s_userTargetLock 接管
 ```
-
-`anim` 取值被两处收口到同一套枚举：`VALID_ANIMS`（ai.js）与 `animNameToIdx`（proto.cpp），共 9 个：idle / thinking / working / waiting / success / error / click / sleep / quota。
-
-### 4.6 语音：TTS 到喇叭
-
-```mermaid
-flowchart LR
-    A["文本<br/>clipForTts ≤40 字"] --> B["MiMo TTS API<br/>mimo-v2.5-tts 或 voiceclone"]
-    B --> C["WAV → wavToNvAdpcm<br/>4bit@16kHz ≈ 8000 B/s"]
-    C --> D["base64 分片 1800 B<br/>seq/tot"]
-    D -->|"nova/id/tts 不 retain"| E["applyTtsChunk<br/>PSRAM 累积，上限 98304 B"]
-    E --> F{"攒满 tot?"}
-    F -->|是| G["hwPlayAdpcmOwned"]
-    G --> H["audio 队列<br/>voiceGen 代际校验"]
-    H --> I["I2S → ES8311（PA 使能）"]
-    F -->|"超限或错序"| J["free + 静默丢弃"]
-```
-
-**两条硬规矩**：① 单条上限 98304 B ≈ 12.3 秒 ≈ 43–55 汉字，超了 `applyTtsChunk` 直接丢弃且**无任何提示**，所以必须在合成前压到 40 字内；② `force:true` 会让 4 秒节流失效，必须配 `ttsDedupHit` 30s 去重，否则连续异常语音串成一片。设备侧还要过三道闸：`ttsEnabled`、`soundPct>0`、夜间静音（23–08）。
 
 ---
 
-## 5. 状态机
+## 4. 页面、电源与在线
 
-### 5.1 页面导航
+### 4.1 页面环
 
 ```mermaid
 stateDiagram-v2
-    [*] --> HOME: settings.homePage=PET
-    [*] --> QUOTA: homePage=QUOTA
-    [*] --> RANK: homePage=RANK
-
+    [*] --> HOME: settings.homePage
     HOME --> QUOTA: 左滑
     QUOTA --> RANK: 左滑
     RANK --> DETAIL: 左滑
-    DETAIL --> TOKENS: 左滑
+    DETAIL --> CHAT: 左滑
+    CHAT --> TOKENS: 左滑
     TOKENS --> HOME: 左滑
     QUOTA --> HOME: 右滑
     RANK --> QUOTA: 右滑
     DETAIL --> RANK: 右滑
-    TOKENS --> DETAIL: 右滑
+    CHAT --> DETAIL: 右滑
+    TOKENS --> CHAT: 右滑
     HOME --> TOKENS: 右滑
 
     DETAIL --> SETTINGS: 点「设置」
     SETTINGS --> DETAIL: 下滑 / 右滑
-    HOME --> HOME: Key1 短按回默认主页
     HOME --> SETTINGS: Key1 长按 800ms
+    HOME --> HOME: Key1 短按回默认主页
 
     state 审批浮层 {
         [*] --> APPROVAL: approvalActive
@@ -486,9 +434,9 @@ stateDiagram-v2
     end note
 ```
 
-环序由 `kPageRing` 固定为 `TOKENS → HOME → QUOTA → RANK → DETAIL`；滑动阈值 `|dx| ≥ 48 && |dx| > |dy|`。
+环序 `kPageRing = TOKENS → HOME → QUOTA → RANK → DETAIL → CHAT`（`nav.cpp`）；滑动阈值 `|dx| ≥ 48 && |dx| > |dy|`。SETTINGS 在环外，从 DETAIL 或 Key1 进。
 
-### 5.2 电源与帧率
+### 4.2 电源与帧率
 
 ```mermaid
 stateDiagram-v2
@@ -498,31 +446,29 @@ stateDiagram-v2
     静态 --> 活跃: 事件
     活跃 --> 熄屏: 超时
     活跃 --> 暗屏: 翻面
-    熄屏 --> 活跃: 触摸/审批
+    熄屏 --> 活跃: 触摸 / 审批
     暗屏 --> 活跃: 翻正
-    熄屏 --> [*]: 长按PEK
-    活跃 --> AOD: 插电/常开 + 无任务 + 闲置 N 分钟
-    AOD --> 活跃: 触摸/按键/审批/来任务
+    熄屏 --> [*]: 长按 PEK
+    活跃 --> AOD: 插电/常开 + 端侧闲置 N 秒
+    AOD --> 活跃: 触摸 / 按键 / 审批 / 配网
     AOD --> 熄屏: 电池 ≤10%
 ```
 
-**图注**：`活跃` 指主屏动画或转场；`静态` 指详情/额度/榜单/Token 页（事件驱动，10fps 兜底）；`熄屏` 由 `cfg.batSleepSec` 触发（插电不熄屏）；`暗屏` 是翻面 `faceDown` 的降亮，不关面板 —— 免得唤醒走 9 步复位时序、出画要一两百毫秒；`AOD` 是 0.5.0 加的熄屏待机构图（DIN 92 大时钟 + 定格姿势 + 运行状态行），规则在 `model/aod_policy.h`，主循环只在进入/退出时改状态。**进入只看端侧输入闲置时长**，宿主 `run/wait` 不参与（长任务也进表盘）；姿势 `run>0→WORKING / wait>0→WAITING / 否则 SLEEP`。
-
 | 目标帧率 | 条件 | 依据 |
 |---|---|---|
-| `baseFps`（自适应 60/30、长续航 30/15、灵动 60） | 主屏且非浮层 | 插电 60、电池 30 |
-| `min(baseFps, 30)` | TOKENS 页鱼群动画 | 一帧搬 63KB，实测带宽 2.7MB/s → 23ms，喂不到 60；鱼是 ±2.6px 慢速微动，30 和 60 肉眼无差 |
-| 60 | 拖拽 / fling / 转场中 | 延迟必须 <16ms |
+| `baseFps`（自适应 60/30、长续航 30/15、灵动 60） | 主屏动画、非浮层 | 插电 60 / 电池 30 |
+| `min(baseFps,30)` | TOKENS 鲸群 | 一帧 63KB，喂不到 60；鱼是 ±2.6px 慢移，30 和 60 肉眼无差 |
+| 60 | 拖拽 / fling / 转场 / 按下高亮 | 延迟必须 <16ms |
 | 30 | 审批浮层 | 倒计时环 + 呼吸边框够用 |
 | 10 | 其余静态页 | 事件驱动为主 |
-| 4 | AOD 待机 | 只在分钟变化 / 30s 位移 / 状态变化时真画；实测 5 次/分钟 |
+| 4 | AOD | 只在分钟变化 / 30s 位移 / 状态变化时真画 |
 | 5 | 熄屏 / 暗屏 | 只为防烧屏位移 |
 
-CPU DFS 三档：`LIVELY` 恒 240MHz；`ADAPTIVE` 插电/活跃 240，否则 80；`LONG_BATT` 熄屏/暗屏 80、审批 160、其余 80；**AOD 一律 80**。WiFi PS：审批中 / 配网 / 交互后 5s 内 `WIFI_PS_NONE`，其余 `WIFI_PS_MAX_MODEM` + `listen_interval=10`。
+- **AOD**：规则在 `model/aod_policy.h`（纯逻辑、可单测）。只有 `USB`/`ALWAYS` 允许进入；**进入只看端侧输入闲置**，宿主 `run/wait` 不参与；`min idle=30s`；姿态 `run>0→WORKING / wait>0→WAITING / 否则 SLEEP`；亮度封顶 59%（默认两档），夜间 23–07 压到 39%，翻扣压 0 但保持 AOD；防烧屏 = `burnOffset ±2px/30s` + `drift ±3px/10min`。
+- **DFS**：`LIVELY` 240；`ADAPTIVE` 有插电或活跃需求 240，否则 80；`LONG_BATT` 熄屏 80、审批 160、其余 80；AOD 一律 80。
+- **WiFi**：审批 / 配网 / 录音上传 / 交互后 5s 内 `WIFI_PS_NONE`，其余 `MAX_MODEM`；电池下按 RSSI 三档降发射功率（13/17/20dBm），插电满功率。
 
-**AOD 亮度**：`min(用户档, 2)`，23–07 点再压到 1 档；翻扣时亮度 0 但保持 AOD 状态。防烧屏 = burnOffset ±2px/30s + `aod::drift` ±3px/10min + 亮度封顶。
-
-### 5.3 设备在线状态
+### 4.3 配网与在线
 
 ```mermaid
 stateDiagram-v2
@@ -530,46 +476,73 @@ stateDiagram-v2
     无凭据 --> 配网AP: autoConnect 失败
     配网AP --> 已联网: 手机填 SSID / Broker IP / 端口
     已联网 --> MQTT连接中: mqtt.begin + setWill
-    MQTT连接中 --> 在线: connect 成功 → subscribe ×9 + publishHello
+    MQTT连接中 --> 在线: connect 成功 → subscribe ×12 + publishHello
     MQTT连接中 --> MQTT连接中: 退避 2→4→8→16→30s 封顶
     在线 --> MQTT连接中: 断链（broker 发 LWT hello offline）
     在线 --> 配网AP: 设置页「重新配网」<br/>必须先 s_wm->disconnect()
-    配网AP --> 已联网: 保存参数 / 取消
+    配网AP --> 已联网: 保存 / 取消
 ```
-
-**坑（已修，别踩回去）**：「重新配网」必须先 `s_wm->disconnect()` 再开 portal —— STA 还连着时 `wifiUp` 恒 true，主循环那条 `if (wifiUp && s_portalActive) stopConfigPortal()` 会在下一轮把 portal 自己关掉，表现是"点了没反应"。`WiFi.disconnect(true,false)+AP_STA` 的写法会真机 panic。
 
 ---
 
-## 6. 渲染管线与脏矩形
+## 5. 渲染管线
 
 ```mermaid
 flowchart TD
-    A["needFull?"] -->|是| B["nav.draw 全屏<br/>AOD 时 pageHomeDrawAod<br/>（审批浮层优先于当前页）"]
-    B --> C["hwDisplayPush<br/>329,728 B 全屏一次 draw16bitRGBBitmap"]
-    A -->|否| D{"当前页/状态"}
-    D --> E["RANK 列表<br/>pageRankDrawList → pushRect(0,96,368,295)"]
-    D --> F["HOME 舞台<br/>pageHomeDrawStage → pushRect(dx,dy,dw,dh)<br/>并集：上帧框 ∪ 本帧框 ∪ 气泡"]
-    D --> G["TOKENS 鱼群带<br/>pageTokensDrawStage → pushRect(0,194,368,88)"]
-    D --> H["审批进度条<br/>pageApprovalDrawBar → pushRect(36,92,296,8)"]
+    A["needFull?"] -->|是| B["nav.draw 全屏<br/>AOD 时 pageHomeDrawAod<br/>审批浮层优先于当前页"]
+    B --> C["hwDisplayPush<br/>329,728 B 一次 draw16bitRGBBitmap"]
+    A -->|否| D{"页 / 状态"}
+    D --> E["SETTINGS 列表<br/>pageSettingsDrawList → settingsListRect"]
+    D --> F["RANK 列表<br/>pageRankDrawList → rankListRect"]
+    D --> G["HOME 舞台<br/>pageHomeDrawStage → pushRect(dx,dy,dw,dh)"]
+    D --> H["TOKENS 鲸群带<br/>pageTokensDrawStage → tokensStageRect"]
+    D --> I["审批进度条<br/>pageApprovalDrawBar → approvalBarRect"]
+    D --> J["按下高亮<br/>drawPressedOverlay → pressedRect"]
 
-    C --> Z["hwDisplayPushRect 内部约束<br/>列/行偶对齐 · 宽≥18 · 宽≥240 走零拷贝整行带<br/>否则内部 SRAM 64KB 条带缓冲"]
+    C --> Z["hwDisplayPushRect 约束<br/>行列偶对齐 · 宽≥18 · 宽≥240 整行带零拷贝<br/>否则 64KB 内部 SRAM 条带"]
     E --> Z
     F --> Z
     G --> Z
     H --> Z
+    I --> Z
+    J --> Z
 
     classDef full fill:#fce4ec,stroke:#c2185b
     classDef dirty fill:#e3f2fd,stroke:#1565c0
     classDef push fill:#fff3e0,stroke:#f57c00
     class A,B,C full
-    class D,E,F,G,H dirty
+    class D,E,F,G,H,I,J dirty
     class Z push
 ```
 
-**图注 / 成本**：全屏 329,728 B ÷ 实测 2.7 MB/s ≈ 12ms（批量写）；`pushRect` 对 SH8601 有三条硬约束 —— 列/行窗口必须偶对齐、宽度 <18 会被丢列、宽 ≥240 时直接整行带零拷贝。**脏矩形面积要按"内容真正活动的带"算**：鱼只在 88px 里活动，早期推 194px 等于白搬 58% 像素（27ms）。
+| 项 | 数值 / 规则 |
+|---|---|
+| 全屏推一帧 | ≈52ms（AOD 实测，含绘制）；所以全屏只用于切页 / 状态翻转 |
+| 首页舞台 | ≈10.5ms（60fps 实测）；鲸群带 63KB @ 2.7MB/s ≈ 23ms → 锁 30fps |
+| `pushRect` | 列/行偶对齐；宽 <18 会丢列；宽 ≥240 整行带零拷贝；其余走 64KB 内部 SRAM 条带 |
+| 脏矩形口径 | 只推「内容真正活动的带」：鲸鱼只在 88px 里动，早期推 194px = 白搬 58%（27ms） |
+| CHAT 页 | 无脏矩形：`recGen/chatGen/boardGen` 任一变化 → 全屏；录音中按 83ms 节流刷电平 |
 
-**浮层必须锁全量重绘**：驱动动画走 `pageHomeDrawStage`，只重画舞台不经过 `pageHomeDraw`，浮层画完会被动画覆盖。所以 `dockExpanded && turnError` 期间 `animPage` 强制为 false。
+---
+
+## 6. 不变量与坑（改之前先看这张表）
+
+| # | 规则 | 违反的后果 |
+|---|---|---|
+| 1 | `err` 只能是字面量 `true`；异常原文走 `errMsg`；`msg` 不含「异常」 | 布尔求值成 0，错误态永不显示 / 误报 |
+| 2 | `approval`、`choreo`、`tts`、`chat`、`mic_ack` 都不 retain | 重连重放幽灵弹窗 / 旧剧本 / 旧语音 |
+| 3 | 审批同 `id` 幂等（不重置到达时间、不 `apGen++`） | 倒计时回满、到达音重播 |
+| 4 | `ctx.tokenMeter` 在派发路径外求值；监听 `global:true`，审批 `prepend` | 回调第一行抛 inject 错误被吞成 warn：「事件到了但不执行」 |
+| 5 | 会话日志按 `28 B5 2F FD` 逐帧解压 | `createZstdDecompress` 解完首帧即报 `Unknown frame descriptor` |
+| 6 | 排他资源：I2C 只 `task_bus`（含麦克风增益寄存器）；canvas 只 `task_ui`；MQTT 句柄只 `task_net`；解码缓冲只 `task_decode` | 总线冲突 / 帧撕裂 / 句柄竞态 |
+| 7 | `pushRect` 三条几何约束（偶对齐、宽≥18、≥240 整行带） | 丢列、花屏、撕裂 |
+| 8 | AOD 期间禁止 `nvaSetState`；进入只看端侧闲置 | 站着睡；长任务把表盘顶掉 |
+| 9 | 重配网先 `s_wm->disconnect()`；别用 `WiFi.disconnect(true,false)+AP_STA` | portal 下一轮自己关掉（「点了没反应」）/ 真机 panic |
+| 10 | TTS 文本先压到 ≤40 显示宽（`clipForTts`） | 超 98304B 被静默丢弃，表现为「没声音」 |
+| 11 | 设置键名逐字固定；新增项同时进 `kSettings`（NVS + prefs 共用） | 老设备读不到 / prefs 键错位 |
+| 12 | 中文字段截断用 `novaSafeUtf8Copy` | 半个 UTF-8 字符 → 花屏方块 |
+| 13 | 设备上行 JSON 受 448B 限制；下行不受（读缓冲 4096） | 上行截断成非法 JSON，宿主静默丢包 |
+| 14 | 审批浮层期间 `animPage=false` | 驱动动画把浮层画回去覆盖 |
 
 ---
 
@@ -577,55 +550,48 @@ flowchart TD
 
 | 改动点 | 影响模块 | 风险 | 必测 |
 |---|---|---|---|
-| `proto.cpp` 任一 `apply*` | NovaState 字段 → 所有页面 | 高 | `node tools/verify_state_payload.mjs` + 真机 `{"cmd":"stat"}` |
-| `state.h` 加字段 | `novaStateInit` 的 memset 与所有 `NovaState` 拷贝点（栈上拷贝很常见） | 中 | 编译 + 主屏/额度/榜单/审批四页 |
-| `bridge.js` `buildStatePayload` | 载荷体积、节流、主会话选择 | 高 | `host-plugin/test/bridge.test.mjs` |
-| `bridge.js` `onApprovalRequest` | 审批闭环、DSH waterfall 链 | **极高** | 真机点按 + 浏览器先答 + 超时三条路径 |
-| `net.cpp` 订阅列表 | 主题与 `SUFFIXES` 必须同步 | 高 | 九主题逐条收包 |
-| `bus.cpp` 周期/顺序 | 触摸延迟、I2C 掉线恢复 | 中 | 触摸拖拽 + 电池/RTC 读数 |
-| `nva.cpp` 解码缓冲 | 帧撕裂、内存（2×MAX_FRAME_PIXELS + xorScratch） | 高 | 9 状态逐个播完一圈 |
-| `display.cpp` `pushRect` | 花屏/丢列/撕裂 | 高 | 各页脏矩形 + 全屏 |
+| `proto.cpp` 任一 `apply*` | NovaState → 所有页面 | 高 | `node tools/verify_state_payload.mjs` + 真机 `{"cmd":"stat"}` |
+| `state.h` 加字段 | `novaStateInit` 的 memset 与所有整份拷贝点 | 中 | 编译 + 主屏/额度/榜单/审批四页 |
+| `bridge.buildStatePayload` | 载荷体积、节流、主会话选择 | 高 | `cd host-plugin && npm test` |
+| `bridge.onApprovalRequest` / `settleApproval` | 审批闭环、DSH waterfall 链 | **极高** | 真机点按 + 浏览器先答 + 超时三条路径 |
+| `bridge.handleChatSend` / `chat` 回执 | 语音看板投递与回执 | 高 | `chat.test.mjs` + 真机一轮 |
+| `sessions` 载荷 / 看板目标选择 | CHAT 页会话卡、草稿锁会话 | 中 | 切目标 + 目标失效场景 |
+| `net.cpp` 的 `SUFFIXES` | 订阅与 `protoApplyMessage` 必须同步 | 高 | 12 个主题逐条收包 |
+| `hw/bus.cpp` 周期 / 顺序 | 触摸延迟、I2C 掉线恢复 | 中 | 触摸拖拽 + 电池/RTC 读数 |
+| `anim/nva.cpp` 解码缓冲 | 帧撕裂、内存（2×MAX_FRAME_PIXELS + xorScratch） | 高 | 9 个状态各播一圈 |
+| `hw/display.cpp` `pushRect` | 花屏 / 丢列 / 撕裂 | 高 | 各页脏矩形 + 全屏 |
 | `pages.h` 新增 `UiAction` | `handleAction` 的 switch 必须补齐 | 中 | 新交互 + 现有交互回归 |
-| `settings.h` 新字段 | NVS key + `settingsLoad` 默认值 | 中 | 断电重启后仍生效 |
-| 帧率策略（`targetFps`） | 主观流畅度、功耗、`pushUs` | 中 | 每页 `{"cmd":"stat"}` 看 `pushUs` |
+| `settings.h` 新字段 | NVS 键 + 默认值 + prefs | 中 | 断电重启仍生效 |
+| `hw/audio.cpp` 录音 / 增益 | 录音电平、mic 上传 | 中 | `node tools/rec_receiver.mjs` |
+| 帧率策略（`targetFps`） | 流畅度、功耗、`pushUs` | 中 | 每页 `{"cmd":"stat"}` 看 `pushUs` |
+
+---
 
 ## 8. 模块耦合速查
 
 | A | B | 关系 | 边界 |
 |---|---|---|---|
 | `task_net` | `proto.cpp` | 收包直接调 `protoApplyMessage` | 清晰：proto 只管编解码 + 写状态 |
-| `proto.cpp` | `NovaState` | `novaStateWithLock` 写 | 清晰：无跨任务裸写 |
-| `task_ui` | `task_decode` | `xTaskNotifyGive` / 信号量换 front 缓冲 | 清晰：双缓冲，不共享写 |
-| `task_ui` | `task_bus` | 快照 + 事件队列 | 清晰：UI 从不碰 I2C |
+| `task_ui` | `task_decode` / `task_bus` | 通知+信号量换 front 缓冲；快照 + 事件队列 | 清晰：UI 不碰 I2C，不共享解码缓冲 |
 | `task_ui` | `hw/display` | 直接调 `hwDisplayPush*` | 有意破例：canvas 只归 UI |
-| `task_net` | `settings` | 读 broker 配置；`onSaveParams` 写 + `settingsSave` | ⚠️ 配网回调在 net 任务里写 NVS，与 UI 的 `settingsMut()` 无锁 —— 实际只在 portal 期间发生 |
-| `bridge.js` | DSH 事件 | cordis `global:true` + waterfall `prepend` | ⚠️ 必须 global，否则 profile 根作用域收不到 agent scope 事件 |
-| `bridge.js` | `ctx.tokenMeter` | 派发路径外求值一次 | ⚠️ 回调里直接访问会抛 inject 错误并被吞 |
-| `ai.js` | 外部 LLM / TTS | 主备两路、25s 超时 | 清晰：失败即返回 null，不阻塞桥接 |
+| `task_net` | `settings` | 读 broker 配置；配网回调写 + `settingsSave` | ⚠️ 回调在 net 任务写 NVS，与 UI 的 `settingsMut()` 无锁 —— 实际只在 portal 期间 |
+| `bridge.js` | DSH 事件 / `ctx.tokenMeter` | `global:true` + waterfall `prepend`；tokenMeter 派发外求值 | ⚠️ 见 §6-4 |
+| `bridge.js` | `sessionController` | `list` 校验 + `follow` / `prompt` 投递 | 失败必须回 `chat{fail}`，不能静默 |
+| `ai.js` | 外部 LLM / TTS / ASR | 主备两路、15–25s 超时 | 失败返回 null，不阻塞桥接 |
+| `power.js` | `stat` / `pwr` 上行 | 有界日志 + CSV/MD 报告 | 只写 `~/.dsh/nova-buddy/` |
 
 ---
 
-## 9. 文档维护规则
+## 9. 改完怎么验
 
-| 章节 | 维护方式 | 变更触发 |
-|---|---|---|
-| §0.1 目录 | 手动 | 新增/删除一级模块 |
-| §1 分层架构 | 手动 | 跨层依赖变化（如加第二个传输通道） |
-| §3 任务表 | 手动 | `xTaskCreate*` 增删、优先级/栈/周期变更 |
-| §4 主题表 | 手动 | `subscribeTopics` 或 `publishTo` 的 suffix 变化 |
-| §4.x 时序图 | 手动 | `bridge.js` 上述高亮函数签名或流程变化 |
-| §5 状态机 | 手动 | `UiAction`/`UiPage` 枚举、`kPageRing`、电源档位变化 |
-| §6 渲染管线 | 手动 | `needFull` 分支或 `pushRect` 参数变化 |
-| §7/§8 表格 | 每次改动顺手补 | — |
-
-**同步纪律**：改完任何一个 §7 高亮点，回来核对本文与代码仍然一致（头部「最后核对」的时间戳以 `git log -1 -- docs/ARCHITECTURE.md` 为准）；如果图里出现代码里已经不存在的名字，先删图里的节点，再删代码 —— 顺序反了就会留下幻影连接。
-
-**验证手法**（本次已跑）：
-
-```bash
-# 图语法
-awk '/^```mermaid$/ {f=1;b="";n++;next} /^```$/&&f {f=0; printf "%s",b > "/tmp/d"n".mmd"; next} f {b=b $0 "\n"}' docs/ARCHITECTURE.md
-for f in /tmp/d*.mmd; do mmdc -p /tmp/pptr.json -i "$f" -o /dev/null 2>&1 | tail -1; done
-```
-
-> `mmdc` 在本机需要 `-p` 传 `--no-sandbox`（puppeteer 默认沙箱在本机会 30s 超时），配置：`{"args":["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]}`。
+| 目的 | 命令 |
+|---|---|
+| **总回归**（改代码后必跑） | `bash tools/check_all.sh` —— proto / battery / AOD / settings 单测 + 状态载荷 + 录音自检 + 宿主 `node --test`（46）+ 47 张像素基线 + 裸 `368` 检查 |
+| 只跑像素基线 | `bash tools/sim/check.sh`；出全部页面 PNG：`bash tools/sim/run.sh` → `tools/sim/out/` |
+| 协议载荷 | `node tools/verify_state_payload.mjs` |
+| 宿主单测 | `cd host-plugin && npm test` |
+| 真机截图 | `python3 tools/usb_shot.py`（USB CDC，NVSH 帧） |
+| 真机指标 | 串口 `{"cmd":"stat"}`；采样 `node tools/power_probe.mjs --id <ID> --minutes 30` |
+| 录音链路 | `node tools/rec_receiver.mjs`（收片存 WAV + 回 `mic_ack`）；识别对拍 `node tools/asr_probe.mjs` |
+| 烧录 | `bash tools/pio.sh run -e waveshare-esp32s3-touch-amoled-1-8` |
+| 本文图 | 抽出 mermaid 后 `mmdc -p /tmp/pptr.json -i x.mmd -o x.png -w 1500 -b white`（`pptr` 配置 `{"args":["--no-sandbox"]}`）；`-o /dev/null` 只验语法 |

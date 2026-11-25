@@ -114,12 +114,13 @@ Agent 突然想执行 `rm -rf` 或者敏感工具时，无论你当前停在哪�
 │   ├── pio.sh             # PlatformIO 构建封装脚本
 │   ├── prep_data.sh       # LittleFS .nva 资产打包脚本
 │   └── usb_shot.py        # 通过 USB CDC (NVSH) 抓取开发板实时屏幕截图
-├── HANDOFF.md             # 交接备忘
+├── AGENTS.md              # AI / 新接手者入口（文档地图 + 命令 + 硬规则）
+├── HANDOFF.md             # 交接备忘：实测数字与未修问题
 └── docs/
     ├── design/            # 语音交互原型（voice-bridge-final.html）、设计稿与评审记录
     ├── previews/          # 模拟器与真机截图存档
-    ├── ARCHITECTURE.md    # 架构参考
-    ├── NOVA-BUDDY-PLAN.md # 完整架构设计方案与协议文档
+    ├── ARCHITECTURE.md    # 改动入口：代码地图 / MQTT 契约 / 坑（AI 先读这份）
+    ├── NOVA-BUDDY-PLAN.md # 需求与方案取舍、协议沿革
     └── upstream/          # fork 前基线文档（已废弃）
 ```
 
@@ -128,6 +129,16 @@ Agent 突然想执行 `rm -rf` 或者敏感工具时，无论你当前停在哪�
 ---
 
 ## 快速上手
+
+### 0. 先读哪份文档
+
+| 文档 | 用途 |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | 给 AI / 新接手者的入口：文档地图、常用命令、硬规则 |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **改动入口**：代码地图、MQTT 契约、任务与资源归属、坑与影响面 |
+| [`docs/NOVA-BUDDY-PLAN.md`](docs/NOVA-BUDDY-PLAN.md) | 需求与方案取舍、协议沿革 |
+| [`HANDOFF.md`](HANDOFF.md) | 最近实测数字、已知未修问题、验收路径 |
+| [`docs/MOTION-CONTEXT.md`](docs/MOTION-CONTEXT.md) | 动效曲线与参数；`docs/动效细腻化任务书.md` 是专项验收标准 |
 
 ### 1. 没买开发板？先在电脑上跑一遍看看
 
