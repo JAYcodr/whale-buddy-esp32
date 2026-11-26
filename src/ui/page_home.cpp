@@ -144,6 +144,7 @@ uint32_t s_walkLeadUntilMs  = 0;
 uint32_t s_nextRoamMs       = 8000;
 int      s_sparkFrames      = 0;
 int      s_demoAnim         = -1;  // -1 = auto
+bool     s_idleResting      = false;
 
 uint32_t s_seenChoreoGen    = 0;
 uint8_t  s_choreoIdx        = 0;
@@ -290,11 +291,11 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
   if (dtMs > 120u) dtMs = 120u;
   s_prevRoamMs = st.nowMs;
 
-  const NvaAnimKey active = nvaActiveState();
-  const bool resting = (s_demoAnim == (int)NvaAnimKey::SLEEP ||
-                        s_demoAnim == (int)NvaAnimKey::YAWN ||
-                        active == NvaAnimKey::SLEEP ||
-                        active == NvaAnimKey::YAWN);
+  // 睡眠/哈欠停步闸门只看端侧真实闲置（s_idleResting）或手动 Demo 锁，
+  // 绝不能反读 nvaActiveState() == SLEEP/YAWN，否则导演剧本演 sleep/yawn 时会触发自毁重进死循环。
+  const bool resting = s_idleResting ||
+                       s_demoAnim == (int)NvaAnimKey::SLEEP ||
+                       s_demoAnim == (int)NvaAnimKey::YAWN;
   if (resting && !s_userTargetLock) {
     s_targetX = s_petX;
     s_runSpeed = false;
@@ -317,7 +318,6 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
         s_petX = s_targetX;
         s_runSpeed = false;
         s_userTargetLock = false;
-        pageHomeTriggerSquash(st.nowMs);
       } else {
         s_petX += (diff > 0) ? step : -step;
       }
@@ -344,9 +344,11 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
     if (!s_choreoStepInit) {
       if (s_choreoIdx >= st.nChoreoSteps) s_choreoIdx = 0;
       const ChoreoStep& step = st.choreoSteps[s_choreoIdx];
-      s_targetX = (float)step.x;
+      const bool sleepyStep = (step.anim == (uint8_t)NvaAnimKey::SLEEP ||
+                               step.anim == (uint8_t)NvaAnimKey::YAWN);
+      s_targetX = sleepyStep ? s_petX : (float)step.x;
       float walkDist = fabsf(s_targetX - s_petX);
-      s_runSpeed = step.run;
+      s_runSpeed = sleepyStep ? false : step.run;
       s_choreoAnim = step.anim;
       s_walkLeadUntilMs = (walkDist > 6.0f) ? (st.nowMs + 220u) : 0;
       s_choreoArrived = (walkDist <= 1.2f);
@@ -630,6 +632,11 @@ NvaAnimKey pageHomeWorkAnimForTool(const char* tool) {
 void pageHomeTriggerSquash(uint32_t nowMs) {
   s_squashStartMs = nowMs;
   s_squashActive = true;
+}
+
+void pageHomeTick(const NovaState& st, const NovaSettings& cfg, uint32_t frame, bool idleResting) {
+  s_idleResting = idleResting;
+  updateRoam(st, cfg, frame);
 }
 
 void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame,
@@ -924,7 +931,6 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     if (s_demoAnim < 0) s_demoAnim = 1;
     else if (s_demoAnim >= (int)NvaAnimKey::COUNT - 1) s_demoAnim = -1;
     else s_demoAnim++;
-    s_pendingSquashTap = true;
     setBubble((s_demoAnim < 0) ? "恢复自动状态" : "切换动作!", 3500u, st.nowMs);
     return UiAction{ UiAction::PET_TAP, 2 };
   }

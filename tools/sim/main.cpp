@@ -864,9 +864,31 @@ int main(int argc, char** argv) {
     std::strcpy(st.choreoSteps[0].say, "摸鱼哼歌~");
     nvaSetState(NvaAnimKey::SLEEP, false, true);
     st.nowMs = 110000u;
-    pageHomeDrawStage(canvas, st, choreoCfg, 100, nullptr, nullptr, nullptr, nullptr);
+    pageHomeTick(st, choreoCfg, 100, true);
     if (failIf(!pageHomeIsWalking() && pageHomeChoreoAnim() == -1,
                "SLEEP blocks choreo sleepwalking")) {
+      std::fclose(manifest);
+      return 1;
+    }
+
+    // 清醒期导演剧本若编排了 sleep/yawn 提醒休息，应原地播完而不被判定为 resting 自毁重进
+    st.choreoGen = 100;
+    st.choreoSteps[0].x = 268;
+    st.choreoSteps[0].run = true;
+    st.choreoSteps[0].anim = (uint8_t)NvaAnimKey::SLEEP;
+    st.choreoSteps[0].durMs = 12000;
+    std::strcpy(st.choreoSteps[0].say, "夜深啦快去睡~");
+    nvaSetState(NvaAnimKey::IDLE, false, true);
+    st.nowMs = 112000u;
+    pageHomeTick(st, choreoCfg, 101, false);
+    nvaSetState((NvaAnimKey)pageHomeChoreoAnim(), false, true);
+    nvaTick(112100u);
+    st.nowMs = 112200u;
+    pageHomeTick(st, choreoCfg, 102, false);
+    if (failIf(!pageHomeIsWalking() &&
+               pageHomeChoreoAnim() == (int)NvaAnimKey::SLEEP &&
+               nvaActiveState() == NvaAnimKey::SLEEP,
+               "choreo SLEEP plays in place without fighting resting")) {
       std::fclose(manifest);
       return 1;
     }

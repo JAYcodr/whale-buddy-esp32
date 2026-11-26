@@ -95,6 +95,7 @@ uint8_t*  s_xorScratch  = nullptr;
 uint8_t   s_frontIdx = 0;
 uint16_t  s_frontW = 0, s_frontH = 0;
 uint16_t  s_frontPal[256] = {};
+NvaAnimKey s_frontKey = NvaAnimKey::IDLE;
 bool      s_frontReady = false;
 uint32_t  s_lastPackGen = 0;
 uint16_t  s_lastFrameIdx = 0;
@@ -268,7 +269,7 @@ bool inflateZlib(const uint8_t* src, size_t srcLen, uint8_t* dst, size_t dstByte
 #endif
 }
 
-bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx) {
+bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx, NvaAnimKey key) {
   if (!pk.valid || frameIdx >= pk.nframes) return false;
   const uint32_t sOff = pk.offsets[frameIdx];
   const uint32_t eOff = pk.offsets[frameIdx + 1];
@@ -311,6 +312,7 @@ bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx) {
   s_frontW   = pk.w;
   s_frontH   = pk.h;
   memcpy(s_frontPal, pk.pal565, (size_t)(pk.ncolors + 1) * sizeof(uint16_t));
+  s_frontKey = key;
   s_lastPackGen = pk.genId;
   s_lastFrameIdx = frameIdx;
   s_frontReady = true;
@@ -341,7 +343,7 @@ void decodeTaskFn(void*) {
       NvaPack* pk = acquirePack(s_activeKey);
       if (pk && pk->valid) {
         s_activeFps = pk->fps > 0 ? pk->fps : 10;
-        decodeFrameToBack(*pk, 0);
+        decodeFrameToBack(*pk, 0, s_activeKey);
       }
       continue;
     }
@@ -361,7 +363,7 @@ void decodeTaskFn(void*) {
       }
       uint16_t nextIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
       s_frameIdx = nextIdx;
-      decodeFrameToBack(*pk, s_frameIdx);
+      decodeFrameToBack(*pk, s_frameIdx, s_activeKey);
       if (nextIdx == 0 && target == s_desiredKey && restartGen == s_desiredRestartGen) {
         s_loopCycles++;
       }
@@ -400,7 +402,7 @@ bool nvaInit(const char* rootDir) {
   s_activeKey = NvaAnimKey::IDLE;
   s_desiredKey = NvaAnimKey::IDLE;
   s_frameIdx = 0;
-  decodeFrameToBack(s_resPacks[0], 0);
+  decodeFrameToBack(s_resPacks[0], 0, NvaAnimKey::IDLE);
   s_nextFrameMs = 0;
 
 #ifndef NOVA_HOST_SIM
@@ -438,14 +440,24 @@ void nvaSetState(NvaAnimKey key, bool once, bool restart) {
     NvaPack* pk = acquirePack(s_activeKey);
     if (pk && pk->valid) {
       s_activeFps = pk->fps > 0 ? pk->fps : 10;
-      decodeFrameToBack(*pk, s_frameIdx);
+      decodeFrameToBack(*pk, s_frameIdx, s_activeKey);
     }
   }
 #endif
 }
 
 NvaAnimKey nvaCurrentState() { return s_desiredKey; }
-NvaAnimKey nvaActiveState() { return s_activeKey; }
+NvaAnimKey nvaActiveState() {
+#ifndef NOVA_HOST_SIM
+  if (s_mtx) {
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    NvaAnimKey k = s_frontKey;
+    xSemaphoreGive(s_mtx);
+    return k;
+  }
+#endif
+  return s_frontKey;
+}
 bool nvaIsEnded() { return s_clipEnded; }
 uint32_t nvaLoopCycles() { return s_loopCycles; }
 uint32_t nvaDecodeBusyUs() { return s_decodeBusyUs; }
@@ -478,7 +490,7 @@ void nvaTick(uint32_t nowMs) {
     NvaPack* pk = acquirePack(s_activeKey);
     if (pk && pk->valid) {
       s_activeFps = pk->fps > 0 ? pk->fps : 10;
-      decodeFrameToBack(*pk, s_frameIdx);
+      decodeFrameToBack(*pk, s_frameIdx, s_activeKey);
     }
     return;
   }
@@ -492,7 +504,7 @@ void nvaTick(uint32_t nowMs) {
       return;
     }
     s_frameIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
-    decodeFrameToBack(*pk, s_frameIdx);
+    decodeFrameToBack(*pk, s_frameIdx, s_activeKey);
     if (s_frameIdx == 0) s_loopCycles++;
   }
 #endif
@@ -506,8 +518,8 @@ bool nvaDraw(NovaCanvas& c, int16_t centerX, int16_t bottomY, bool flipX, float 
   const uint8_t* src = s_frameBuf[s_frontIdx];
   const int16_t w = (int16_t)s_frontW;
   const int16_t h = (int16_t)s_frontH;
-  const float baseScale = ((uint8_t)s_activeKey < (uint8_t)NvaAnimKey::COUNT)
-                            ? kAnimBaseScale[(uint8_t)s_activeKey]
+  const float baseScale = ((uint8_t)s_frontKey < (uint8_t)NvaAnimKey::COUNT)
+                            ? kAnimBaseScale[(uint8_t)s_frontKey]
                             : 1.0f;
   uint16_t* fb = ((Arduino_Canvas&)c).getFramebuffer();
   const int16_t fbW = c.width();

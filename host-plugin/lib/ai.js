@@ -118,6 +118,7 @@ export function normalizeChoreo(rawObj, opts = {}) {
 
     const rawAnim = String(s.anim || 'idle').toLowerCase().trim();
     const anim = VALID_ANIMS.has(rawAnim) ? rawAnim : 'idle';
+    if (anim === 'sleep' || anim === 'yawn') speed = 'walk';
 
     let dur = Number(s.dur);
     if (!Number.isFinite(dur) || dur <= 0) dur = 11000;

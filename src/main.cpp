@@ -310,6 +310,9 @@ void uiTaskFn(void*) {
   NvaAnimKey bgLastNonIdle = NvaAnimKey::QUOTA;
   uint8_t    bgPoolCursor = 0;
   uint32_t   bgNextSwitchCycle = 2;
+  bool       wasInBgPool = false;
+  NvaAnimKey heldWorkKey = NvaAnimKey::THINKING;
+  uint32_t   lastWorkSwitchMs = 0;
 
   uint32_t lastApGen = 0;
   uint32_t lastStateGen = 0;
@@ -1772,8 +1775,19 @@ void uiTaskFn(void*) {
 
     // Drive all 24 Nova animation states cleanly: play one-shots & choreo steps to full cycle end
     // (inspired by dsh-pet AnimationFlow & aipets Director / ClipSelector).
+    const uint32_t idleMs = (nowMs >= lastInteractMs) ? (nowMs - lastInteractMs) : 0u;
+    const uint32_t sleepAtMs = snap.battery.usbPresent ? 90000u : 45000u;
+    const uint32_t yawnAtMs  = sleepAtMs - 15000u;
     int demoIdx = pageHomeDemoOverride();
+    const bool idleResting = (!aodActive && !st.approvalActive && st.wait == 0 &&
+                              st.run == 0 && demoIdx < 0 &&
+                              !clickAnimActive && !oneShotActive && idleMs >= yawnAtMs);
+    if (!aodActive && !screenOff && !dimmedForNap) {
+      pageHomeTick(st, cfg, frame, idleResting);
+    }
     int choreoAnim = pageHomeChoreoAnim();
+    bool inBgPool = false;
+    if (st.run == 0) lastWorkSwitchMs = 0;
     if (aodActive) {
       // AOD 期间宠物定格：姿势由上面的 aodPose 逻辑统一设置，严禁在主状态机调 nvaSetState。
     } else if (st.approvalActive || st.wait > 0) {
@@ -1802,11 +1816,17 @@ void uiTaskFn(void*) {
 
     if (!aodActive && !st.approvalActive && st.wait == 0 && demoIdx < 0 &&
         !clickAnimActive && !oneShotActive) {
-      const uint32_t idleMs = (nowMs >= lastInteractMs) ? (nowMs - lastInteractMs) : 0u;
-      const uint32_t sleepAtMs = snap.battery.usbPresent ? 90000u : 45000u;
-      const uint32_t yawnAtMs  = sleepAtMs - 15000u;
       if (st.run > 0) {
-        nvaSetState(pageHomeWorkAnimForTool(st.lastTool), false);
+        NvaAnimKey wantWork = pageHomeWorkAnimForTool(st.lastTool);
+        if (lastWorkSwitchMs == 0 || wantWork == heldWorkKey ||
+            (heldWorkKey == NvaAnimKey::THINKING && wantWork != NvaAnimKey::THINKING) ||
+            (uint32_t)(nowMs - lastWorkSwitchMs) >= 2500u) {
+          if (wantWork != heldWorkKey || lastWorkSwitchMs == 0) {
+            heldWorkKey = wantWork;
+            lastWorkSwitchMs = nowMs;
+          }
+        }
+        nvaSetState(heldWorkKey, false);
       } else if (pageHomeIsWalking()) {
         nvaSetState(pageHomeIsRunning() ? NvaAnimKey::HAPPY_RUN : NvaAnimKey::CRAB_WALK, false);
       } else if (idleMs >= sleepAtMs) {
@@ -1816,8 +1836,12 @@ void uiTaskFn(void*) {
       } else if (choreoAnim >= 0 && choreoAnim < (int)NvaAnimKey::COUNT) {
         nvaSetState((NvaAnimKey)choreoAnim, false);
       } else {
+        inBgPool = true;
         uint32_t cyc = nvaLoopCycles();
-        if (cyc >= bgNextSwitchCycle) {
+        if (!wasInBgPool) {
+          bgAutoKey = NvaAnimKey::IDLE;
+          bgNextSwitchCycle = cyc + 2;
+        } else if (cyc >= bgNextSwitchCycle) {
           if (bgAutoKey == NvaAnimKey::IDLE) {
             NvaAnimKey pool[8];
             uint8_t nPool = 0;
@@ -1858,6 +1882,7 @@ void uiTaskFn(void*) {
         nvaSetState(bgAutoKey, false);
       }
     }
+    wasInBgPool = inBgPool;
     // 屏幕不亮就不解码；AOD 进入后先让目标姿势解 0.9s，然后冻结。
     // 熄屏时原来还在 10fps 空转 zlib，纯白耗电（2026-11-23 实测补上）。
     const bool animNeeded =
