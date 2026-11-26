@@ -315,8 +315,10 @@ export function estimatePowerEta(dev, drainRates, chargeProfile) {
   const pct = Number.isFinite(Number(latest.pct)) ? Number(latest.pct) : null;
   const stageName = latest.stageName || stageNameOf(latest.st ?? latest.stage);
   const isChargingStage = stageName === 'PRE' || stageName === 'CC' || stageName === 'CV';
+  const isUsbIdle = stageName === 'USB_IDLE';
   const isDone = stageName === 'DONE' || stageName === 'LIMITED';
-  const charging = (Boolean(latest.chg) || isChargingStage) && !isDone;
+  // USB_IDLE（已接电但未充）直接短路 charging，避免 chg 位异常置 1 时误入充电 ETA。
+  const charging = !isUsbIdle && !isDone && (Boolean(latest.chg) || isChargingStage);
   const aod = Boolean(st?.aod);
   const lcd = st ? Boolean(st.lcd) : true;
 
@@ -332,6 +334,8 @@ export function estimatePowerEta(dev, drainRates, chargeProfile) {
   if (charging) {
     activeScenario = 'charging';
     activeRate = drainRates?.overall || null;
+  } else if (isUsbIdle) {
+    activeScenario = 'usbIdle';
   } else if (aod) {
     activeScenario = drainRates?.aod ? 'aod' : (drainRates?.overall ? 'overall' : 'unknown');
     activeRate = drainRates?.aod || drainRates?.overall || null;
@@ -355,6 +359,7 @@ export function estimatePowerEta(dev, drainRates, chargeProfile) {
   return {
     pct,
     charging,
+    usbIdle: isUsbIdle,
     stageName,
     activeScenario,
     remainHours: remainHoursFor(pct, activeRate),
@@ -363,6 +368,26 @@ export function estimatePowerEta(dev, drainRates, chargeProfile) {
     chargePctPerHour,
     byScenario,
   };
+}
+
+/**
+ * Format ETA summary text for CLI display (`已接电未充` / charge ETA / drain ETA).
+ * @param {ReturnType<typeof estimatePowerEta>} eta
+ * @returns {string | null}
+ */
+export function formatPowerEta(eta) {
+  if (!eta) return null;
+  if (eta.usbIdle) {
+    return eta.pct != null ? `当前电量(${eta.pct}%)已接电未充` : '已接电未充';
+  }
+  const parts = [];
+  if (eta.charging && eta.toFullMinutes != null) {
+    parts.push(`预计充满还需 ${eta.toFullMinutes} 分钟 (${eta.toFullHours}h)`);
+  }
+  if (eta.remainHours != null) {
+    parts.push(`当前电量(${eta.pct}%)按 ${eta.activeScenario} 预计可用 ${eta.remainHours}h`);
+  }
+  return parts.length > 0 ? parts.join(' | ') : null;
 }
 
 /**

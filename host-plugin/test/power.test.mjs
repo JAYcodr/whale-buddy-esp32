@@ -1,12 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createPowerStore,
   decodePowerOffSource,
   decodePowerOnSource,
+  estimatePowerEta,
+  formatPowerEta,
   stageNameOf,
 } from '../lib/power.js';
 
@@ -331,5 +335,70 @@ describe('Host power store & bounded analytics', () => {
     assert.equal(cycle.startPct, 72);
     assert.equal(cycle.endPct, 0);
     assert.equal(cycle.closedBy, 'boot');
+  });
+
+  it('treats USB_IDLE as plugged-not-charging regardless of chg bit and omits discharge ETA in CLI', async () => {
+    const binPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'nova-buddy.js');
+    const t0 = 1_795_500_000_000;
+
+    for (const chg of [0, 1]) {
+      const home = await mkdtemp(join(tmpdir(), `nova-pwr-usbidle-${chg}-`));
+      try {
+        const store = createPowerStore({ dshHome: home, statPersistMs: 0 });
+        // Seed discharge & charge cycles so any fallback into drain/charge ETA would show up
+        store.recordPowerEvent('D93468', {
+          evt: 'pwr', seq: 1, why: 'usb_in', pct: 60, mv: 3920, st: 3, usb: 1, chg: 1,
+          wm: { dur: 3600, sp: 85, vmin: 3820, vmax: 4080, vsmin: 3800, scrS: 3000, aodS: 0 },
+        }, t0);
+        store.recordPowerEvent('D93468', {
+          evt: 'pwr', seq: 2, why: 'usb_out', pct: 90, mv: 4100, st: 1, usb: 0, chg: 0,
+          wm: { dur: 3600, sp: 60, vmin: 3900, vmax: 4180, vsmin: 3880, vbmin: 4360, vlimS: 1800, scrS: 100 },
+        }, t0 + 3600_000);
+        store.recordStat('D93468', {
+          evt: 'stat', mv: 3950, pct: 60, chg, stage: 7, tmp: 31, lcd: 1, aod: 0, brt: 80, mhz: 240, rssi: -45,
+        }, t0 + 3700_000);
+        await store.flush(t0 + 3700_000);
+
+        const rep = store.getReport('D93468');
+        assert.equal(rep.eta.stageName, 'USB_IDLE');
+        assert.equal(rep.eta.charging, false);
+        assert.equal(rep.eta.usbIdle, true);
+        assert.equal(rep.eta.activeScenario, 'usbIdle');
+        assert.equal(rep.eta.remainHours, null);
+        assert.equal(rep.eta.toFullMinutes, null);
+        assert.equal(formatPowerEta(rep.eta), '当前电量(60%)已接电未充');
+
+        const directEta = estimatePowerEta(
+          { lastStat: { pct: 60, st: 7, chg, lcd: 1, aod: 0, ts: t0 + 3700_000 } },
+          rep.drainRates,
+          rep.chargeProfile,
+        );
+        assert.equal(directEta.charging, false);
+        assert.equal(directEta.usbIdle, true);
+        assert.equal(directEta.remainHours, null);
+        assert.equal(directEta.toFullMinutes, null);
+
+        const cliOut = execFileSync(process.execPath, [binPath, 'power', '--id', 'D93468'], {
+          env: { ...process.env, DSH_HOME: home },
+          encoding: 'utf8',
+        });
+        assert.match(cliOut, /实时预估: 当前电量\(60%\)已接电未充/);
+        assert.doesNotMatch(cliOut, /预计可用/);
+        assert.doesNotMatch(cliOut, /预计充满还需/);
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    }
+
+    // Verify CC stage still reports estimated time to full
+    const ccEta = estimatePowerEta(
+      { lastStat: { pct: 60, st: 3, chg: 1, lcd: 1, aod: 0, ts: t0 } },
+      { overall: { pctPerHour: 15 } },
+      { avgPctPerHour: 30 },
+    );
+    assert.equal(ccEta.charging, true);
+    assert.equal(ccEta.usbIdle, false);
+    assert.equal(ccEta.toFullMinutes, 80);
+    assert.match(formatPowerEta(ccEta), /预计充满还需 80 分钟/);
   });
 });

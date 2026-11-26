@@ -5,7 +5,7 @@ import mqtt from 'mqtt';
 import { fetchAllQuota, fetchModelDialRank, saveOpenDesignCookie } from '../lib/fetchers.js';
 import { generateChoreography, loadAiConfig, synthesizeSpeechAdpcm } from '../lib/ai.js';
 import { createTokenCollector } from '../lib/tokens.js';
-import { createPowerStore } from '../lib/power.js';
+import { createPowerStore, formatPowerEta } from '../lib/power.js';
 
 const args = process.argv.slice(2);
 const brokerUrl = process.env.NOVA_MQTT_URL || 'mqtt://192.168.31.15:1883';
@@ -256,18 +256,9 @@ async function cmdPower() {
       `充电画像 (${cp.cycles} 周期 ${cp.totalHours}h): 均速=${cp.avgPctPerHour ?? '-'}%/h | VBUS最低=${cp.minVbusMv || '-'}mV | VSYS最低=${cp.minVsysMv || '-'}mV | 限流占比=${Math.round(cp.vbusLimRatio * 100)}% | 温控=${cp.thermalSec}s`,
     );
   }
-  if (report.eta) {
-    const eta = report.eta;
-    const parts = [];
-    if (eta.charging && eta.toFullMinutes != null) {
-      parts.push(`预计充满还需 ${eta.toFullMinutes} 分钟 (${eta.toFullHours}h)`);
-    }
-    if (eta.remainHours != null) {
-      parts.push(`当前电量(${eta.pct}%)按 ${eta.activeScenario} 预计可用 ${eta.remainHours}h`);
-    }
-    if (parts.length > 0) {
-      console.log(`实时预估: ${parts.join(' | ')}`);
-    }
+  const etaLine = formatPowerEta(report.eta);
+  if (etaLine) {
+    console.log(`实时预估: ${etaLine}`);
   }
   if (report.alerts.length > 0) {
     console.log(`预警: ${report.alerts.join('；')}`);
