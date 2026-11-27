@@ -239,8 +239,9 @@ describe('AI chat reply generator', () => {
 describe('Nova Bridge mic ASR + chat_send + chat_tts', () => {
   it('routes binary mic/chunk without JSON.parse warnings and publishes mic_ack + asr result', async () => {
     const mockClient = createMockMqttClient();
+    const infos = [];
     const warns = [];
-    const log = (msg) => {};
+    const log = (msg) => infos.push(msg);
     log.warn = (msg) => warns.push(msg);
 
     let asrCalls = 0;
@@ -283,6 +284,7 @@ describe('Nova Bridge mic ASR + chat_send + chat_tts', () => {
     const asr1 = mockClient.published.find((p) => p.topic === 'nova/D93468/chat' && p.payload.id === 1);
     assert.deepEqual(asr1.payload, { t: 'asr', id: 1, ok: true, text: '帮我查一下状态', ms: 123 });
     assert.equal(asr1.opts.retain, false);
+    assert.ok(infos.some((m) => m.includes('asr id=1 ok ms=123')), 'should log ASR latency on success');
 
     // Clip 2: empty transcript -> ok:false err:'未识别到语音'
     mockClient.emit('message', 'nova/D93468/mic/start', Buffer.from(JSON.stringify({ id: 2, chunks: 1 })));
@@ -292,6 +294,7 @@ describe('Nova Bridge mic ASR + chat_send + chat_tts', () => {
 
     const asr2 = mockClient.published.find((p) => p.topic === 'nova/D93468/chat' && p.payload.id === 2);
     assert.deepEqual(asr2.payload, { t: 'asr', id: 2, ok: false, err: '未识别到语音' });
+    assert.ok(infos.some((m) => m.includes('asr id=2 fail ms=88')), 'should log ASR latency on failure');
 
     // Clip 3: missing chunk -> mic_ack ok:false, missing:1, no chat publish
     mockClient.emit('message', 'nova/D93468/mic/start', Buffer.from(JSON.stringify({ id: 3, chunks: 2 })));

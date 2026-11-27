@@ -260,6 +260,9 @@ struct NovaState {
   char         apNote[64];
 };
 
+constexpr uint32_t NOVA_REC_ACK_TIMEOUT_MS = 10000u; // 等待宿主 mic_ack（本地 MQTT 往返）
+constexpr uint32_t NOVA_REC_ASR_TIMEOUT_MS = 20000u; // 等待云端 ASR（高于宿主 15s 超时并留 5s 裕量）
+
 void novaStateInit(const char* devId, const char* fwVer);
 void novaStateRead(NovaState* out);
 void novaSafeUtf8Copy(char* dst, size_t cap, const char* src);

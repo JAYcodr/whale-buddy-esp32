@@ -90,8 +90,9 @@ void novaChatAppend(NovaState& st, bool isUser, uint16_t id, const char* text) {
 
 bool novaRecCheckWaitTimeout(NovaState& st, uint32_t nowMs) {
   if ((st.recState != 3 && st.recState != 4) || st.recWaitStartMs == 0) return false;
-  if (nowMs < st.recWaitStartMs || (uint32_t)(nowMs - st.recWaitStartMs) < 10000u) return false;
   const bool waitAck = (st.recState == 3);
+  const uint32_t timeoutMs = waitAck ? NOVA_REC_ACK_TIMEOUT_MS : NOVA_REC_ASR_TIMEOUT_MS;
+  if (nowMs < st.recWaitStartMs || (uint32_t)(nowMs - st.recWaitStartMs) < timeoutMs) return false;
   st.recState = 5;
   st.recWaitStartMs = 0;
   snprintf(st.recErr, sizeof(st.recErr), "%s", waitAck ? "回执超时" : "识别超时");

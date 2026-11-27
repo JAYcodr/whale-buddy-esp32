@@ -368,7 +368,7 @@ int main() {
     CHECK(st.recState == 5);
     CHECK(std::strcmp(st.recErr, "结束包解析失败") == 0);
 
-    // 超时兜底：状态 3 / 4 超过 10s 落到错误态 5。
+    // 超时兜底：状态 3 超 10s（「回执超时」），状态 4 超 20s（「识别超时」，高于宿主 15s ASR 超时）。
     novaStateWithLock([](NovaState& s) {
       s.recState = 3;
       s.recClipId = 104;
@@ -383,7 +383,10 @@ int main() {
       s.recState = 4;
       s.recWaitStartMs = 2000;
       s.recErr[0] = '\0';
-      CHECK(novaRecCheckWaitTimeout(s, 12000));
+      CHECK(!novaRecCheckWaitTimeout(s, 12000)); // 10s 时不得误超时（覆盖 10–15s 慢识别）
+      CHECK(!novaRecCheckWaitTimeout(s, 21999));
+      CHECK(s.recState == 4);
+      CHECK(novaRecCheckWaitTimeout(s, 22000));
       CHECK(s.recState == 5);
       CHECK(std::strcmp(s.recErr, "识别超时") == 0);
     });
@@ -429,6 +432,21 @@ int main() {
     novaStateRead(&st);
     CHECK(st.recState == 1);
     CHECK(!st.chatDraftActive);
+
+    // 7a-3. 未开始新录音时，即使已落超时态 5，同 id 晚到的成功 ASR 仍应落草稿并清掉错误文案
+    novaStateWithLock([](NovaState& s) {
+      s.chatDraftActive = false;
+      s.chatDraftText[0] = '\0';
+      s.recState = 5;
+      s.recClipId = 42;
+      std::strcpy(s.recErr, "识别超时");
+    });
+    CHECK(protoApplyMessage("chat", asrOk, std::strlen(asrOk), 24100));
+    novaStateRead(&st);
+    CHECK(st.recState == 0);
+    CHECK(st.chatDraftActive);
+    CHECK(st.chatDraftId == 42);
+    CHECK(st.recErr[0] == '\0');
 
     // 7b. ASR 空文本 / 失败
     novaStateWithLock([](NovaState& s) {

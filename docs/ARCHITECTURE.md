@@ -341,7 +341,7 @@ sequenceDiagram
     BR->>BRK: chat{t:delivery,kind:reply,text} + tts(force)
 ```
 
-设备录音状态：`0 IDLE → 1 RECORDING → 2 UPLOADING → 3 SENT_WAIT_ACK → 4 SAVED`，异常 `5 ERR`；`3`/`4` 超 10s 无对应回执 → `5`（"回执超时"/"识别超时"）。
+设备录音状态：`0 IDLE → 1 RECORDING → 2 UPLOADING → 3 SENT_WAIT_ACK → 4 SAVED`，异常 `5 ERR`；`3` 超 10s 无回执 → `5`（"回执超时"），`4` 超 20s 无识别结果 → `5`（"识别超时"，覆盖宿主 15s ASR 超时）。
 
 **投递规则**：目标 `waiting`（等审批）拒收回 `fail`；失效会话回 `fail`「请重选」；`queue` 排队、`steer` 打断；宿主 `pendingChatQueue` 上限 8 条、15s 过期。草稿必须锁真实会话（目标失效/等待审批时自动预选推荐会话）。
 

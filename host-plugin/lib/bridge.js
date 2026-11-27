@@ -976,14 +976,18 @@ export function createNovaBridge(options = {}) {
         const ms = Math.max(0, Math.round(asr?.ms ?? (Date.now() - startedAt)));
         const text = String(asr?.text || '').trim();
         if (asr?.ok && text) {
+          log(`asr id=${res.id} ok ms=${ms} chars=${text.length}`);
           publishTo(id, 'chat', { t: 'asr', id: res.id, ok: true, text, ms }, { qos: 1, retain: false });
         } else {
           const err = sanitizeOneLine(asr?.err || '未识别到语音', 60) || '未识别到语音';
+          log(`asr id=${res.id} fail ms=${ms} err=${err}`);
           publishTo(id, 'chat', { t: 'asr', id: res.id, ok: false, err }, { qos: 1, retain: false });
         }
       })
       .catch((err) => {
+        const ms = Math.max(0, Date.now() - startedAt);
         const msg = sanitizeOneLine(err?.message || '识别失败', 60) || '识别失败';
+        warn(`nova-buddy: asr id=${res.id} error ms=${ms}: ${msg}`);
         publishTo(id, 'chat', { t: 'asr', id: res.id, ok: false, err: msg }, { qos: 1, retain: false });
       });
   }
