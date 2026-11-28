@@ -587,4 +587,36 @@ describe('导演上下文摘要（今日 Token）', () => {
     assert.equal(summaries[0].includes('Token('), false, summaries[0]);
     bridge.stop();
   });
+
+  it('tracks prefs.pet switch and passes pet=1 into choreography generator', async () => {
+    const mockClient = createMockMqttClient();
+    const seenOpts = [];
+    const bridge = createNovaBridge({
+      mqttConnect: () => mockClient,
+      fetchAllQuota: async () => ({ t: 'quota', cards: [] }),
+      fetchModelDialRank: async () => null,
+      tokensEnabled: false,
+      powerLogEnabled: false,
+      choreoGenerator: async (_summary, _cfg, _log, history) => {
+        seenOpts.push(history);
+        return { t: 'choreo', mood: '极客摸鱼', steps: [{ x: 184, speed: 'walk', anim: 'coding', dur: 12000, say: 'LGTM' }] };
+      },
+    });
+    bridge.start();
+    mockClient.emit('connect');
+    mockClient.emit(
+      'message',
+      'nova/D93468/hello',
+      Buffer.from(JSON.stringify({ online: true, prefs: { snd: 80, tts: true, choreo: true, pet: 0 } })),
+    );
+    mockClient.emit(
+      'message',
+      'nova/D93468/up',
+      Buffer.from(JSON.stringify({ evt: 'prefs', snd: 80, tts: true, quiet: true, choreo: true, pet: 1 })),
+    );
+    await new Promise((r) => setTimeout(r, 25));
+    assert.ok(seenOpts.length >= 1);
+    assert.equal(seenOpts[seenOpts.length - 1].pet, 1);
+    bridge.stop();
+  });
 });

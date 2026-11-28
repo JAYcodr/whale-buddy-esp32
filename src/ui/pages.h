@@ -35,6 +35,7 @@ struct UiAction {
     SET_CHOREO,
     SET_MIC_GAIN,
     SET_THEME,     // 界面风格：深海原版 / 深蓝潮汐
+    SET_PET,       // 桌面宠物：诺瓦 / Clawd
     RESTORE_DEFAULTS,
     TEST_SOUND,
     SYNC_HOST,

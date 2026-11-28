@@ -48,6 +48,13 @@
 #define EXIO_TP_RESET      1
 #define EXIO_DSI_PWR_EN    2
 #define EXIO_AXP_IRQ       5
+#define EXIO_SD_D3         7   // TF card DAT3/CS: pull HIGH for 1-bit SD_MMC mode
+
+// TF / MicroSD card (1-bit SD_MMC via ESP32-S3 GPIO matrix; D3 pulled high on EXIO7)
+#define BOARD_HAS_SDMMC    1
+#define PIN_SD_CMD         1
+#define PIN_SD_CLK         2
+#define PIN_SD_D0          3
 
 // Display: Arduino_SH8601 — canvas is upscaled 2× to physical.
 #define BOARD_DISPLAY_CO5300     0

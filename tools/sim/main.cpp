@@ -1202,6 +1202,86 @@ int main(int argc, char** argv) {
     }
   }
 
+  // ── Clawd 视觉出图与双宠切换契约：不进 51 项基线哈希，生成独立 PNG 供逐张验收 ─────
+  {
+    auto failIf = [&](bool ok, const char* msg) -> bool {
+      if (!ok) {
+        std::printf("clawd sim check failed: %s\n", msg);
+        return true;
+      }
+      return false;
+    };
+    if (failIf(nvaPetHasAssets("assets/pets/clawd") && nvaSwitchRoot("assets/pets/clawd"),
+               "nvaSwitchRoot assets/pets/clawd succeeds")) {
+      std::fclose(manifest);
+      return 1;
+    }
+
+    struct ClawdCase {
+      const char* name;
+      UiPage page;
+      ui::UiTheme theme;
+      bool aod;
+      int8_t anim;
+      uint8_t animTicks;
+      uint8_t settingsTab;
+      uint8_t openId;
+      bool simulateTap;
+    };
+    ClawdCase ccases[] = {
+      { "clawd_home_idle",    UiPage::HOME,     ui::UiTheme::OCEAN, false, (int8_t)NvaAnimKey::IDLE,    4, 0, 0,  false },
+      { "clawd_home_click",   UiPage::HOME,     ui::UiTheme::OCEAN, false, (int8_t)NvaAnimKey::CLICK,   5, 0, 0,  true  },
+      { "clawd_home_work",    UiPage::HOME,     ui::UiTheme::OCEAN, false, (int8_t)NvaAnimKey::WORKING, 5, 0, 0,  false },
+      { "clawd_aod",          UiPage::HOME,     ui::UiTheme::OCEAN, true,  (int8_t)NvaAnimKey::SLEEP,   4, 0, 0,  false },
+      { "clawd_tide_home",    UiPage::HOME,     ui::UiTheme::TIDE,  false, (int8_t)NvaAnimKey::CODING,  5, 0, 0,  false },
+      { "clawd_settings_beh", UiPage::SETTINGS, ui::UiTheme::OCEAN, false, -1,                          0, 3, 24, false },
+    };
+
+    const ui::UiTheme prevTheme = ui::activeTheme();
+    for (const auto& cc : ccases) {
+      ui::setActiveTheme(cc.theme);
+      NovaState st;
+      populateSample(st);
+      st.nowMs = 20000u;
+      if (cc.anim == (int8_t)NvaAnimKey::IDLE) {
+        st.run = 0; st.wait = 0; st.activeModel[0] = '\0'; st.msg[0] = '\0';
+      }
+      NovaSettings& cfg = settingsMut();
+      cfg = NovaSettings{};
+      cfg.petKind = 1;
+      cfg.uiTheme = (cc.theme == ui::UiTheme::TIDE) ? 1 : 0;
+
+      pageSettingsSetTab(cc.settingsTab);
+      if (cc.openId) pageSettingsDebugOpen(cc.openId);
+      nav.setPage(cc.page);
+
+      if (cc.aod) {
+        nvaSetState(NvaAnimKey::SLEEP, false, true);
+        for (int i = 0; i < cc.animTicks; i++) nvaTick(st.nowMs + (uint32_t)i * 120u);
+        pageHomeDrawAod(canvas, st, st.nowMs);
+      } else {
+        if (cc.simulateTap) {
+          pageHomeShowBubble("hello, world!", 4000u, st.nowMs);
+        }
+        if (cc.anim >= 0) {
+          nvaSetState((NvaAnimKey)cc.anim, false, true);
+          for (uint8_t i = 0; i < cc.animTicks; i++) nvaTick(st.nowMs + (uint32_t)i * 120u);
+        }
+        nav.draw(canvas, st, cfg, 24, st.nowMs);
+      }
+      std::string path = outDir + "/" + cc.name + ".png";
+      if (!saveRgb565Png(path.c_str(), canvas.getFramebuffer(), UI_W, UI_H)) return 1;
+      std::printf("wrote %s\n", path.c_str());
+    }
+
+    settingsMut() = NovaSettings{};
+    ui::setActiveTheme(prevTheme);
+    if (failIf(nvaSwitchRoot("assets/pets/nova"), "switch back to assets/pets/nova")) {
+      std::fclose(manifest);
+      return 1;
+    }
+  }
+
   std::fclose(manifest);
   return 0;
 }

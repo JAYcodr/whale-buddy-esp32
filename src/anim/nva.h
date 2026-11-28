@@ -32,6 +32,9 @@ enum class NvaAnimKey : uint8_t {
 };
 
 bool nvaInit(const char* rootDir = "/pets/nova");
+bool nvaPetHasAssets(const char* rootDir);
+bool nvaSwitchRoot(const char* rootDir);
+const char* nvaRootDir();
 bool nvaAvailable();
 void nvaSetState(NvaAnimKey key, bool once = false, bool restart = false);
 NvaAnimKey nvaCurrentState();

@@ -256,6 +256,31 @@ const char* const kWakeQuotes[] = {
   "呜哇! 没在偷懒!",
   "唔...醒啦主人!",
 };
+
+const char* const kClawdWaveQuotes[] = {
+  "hello, world!",
+  "Claude Code 就绪~",
+};
+const char* const kClawdHappyQuotes[] = {
+  "LGTM! 一次过编!",
+  "绝对正确, 继续冲!",
+};
+const char* const kClawdShyQuotes[] = {
+  "...（小鸭调试中）",
+  "对着小鸭理理思路~",
+};
+const char* const kClawdGiggleQuotes[] = {
+  "HEAD 游离别乱戳!",
+  "git status 全绿~",
+};
+const char* const kClawdAngryQuotes[] = {
+  "再戳要 rm -rf / 了!",
+  "别打断编译, 会炸的!",
+};
+const char* const kClawdWakeQuotes[] = {
+  "Ctrl+C 把我按醒了?",
+  "醒了, 切回 main 分支!",
+};
 uint8_t s_quoteIdx = 0;
 
 void copyUtf8Safe(char* dst, size_t cap, const char* src) {
@@ -308,7 +333,21 @@ float calcSquashScaleY(uint32_t nowMs) {
   return (sy > 1.10f) ? 1.10f : sy;
 }
 
-bool spriteAllowsMirror(NvaAnimKey k) {
+bool spriteAllowsMirror(NvaAnimKey k, uint8_t petKind) {
+  if (petKind == (uint8_t)PetKind::CLAWD) {
+    // Clawd 很多动作带英文像素字（hello/LGTM/18:00/HEAD 等）或 Zzz，不能镜像翻转，
+    // 仅对纯无字动作（待机、漫步、小跑、唤醒端杯、喝咖啡）允许朝向翻转。
+    switch (k) {
+      case NvaAnimKey::IDLE:
+      case NvaAnimKey::CRAB_WALK:
+      case NvaAnimKey::HAPPY_RUN:
+      case NvaAnimKey::WAKE_UP:
+      case NvaAnimKey::HUM:
+        return true;
+      default:
+        return false;
+    }
+  }
   switch (k) {
     case NvaAnimKey::IDLE:
     case NvaAnimKey::SUCCESS:
@@ -526,7 +565,7 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
     if (bx + bw > UI_W - 12) bx = UI_W - 12 - bw;
 
     by = bottomY - sprH - 36;
-    if (by < STAGE_TOP + 4) by = STAGE_TOP + 4;
+    if (by < STAGE_TOP + 2) by = STAGE_TOP + 2;
     if (by > STAGE_BOTTOM - 34) by = STAGE_BOTTOM - 34;
 
     if (bx - 2 < curX0) curX0 = bx - 2;
@@ -577,7 +616,7 @@ void drawStageContent(NovaCanvas& c, const NovaState& st, const NovaSettings& cf
   }
 
   const NvaAnimKey activeState = nvaActiveState();
-  const bool flipX = s_facingRight && spriteAllowsMirror(activeState);
+  const bool flipX = s_facingRight && spriteAllowsMirror(activeState, cfg.petKind);
   float squashY = calcSquashScaleY(st.nowMs);
   if (!nvaDraw(c, cx, bottomY, flipX, squashY)) {
     ui::aaFillCircle(c, cx, bottomY - 76, 36, auraCol);
@@ -1060,7 +1099,7 @@ void drawStageContentTide(NovaCanvas& c, const NovaState& st, const NovaSettings
     }
   }
 
-  if (!nvaDraw(c, cx, bottomY, s_facingRight && spriteAllowsMirror(nvaActiveState()),
+  if (!nvaDraw(c, cx, bottomY, s_facingRight && spriteAllowsMirror(nvaActiveState(), cfg.petKind),
                calcSquashScaleY(st.nowMs))) {
     ui::aaFillCircle(c, cx, (int16_t)(bottomY - 76), 36,
                      (bg == ui::tide::BG_NIGHT) ? ui::tide::SURF_SUB : ui::tide::WHITE);
@@ -1080,7 +1119,7 @@ void drawStageContentTide(NovaCanvas& c, const NovaState& st, const NovaSettings
 
 // 底栏码头：顶部 2px 细横线 + 左侧纯白反色块（RUN N · CTX XX%）+ 右侧模型名
 // + 下方一行纯白状态文本。通栏无卡片、零圆角。
-void drawTideDock(NovaCanvas& c, const NovaState& st, uint16_t bg) {
+void drawTideDock(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint16_t bg) {
   c.fillRect(0, TIDE_DOCK_TOP, UI_W, UI_H - TIDE_DOCK_TOP, bg);
   c.fillRect(0, TIDE_DOCK_TOP, UI_W, 2, ui::blend565(bg, ui::tide::WHITE, 95));
 
@@ -1114,9 +1153,12 @@ void drawTideDock(NovaCanvas& c, const NovaState& st, uint16_t bg) {
     }
   }
 
+  const char* idleHint = (cfg.petKind == (uint8_t)PetKind::CLAWD)
+                             ? "待机摸鱼中 · 轻戳克码互动"
+                             : "待机摸鱼中 · 轻戳诺瓦互动";
   const char* line = st.msg[0] ? st.msg
                      : (st.sessTitle[0] ? st.sessTitle
-                        : (st.run == 0 ? "待机摸鱼中 · 轻戳诺瓦互动" : "任务执行中"));
+                        : (st.run == 0 ? idleHint : "任务执行中"));
   char lineBuf[96];
   ui::fitUtf8Line(c, ui::fontCjk16(), line, UI_SAFE_W, lineBuf, sizeof(lineBuf));
   ui::drawText(c, ui::fontCjk16(), UI_SAFE_L, 416, lineBuf, ui::tide::WHITE, bg);
@@ -1132,7 +1174,7 @@ void drawHomeTide(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
   s_hasPrevBox = false;
   s_prevHadBubble = false;
   drawStageContentTide(c, st, cfg, frame, nullptr, nullptr, nullptr, nullptr);
-  drawTideDock(c, st, bg);
+  drawTideDock(c, st, cfg, bg);
   if (st.dockExpanded && st.turnError && st.errMsg[0]) {
     drawDockDetail(c, st);
   }
@@ -1393,7 +1435,10 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
       if (st.lastTool[0]) snprintf(metaLine, sizeof(metaLine), "工具 %s", st.lastTool);
       else metaLine[0] = '\0';
     } else {
-      snprintf(metaLine, sizeof(metaLine), "轻触舞台逗诺瓦跑动 · 左右划切页");
+      snprintf(metaLine, sizeof(metaLine),
+               (cfg.petKind == (uint8_t)PetKind::CLAWD)
+                   ? "轻触舞台逗克码跑动 · 左右划切页"
+                   : "轻触舞台逗诺瓦跑动 · 左右划切页");
     }
     if (metaLine[0]) {
       ui::drawText(c, ui::fontCjk14(), metaX, row2Y, metaLine, metaCol, ui::COL_CARD);
@@ -1405,7 +1450,11 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
 
   } else {
     ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 30, "离线陪伴模式 · 本地交互就绪", ui::COL_TEXT, ui::COL_CARD);
-    ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 62, "点空白处让诺瓦跑过去 · 点胶囊换动作", ui::COL_DIM, ui::COL_CARD);
+    ui::drawText(c, ui::fontCjk14(), dockX + 16, dockY + 62,
+                 (cfg.petKind == (uint8_t)PetKind::CLAWD)
+                     ? "点空白处让克码跑过去 · 点胶囊换动作"
+                     : "点空白处让诺瓦跑过去 · 点胶囊换动作",
+                 ui::COL_DIM, ui::COL_CARD);
   }
 }
 
@@ -1489,7 +1538,7 @@ void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
   s_aodPrevX1 = (int16_t)(cx + hw);
   s_aodPrevY0 = (int16_t)(bottomY - fh - 2);
   s_aodPrevY1 = (int16_t)(bottomY + 2);
-  if (s_aodPrevY0 < (int16_t)(210 + oy)) s_aodPrevY0 = (int16_t)(210 + oy);
+  if (s_aodPrevY0 < (int16_t)(200 + oy)) s_aodPrevY0 = (int16_t)(200 + oy);
   if (s_aodPrevY1 > (int16_t)(422 + oy)) s_aodPrevY1 = (int16_t)(422 + oy);
   s_aodHasPrevBox = true;
 
@@ -1523,7 +1572,7 @@ void pageHomeDrawAodPet(NovaCanvas& c, const NovaState& st, uint32_t nowMs,
 
   const int16_t hw = nvaFrameWidth() / 2 + 2;
   const int16_t fh = nvaFrameHeight();
-  const int16_t minY = (int16_t)(210 + oy);
+  const int16_t minY = (int16_t)(200 + oy);
   const int16_t maxY = (int16_t)(422 + oy);
   int16_t curX0 = (int16_t)(cx - hw);
   int16_t curX1 = (int16_t)(cx + hw);
@@ -1588,10 +1637,11 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
       s_sparkFrames = 24;
       s_pendingSquashTap = true;
       const NvaAnimKey cur = nvaActiveState();
+      const bool isClawd = (settingsGet().petKind == (uint8_t)PetKind::CLAWD);
       if (cur == NvaAnimKey::SLEEP || cur == NvaAnimKey::YAWN) {
         s_comboCount = 0;
         const int wakeQ = s_quoteIdx % 2;
-        setBubble(kWakeQuotes[wakeQ], 5500u, st.nowMs);
+        setBubble(isClawd ? kClawdWakeQuotes[wakeQ] : kWakeQuotes[wakeQ], 5500u, st.nowMs);
         s_quoteIdx++;
         return UiAction{ UiAction::PET_TAP, 0, (int)NvaAnimKey::WAKE_UP, wakeQ };
       }
@@ -1606,7 +1656,7 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
       if (s_comboCount >= 2) {
         s_comboCount = 0;
         const int angryQ = s_quoteIdx % 2;
-        setBubble(kClickAngryQuotes[angryQ], 6000u, st.nowMs);
+        setBubble(isClawd ? kClawdAngryQuotes[angryQ] : kClickAngryQuotes[angryQ], 6000u, st.nowMs);
         s_quoteIdx++;
         return UiAction{ UiAction::PET_TAP, 0, (int)NvaAnimKey::CLICK_ANGRY, angryQ };
       }
@@ -1628,10 +1678,14 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
       const NvaAnimKey chosen = kClickPool[s_clickPoolIdx];
       s_lastClickKey = chosen;
       const int clickQ = s_quoteIdx % 2;
-      const char* quote = kClickWaveQuotes[clickQ];
-      if (chosen == NvaAnimKey::CLICK_HAPPY) quote = kClickHappyQuotes[clickQ];
-      else if (chosen == NvaAnimKey::CLICK_SHY) quote = kClickShyQuotes[clickQ];
-      else if (chosen == NvaAnimKey::CLICK_GIGGLE) quote = kClickGiggleQuotes[clickQ];
+      const char* quote = isClawd ? kClawdWaveQuotes[clickQ] : kClickWaveQuotes[clickQ];
+      if (chosen == NvaAnimKey::CLICK_HAPPY) {
+        quote = isClawd ? kClawdHappyQuotes[clickQ] : kClickHappyQuotes[clickQ];
+      } else if (chosen == NvaAnimKey::CLICK_SHY) {
+        quote = isClawd ? kClawdShyQuotes[clickQ] : kClickShyQuotes[clickQ];
+      } else if (chosen == NvaAnimKey::CLICK_GIGGLE) {
+        quote = isClawd ? kClawdGiggleQuotes[clickQ] : kClickGiggleQuotes[clickQ];
+      }
       s_quoteIdx++;
       setBubble(quote, 6500u, st.nowMs);
       return UiAction{ UiAction::PET_TAP, 0, (int)chosen, clickQ };
@@ -1644,7 +1698,8 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     s_runSpeed = true;
     s_userTargetLock = true;
     s_nextRoamMs = st.nowMs + 14000u;
-    setBubble("跑过来啦~", 4500u, st.nowMs);
+    const bool isClawd = (settingsGet().petKind == (uint8_t)PetKind::CLAWD);
+    setBubble(isClawd ? "git checkout 跑过去!" : "跑过来啦~", 4500u, st.nowMs);
     return UiAction{ UiAction::PET_TAP, 1 };
   }
 

@@ -261,6 +261,24 @@ export function createNovaBridge(options = {}) {
     return out;
   }
 
+  function devicePet(id) {
+    return Number(devices.get(id)?.prefs?.pet) === 1 ? 1 : 0;
+  }
+
+  function activePet() {
+    let bestPet = 0;
+    let bestSeen = -1;
+    for (const info of devices.values()) {
+      if (!info?.online) continue;
+      const seen = Number(info.lastSeen || 0);
+      if (seen >= bestSeen) {
+        bestSeen = seen;
+        bestPet = Number(info.prefs?.pet) === 1 ? 1 : 0;
+      }
+    }
+    return bestPet;
+  }
+
   function ttsTargetIds(filterIds = null) {
     const allow = Array.isArray(filterIds) ? new Set(filterIds) : null;
     const out = [];
@@ -486,7 +504,11 @@ export function createNovaBridge(options = {}) {
       return null;
     }
     lastChoreoAt = now;
-    const c = await choreoGen(buildContextSummary(reason), aiCfg, log, { recentAnims, recentMood });
+    const c = await choreoGen(buildContextSummary(reason), aiCfg, log, {
+      recentAnims,
+      recentMood,
+      pet: activePet(),
+    });
     if (c) {
       // retain:false —— retained 剧本会在设备冷启动/重连时被 broker 重放，
       // 半夜播「主人晚上好呀」。设备重连由 hello 补推新鲜的（见 handleHello）。
@@ -553,7 +575,14 @@ export function createNovaBridge(options = {}) {
   function handleHello(id, data) {
     const online = data?.online !== false;
     const prev = devices.get(id) || {};
+    const prevPet = Number(prev.prefs?.pet) === 1 ? 1 : 0;
     const prefs = data?.prefs && typeof data.prefs === 'object' ? data.prefs : prev.prefs || null;
+    if (prefs && Number(prefs.pet ?? 0) !== prevPet) {
+      choreoPayload = null;
+      recentAnims = [];
+      recentMood = '';
+      chatHistories.delete(id);
+    }
     devices.set(id, { ...prev, online, lastSeen: Date.now(), meta: data?.hello || prev.meta || null, prefs });
     log(`device ${id} ${online ? 'online' : 'offline'}`);
     if (online) {
@@ -592,14 +621,25 @@ export function createNovaBridge(options = {}) {
       );
     } else if (data?.evt === 'prefs') {
       const prev = devices.get(id) || {};
+      const prevPet = Number(prev.prefs?.pet) === 1 ? 1 : 0;
       const prefs = {
         snd: data.snd ?? prev.prefs?.snd ?? 75,
         tts: data.tts ?? prev.prefs?.tts ?? true,
         quiet: data.quiet ?? prev.prefs?.quiet ?? true,
         choreo: data.choreo ?? prev.prefs?.choreo ?? true,
+        pet: Number(data.pet ?? prev.prefs?.pet ?? 0) === 1 ? 1 : 0,
       };
       devices.set(id, { ...prev, online: true, lastSeen: Date.now(), prefs });
       log(`device ${id} prefs updated: ${JSON.stringify(prefs)}`);
+      if (prefs.pet !== prevPet) {
+        choreoPayload = null;
+        recentAnims = [];
+        recentMood = '';
+        chatHistories.delete(id);
+        if (prefs.choreo !== false) {
+          refreshChoreo('pet-switch').catch(() => {});
+        }
+      }
     } else if (data?.evt === 'sync') {
       devices.set(id, { ...(devices.get(id) || {}), online: true, lastSeen: Date.now() });
       pushTime(id);
@@ -762,6 +802,7 @@ export function createNovaBridge(options = {}) {
         buildContextSummary('chat'),
         aiCfg,
         log,
+        { pet: devicePet(id) },
       );
       const reply = clipByDisplayWidth(stripMarkdownToPlain(rawReply), DEVICE_REPLY_WIDTH);
       if (!reply) throw new Error('empty reply');
@@ -1160,7 +1201,10 @@ export function createNovaBridge(options = {}) {
           if (cur.error) {
             // 播具体原因，不是套话。dedupKey 用错误原文，连着同样的错只播一次。
             const detail = cur.errMsg ? clipForTts(cur.errMsg, 34) : '';
-            const line = detail ? `出错了，${detail}` : '唔，刚刚好像出了一点小差错，快来看看呀！';
+            const defaultErrLine = activePet() === 1
+              ? '克码报错了，快来看一眼堆栈！'
+              : '唔，刚刚好像出了一点小差错，快来看看呀！';
+            const line = detail ? `出错了，${detail}` : defaultErrLine;
             const key = `err:${cur.errMsg || 'unknown'}`;
             if (!ttsDedupHit(key)) {
               publishTts(line, { force: true }).catch((e) =>
@@ -1169,8 +1213,11 @@ export function createNovaBridge(options = {}) {
           } else {
             // 结束那句以前没传 force，被 4 秒节流吃掉；传了之后要靠 task 维度去重。
             const key = `turnend:${sid}:${cur.updatedAt}`;
+            const doneLine = activePet() === 1
+              ? '克码报告，刚刚的任务跑通啦！'
+              : '主人，刚刚的任务完成啦！';
             if (!ttsDedupHit(key)) {
-              publishTts(clipForTts('主人，刚刚的任务完成啦！'), { force: true }).catch((e) =>
+              publishTts(clipForTts(doneLine), { force: true }).catch((e) =>
                 warn(`nova-buddy: TTS 播报失败 ${e?.message || e}`));
             }
           }

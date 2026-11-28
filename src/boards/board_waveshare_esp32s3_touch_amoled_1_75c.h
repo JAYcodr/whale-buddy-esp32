@@ -54,6 +54,7 @@
 
 // No TCA9554 expander on this board
 #define BOARD_HAS_TCA9554  0
+#define BOARD_HAS_SDMMC    0
 
 // Display: Arduino_CO5300 (1.75C FPC uses CO5300, not SH8601 as 1.8")
 #define BOARD_DISPLAY_CO5300  1

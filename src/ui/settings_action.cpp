@@ -25,6 +25,7 @@ constexpr ActionMap kActionMap[] = {
   { UiAction::SET_AOD_NIGHT, 12 },
   { UiAction::SET_MIC_GAIN,  13 },
   { UiAction::SET_THEME,     14 },
+  { UiAction::SET_PET,       15 },
 };
 
 }  // namespace

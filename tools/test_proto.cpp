@@ -196,13 +196,14 @@ int main() {
   CHECK(std::strstr(buf, "\"onSrc\":255") != nullptr);
   CHECK(std::strstr(buf, "\"offSrc\":255") != nullptr);
 
-  // prefs 只上宿主 toHost 的 4 项，键名与旧实现一致。
+  // prefs 上宿主 toHost 项（含 pet 供脚本与人设切换）。
   n = protoBuildPrefs(buf, sizeof(buf), cfg);
   CHECK(std::strstr(buf, "\"evt\":\"prefs\"") != nullptr);
   CHECK(std::strstr(buf, "\"snd\":") != nullptr);
   CHECK(std::strstr(buf, "\"tts\":") != nullptr);
   CHECK(std::strstr(buf, "\"quiet\":") != nullptr);
   CHECK(std::strstr(buf, "\"choreo\":") != nullptr);
+  CHECK(std::strstr(buf, "\"pet\":") != nullptr);
   CHECK(std::strstr(buf, "\"brt\"") == nullptr);
 
   // ── 3. tts 分片：错序 / 重复 / seq>=tot 必须被拒 ─────────────────

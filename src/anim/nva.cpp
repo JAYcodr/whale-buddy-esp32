@@ -7,6 +7,7 @@
 #ifdef NOVA_HOST_SIM
 #include <zlib.h>
 #else
+#include "hw/sdcard.h"
 #include <Arduino.h>
 #include <esp_timer.h>
 #include <LittleFS.h>
@@ -69,6 +70,7 @@ struct NvaPack {
 };
 
 char    s_rootDir[64] = "/pets/nova";
+char    s_pendingRootDir[64] = "";
 bool    s_ready = false;
 NvaPack s_resPacks[3];         // IDLE, SUCCESS, ERROR
 NvaPack s_streamPack;          // shared on-demand slot
@@ -78,6 +80,9 @@ uint32_t s_packGenSeq = 1;
 volatile NvaAnimKey s_desiredKey = NvaAnimKey::IDLE;
 volatile bool       s_desiredOnce = false;
 volatile uint32_t   s_desiredRestartGen = 0;
+volatile uint32_t   s_rootChangeGen = 0;
+volatile uint32_t   s_seenRootChangeGen = 0;
+volatile bool       s_rootChangeOk = false;
 
 NvaAnimKey s_activeKey  = NvaAnimKey::IDLE;
 bool       s_activeOnce = false;
@@ -192,10 +197,15 @@ bool parsePack(NvaPack& pk) {
   return true;
 }
 
-bool loadPackFromFs(NvaAnimKey key, NvaPack& pk) {
+bool isSdPath(const char* p) {
+  return p && strncmp(p, "/sdcard/", 8) == 0;
+}
+
+bool loadPackFromRoot(const char* rootDir, NvaAnimKey key, NvaPack& pk) {
   freePack(pk);
+  if (!rootDir || !rootDir[0]) return false;
   char path[96];
-  snprintf(path, sizeof(path), "%s/%s.nva", s_rootDir, ANIM_NAMES[(int)key]);
+  snprintf(path, sizeof(path), "%s/%s.nva", rootDir, ANIM_NAMES[(int)key]);
 
 #ifdef NOVA_HOST_SIM
   FILE* f = fopen(path, "rb");
@@ -209,14 +219,24 @@ bool loadPackFromFs(NvaAnimKey key, NvaPack& pk) {
   pk.rawLen = fread(pk.rawFile, 1, (size_t)sz, f);
   fclose(f);
 #else
-  File f = LittleFS.open(path, "r");
-  if (!f) return false;
-  size_t sz = f.size();
-  if (sz == 0) { f.close(); return false; }
-  pk.rawFile = allocBuffer(sz, true);
-  if (!pk.rawFile) { f.close(); return false; }
-  pk.rawLen = f.read(pk.rawFile, sz);
-  f.close();
+  size_t sz = 0;
+  if (isSdPath(path)) {
+    const char* rel = path + 7;  // strip "/sdcard"
+    sz = hwSdFileSize(rel);
+    if (sz == 0) return false;
+    pk.rawFile = allocBuffer(sz, true);
+    if (!pk.rawFile) return false;
+    pk.rawLen = hwSdReadFile(rel, pk.rawFile, sz);
+  } else {
+    File f = LittleFS.open(path, "r");
+    if (!f) return false;
+    sz = f.size();
+    if (sz == 0) { f.close(); return false; }
+    pk.rawFile = allocBuffer(sz, true);
+    if (!pk.rawFile) { f.close(); return false; }
+    pk.rawLen = f.read(pk.rawFile, sz);
+    f.close();
+  }
 #endif
 
   if (pk.rawLen != (size_t)sz || !parsePack(pk)) {
@@ -224,6 +244,10 @@ bool loadPackFromFs(NvaAnimKey key, NvaPack& pk) {
     return false;
   }
   return true;
+}
+
+bool loadPackFromFs(NvaAnimKey key, NvaPack& pk) {
+  return loadPackFromRoot(s_rootDir, key, pk);
 }
 
 int residentSlotIndex(NvaAnimKey k) {
@@ -322,12 +346,62 @@ bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx, NvaAnimKey key) {
   return true;
 }
 
+bool applyRootReload(const char* nextDir) {
+  if (!nextDir || !nextDir[0]) return false;
+  NvaPack nextIdle{};
+  if (!loadPackFromRoot(nextDir, NvaAnimKey::IDLE, nextIdle)) {
+    freePack(nextIdle);
+    return false;
+  }
+
+  freePack(s_streamPack);
+  s_streamKey = NvaAnimKey::COUNT;
+  freePack(s_resPacks[0]);
+  freePack(s_resPacks[1]);
+  freePack(s_resPacks[2]);
+
+  s_resPacks[0] = nextIdle;
+  nextIdle.valid = false;
+  nextIdle.offsets = nullptr;
+  nextIdle.blobs = nullptr;
+  nextIdle.rawFile = nullptr;
+
+  loadPackFromRoot(nextDir, NvaAnimKey::SUCCESS, s_resPacks[1]);
+  loadPackFromRoot(nextDir, NvaAnimKey::ERROR, s_resPacks[2]);
+  strncpy(s_rootDir, nextDir, sizeof(s_rootDir) - 1);
+  s_rootDir[sizeof(s_rootDir) - 1] = '\0';
+
+  s_ready = true;
+  s_desiredKey = NvaAnimKey::IDLE;
+  s_desiredOnce = false;
+  s_desiredRestartGen++;
+  s_activeKey = NvaAnimKey::IDLE;
+  s_activeOnce = false;
+  s_seenRestartGen = s_desiredRestartGen;
+  s_frameIdx = 0;
+  s_clipEnded = false;
+  s_loopCycles = 0;
+  s_activeFps = s_resPacks[0].fps > 0 ? s_resPacks[0].fps : 10;
+  decodeFrameToBack(s_resPacks[0], 0, NvaAnimKey::IDLE);
+  s_nextFrameMs = 0;
+  return true;
+}
+
 #ifndef NOVA_HOST_SIM
 void decodeTaskFn(void*) {
   for (;;) {
     // TaskNotification 本身就是计数信号量；不再二次用 s_needDecode 门控，防止跨核竞态丢唤醒
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     s_needDecode = false;
+
+    if (s_seenRootChangeGen != s_rootChangeGen) {
+      char nextDir[64];
+      strncpy(nextDir, s_pendingRootDir, sizeof(nextDir) - 1);
+      nextDir[sizeof(nextDir) - 1] = '\0';
+      s_rootChangeOk = applyRootReload(nextDir);
+      s_seenRootChangeGen = s_rootChangeGen;
+      continue;
+    }
 
     NvaAnimKey target = s_desiredKey;
     bool targetOnce = s_desiredOnce;
@@ -388,7 +462,8 @@ bool nvaInit(const char* rootDir) {
   }
 
 #ifndef NOVA_HOST_SIM
-  if (!LittleFS.begin(false)) {
+  bool lfsOk = LittleFS.begin(false);
+  if (!lfsOk && !isSdPath(s_rootDir)) {
     Serial.println("nva: LittleFS mount failed");
     return false;
   }
@@ -419,6 +494,47 @@ bool nvaInit(const char* rootDir) {
 #endif
   return true;
 }
+
+bool nvaPetHasAssets(const char* rootDir) {
+  if (!rootDir || !rootDir[0]) return false;
+  char path[96];
+  snprintf(path, sizeof(path), "%s/idle.nva", rootDir);
+#ifdef NOVA_HOST_SIM
+  FILE* f = fopen(path, "rb");
+  if (!f) return false;
+  fclose(f);
+  return true;
+#else
+  if (isSdPath(path)) return hwSdExists(path + 7);
+  return LittleFS.exists(path);
+#endif
+}
+
+bool nvaSwitchRoot(const char* rootDir) {
+  if (!rootDir || !rootDir[0]) return false;
+  if (s_ready && strcmp(s_rootDir, rootDir) == 0) return true;
+  if (!nvaPetHasAssets(rootDir)) return false;
+#ifdef NOVA_HOST_SIM
+  return applyRootReload(rootDir);
+#else
+  if (!s_decodeTask) {
+    return applyRootReload(rootDir);
+  }
+  strncpy(s_pendingRootDir, rootDir, sizeof(s_pendingRootDir) - 1);
+  s_pendingRootDir[sizeof(s_pendingRootDir) - 1] = '\0';
+  s_rootChangeOk = false;
+  uint32_t nextGen = s_rootChangeGen + 1;
+  s_rootChangeGen = nextGen;
+  xTaskNotifyGive(s_decodeTask);
+  for (int i = 0; i < 60; i++) {
+    if (s_seenRootChangeGen == nextGen) return s_rootChangeOk;
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  return false;
+#endif
+}
+
+const char* nvaRootDir() { return s_rootDir; }
 
 bool nvaAvailable() { return s_ready; }
 

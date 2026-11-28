@@ -14,6 +14,11 @@ bool hwExpanderInit() {
   g_expander.pinMode(EXIO_TP_RESET,   OUTPUT);
   g_expander.pinMode(EXIO_DSI_PWR_EN, OUTPUT);
   g_expander.pinMode(EXIO_AXP_IRQ,    INPUT);
+#ifdef EXIO_SD_D3
+  // Keep TF card DAT3/CS high so the card boots in 1-bit SDMMC mode (not SPI).
+  g_expander.pinMode(EXIO_SD_D3,      OUTPUT);
+  g_expander.digitalWrite(EXIO_SD_D3, HIGH);
+#endif
   return true;
 }
 

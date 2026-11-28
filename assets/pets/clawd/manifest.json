@@ -1,0 +1,431 @@
+{
+  "format": "NVA2",
+  "id": "cc-clawd",
+  "name": "克码人生 · Clawd",
+  "author": "alwinecor",
+  "license": "MIT",
+  "source": "https://github.com/alwinecor/clawd-stickers",
+  "params": {
+    "scale": 1.5,
+    "resample": "NEAREST",
+    "fps": 10,
+    "anchor": {
+      "x": 72,
+      "stage_bottom": 144
+    },
+    "xor_delta": true,
+    "keyframe_interval": 25
+  },
+  "anims": [
+    {
+      "slot": "idle",
+      "source_anim": "idle",
+      "w": 135,
+      "h": 99,
+      "frames": 54,
+      "fps": 10,
+      "colors": 3,
+      "bytes": 2429,
+      "kb": 2.4,
+      "crop_box": [
+        27,
+        78,
+        117,
+        144
+      ]
+    },
+    {
+      "slot": "thinking",
+      "source_anim": "thinking",
+      "w": 153,
+      "h": 207,
+      "frames": 42,
+      "fps": 10,
+      "colors": 8,
+      "bytes": 10300,
+      "kb": 10.1,
+      "crop_box": [
+        21,
+        6,
+        123,
+        144
+      ]
+    },
+    {
+      "slot": "working",
+      "source_anim": "todo",
+      "w": 207,
+      "h": 216,
+      "frames": 38,
+      "fps": 10,
+      "colors": 24,
+      "bytes": 5962,
+      "kb": 5.8,
+      "crop_box": [
+        3,
+        0,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "waiting",
+      "source_anim": "proceed",
+      "w": 189,
+      "h": 207,
+      "frames": 41,
+      "fps": 10,
+      "colors": 11,
+      "bytes": 8087,
+      "kb": 7.9,
+      "crop_box": [
+        9,
+        6,
+        135,
+        144
+      ]
+    },
+    {
+      "slot": "success",
+      "source_anim": "passed_long",
+      "w": 207,
+      "h": 216,
+      "frames": 48,
+      "fps": 10,
+      "colors": 10,
+      "bytes": 14634,
+      "kb": 14.3,
+      "crop_box": [
+        3,
+        0,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "error",
+      "source_anim": "error",
+      "w": 171,
+      "h": 207,
+      "frames": 42,
+      "fps": 10,
+      "colors": 9,
+      "bytes": 9943,
+      "kb": 9.7,
+      "crop_box": [
+        15,
+        6,
+        129,
+        144
+      ]
+    },
+    {
+      "slot": "click",
+      "source_anim": "hello",
+      "w": 198,
+      "h": 198,
+      "frames": 46,
+      "fps": 10,
+      "colors": 8,
+      "bytes": 11217,
+      "kb": 11.0,
+      "crop_box": [
+        6,
+        12,
+        138,
+        144
+      ]
+    },
+    {
+      "slot": "sleep",
+      "source_anim": "sleep",
+      "w": 189,
+      "h": 184,
+      "frames": 54,
+      "fps": 10,
+      "colors": 9,
+      "bytes": 10264,
+      "kb": 10.0,
+      "crop_box": [
+        9,
+        21,
+        135,
+        144
+      ]
+    },
+    {
+      "slot": "quota",
+      "source_anim": "lgtm",
+      "w": 207,
+      "h": 216,
+      "frames": 48,
+      "fps": 10,
+      "colors": 10,
+      "bytes": 8847,
+      "kb": 8.6,
+      "crop_box": [
+        3,
+        0,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "click_happy",
+      "source_anim": "right",
+      "w": 207,
+      "h": 213,
+      "frames": 37,
+      "fps": 10,
+      "colors": 10,
+      "bytes": 7829,
+      "kb": 7.6,
+      "crop_box": [
+        3,
+        2,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "click_shy",
+      "source_anim": "duck",
+      "w": 207,
+      "h": 207,
+      "frames": 46,
+      "fps": 10,
+      "colors": 14,
+      "bytes": 6642,
+      "kb": 6.5,
+      "crop_box": [
+        3,
+        6,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "click_angry",
+      "source_anim": "rmrf",
+      "w": 189,
+      "h": 216,
+      "frames": 57,
+      "fps": 10,
+      "colors": 11,
+      "bytes": 7717,
+      "kb": 7.5,
+      "crop_box": [
+        9,
+        0,
+        135,
+        144
+      ]
+    },
+    {
+      "slot": "click_giggle",
+      "source_anim": "detached_long",
+      "w": 207,
+      "h": 207,
+      "frames": 57,
+      "fps": 10,
+      "colors": 7,
+      "bytes": 10759,
+      "kb": 10.5,
+      "crop_box": [
+        3,
+        6,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "crab_walk",
+      "source_anim": "roam",
+      "w": 135,
+      "h": 105,
+      "frames": 6,
+      "fps": 10,
+      "colors": 4,
+      "bytes": 623,
+      "kb": 0.6,
+      "crop_box": [
+        27,
+        74,
+        117,
+        144
+      ]
+    },
+    {
+      "slot": "happy_run",
+      "source_anim": "roam",
+      "w": 135,
+      "h": 105,
+      "frames": 6,
+      "fps": 10,
+      "colors": 4,
+      "bytes": 623,
+      "kb": 0.6,
+      "crop_box": [
+        27,
+        74,
+        117,
+        144
+      ]
+    },
+    {
+      "slot": "coding",
+      "source_anim": "simple",
+      "w": 207,
+      "h": 216,
+      "frames": 43,
+      "fps": 10,
+      "colors": 17,
+      "bytes": 11591,
+      "kb": 11.3,
+      "crop_box": [
+        3,
+        0,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "archive",
+      "source_anim": "compact",
+      "w": 207,
+      "h": 216,
+      "frames": 49,
+      "fps": 10,
+      "colors": 16,
+      "bytes": 11816,
+      "kb": 11.5,
+      "crop_box": [
+        3,
+        0,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "stretch",
+      "source_anim": "offwork",
+      "w": 207,
+      "h": 207,
+      "frames": 46,
+      "fps": 10,
+      "colors": 18,
+      "bytes": 8971,
+      "kb": 8.8,
+      "crop_box": [
+        3,
+        6,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "yawn",
+      "source_anim": "overtime",
+      "w": 207,
+      "h": 207,
+      "frames": 54,
+      "fps": 10,
+      "colors": 14,
+      "bytes": 9412,
+      "kb": 9.2,
+      "crop_box": [
+        3,
+        6,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "wake_up",
+      "source_anim": "wake",
+      "w": 207,
+      "h": 216,
+      "frames": 60,
+      "fps": 10,
+      "colors": 31,
+      "bytes": 12646,
+      "kb": 12.3,
+      "crop_box": [
+        3,
+        0,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "hum",
+      "source_anim": "coffee",
+      "w": 207,
+      "h": 153,
+      "frames": 50,
+      "fps": 10,
+      "colors": 27,
+      "bytes": 10646,
+      "kb": 10.4,
+      "crop_box": [
+        3,
+        42,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "eat_token",
+      "source_anim": "overflow",
+      "w": 207,
+      "h": 213,
+      "frames": 47,
+      "fps": 10,
+      "colors": 10,
+      "bytes": 8184,
+      "kb": 8.0,
+      "crop_box": [
+        3,
+        2,
+        141,
+        144
+      ]
+    },
+    {
+      "slot": "bubble",
+      "source_anim": "fish",
+      "w": 171,
+      "h": 189,
+      "frames": 42,
+      "fps": 10,
+      "colors": 24,
+      "bytes": 8189,
+      "kb": 8.0,
+      "crop_box": [
+        15,
+        18,
+        129,
+        144
+      ]
+    },
+    {
+      "slot": "quota_worry",
+      "source_anim": "deadline",
+      "w": 171,
+      "h": 207,
+      "frames": 43,
+      "fps": 10,
+      "colors": 12,
+      "bytes": 6344,
+      "kb": 6.2,
+      "crop_box": [
+        15,
+        6,
+        129,
+        144
+      ]
+    }
+  ],
+  "total_bytes": 203675,
+  "total_kb": 198.9
+}

@@ -79,6 +79,7 @@ enum RowId : uint8_t {
   R_GRP_BEH,     R_HOME, R_PWR, R_CHOREO,
   R_GRP_DEV,     R_REPROV, R_RESET,
   R_THEME,       // 界面风格：放在屏幕组首位（见 kRows），枚举值追加在末尾以保持既有 id 稳定
+  R_PET,         // 桌面宠物：诺瓦 / Clawd（见 kRows），追加在末尾保持既有 RowId 不变
   R_ROW_COUNT
 };
 
@@ -108,6 +109,8 @@ const char* const kMicGainLbl[] = { "18 dB", "24 dB", "30 dB", "36 dB", "42 dB" 
 const uint16_t    kMicGainVal[] = { 18, 24, 30, 36, 42 };
 const char* const kThemeLbl[] = { "深海原版", "深蓝潮汐" };
 const uint16_t    kThemeVal[] = { 0, 1 };
+const char* const kPetLbl[]   = { "诺瓦", "Clawd" };
+const uint16_t    kPetVal[]   = { 0, 1 };
 
 constexpr ChoiceSet kSets[] = {
   { kSleepLbl,   kSleepVal,   4 },   // 0 息屏
@@ -120,6 +123,7 @@ constexpr ChoiceSet kSets[] = {
   { kPwrLbl,     kPwrVal,     3 },   // 7 功耗档
   { kMicGainLbl, kMicGainVal, 5 },   // 8 麦克风增益
   { kThemeLbl,   kThemeVal,   2 },   // 9 界面风格
+  { kPetLbl,     kPetVal,     2 },   // 10 桌面宠物
 };
 
 struct RowDef {
@@ -152,6 +156,7 @@ constexpr RowDef kRows[] = {
   { RK_CHOICE, R_CHGSPD,    "充电速度",      5 },
 
   { RK_GROUP,  R_GRP_BEH,   "行为",          0 },
+  { RK_CHOICE, R_PET,       "桌面宠物",      10 },
   { RK_CHOICE, R_HOME,      "默认首页",      6 },
   { RK_CHOICE, R_PWR,       "功耗档",        7 },
   { RK_TOGGLE, R_CHOREO,    "AI 编排",       0 },
@@ -240,6 +245,7 @@ uint16_t rowValue(const NovaSettings& cfg, uint8_t id) {
     case R_PWR:       return (uint16_t)cfg.powerProfile;
     case R_CHOREO:    return cfg.choreoEnabled ? 1 : 0;
     case R_THEME:     return cfg.uiTheme;
+    case R_PET:       return cfg.petKind;
     default:          return 0;
   }
 }
@@ -261,6 +267,7 @@ UiAction::Kind rowActionKind(uint8_t id) {
     case R_PWR:       return UiAction::SET_POWER;
     case R_CHOREO:    return UiAction::SET_CHOREO;
     case R_THEME:     return UiAction::SET_THEME;
+    case R_PET:       return UiAction::SET_PET;
     case R_TEST:      return UiAction::TEST_SOUND;
     case R_REPROV:    return UiAction::REPROVISION;
     case R_RESET:     return UiAction::RESTORE_DEFAULTS;

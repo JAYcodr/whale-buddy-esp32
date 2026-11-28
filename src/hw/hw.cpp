@@ -39,6 +39,7 @@ void hwInit() {
   if (!hwImuInit())       die("imu");
   if (!hwRtcInit())       die("rtc");
   if (!hwAudioInit())     die("audio");
+  hwSdInit();  // Non-fatal: device runs normally without a TF card
 
   Serial.println("hwInit OK");
 }

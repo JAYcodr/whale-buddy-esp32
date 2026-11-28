@@ -234,6 +234,38 @@ describe('AI chat reply generator', () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it('uses Clawd persona prompt and fallback wording when opts.pet === 1', async () => {
+    const fallback = await generateChatReply('状态如何', [], 'DSH运行=1', { llm: {} }, () => {});
+    assert.match(fallback, /没有配置对话大模型/);
+
+    const seenSystems = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      seenSystems.push(body.messages[0].content);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '{}',
+        json: async () => ({ choices: [{ message: { content: 'LGTM，代码跑通啦！' } }] }),
+      };
+    };
+    try {
+      const reply = await generateChatReply(
+        '编译过了吗',
+        [],
+        'DSH运行=0',
+        { llm: { primary: { url: 'https://primary.test/v1/chat/completions', apiKey: 'k1', model: 'm1' } } },
+        () => {},
+        { pet: 1 },
+      );
+      assert.match(seenSystems[0], /克码人生 · Clawd/);
+      assert.equal(reply, 'LGTM，代码跑通啦！');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 });
 
 describe('Nova Bridge mic ASR + chat_send + chat_tts', () => {

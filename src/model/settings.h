@@ -37,11 +37,14 @@ struct NovaSettings {
   uint8_t      aodNightCap   = 1;                    // 0=一档 1=两档 2=跟随用户
   uint8_t      micGainDb     = 24;                   // 18 / 24 / 30 / 36 / 42
   uint8_t      uiTheme       = 0;                    // 0=深海原版 1=深蓝潮汐（NVS key "theme"）
+  uint8_t      petKind       = 0;                    // 0=诺瓦 1=Clawd（NVS key "pet"）
   char         brokerHost[40] = "192.168.31.15";
   uint16_t     brokerPort    = 1883;
 };
 
 static_assert(std::is_standard_layout_v<NovaSettings>);
+
+enum class PetKind : uint8_t { NOVA = 0, CLAWD = 1 };
 
 // 老固件的 NVS "brt" 是 0..4 的五档，新固件存 20..100 的百分比（背光本身是 0..255 连续）。
 // 读到 <= 4 就按老档位线性映射；20 以上的值原样返回。读路径只此一处迁移，写路径一律写新格式。
@@ -75,6 +78,7 @@ constexpr uint16_t kChoiceAodMode[]  = { 0, 1, 2 };
 constexpr uint16_t kChoiceAodIdle[]  = { 60, 120, 300 };
 constexpr uint16_t kChoiceMicGain[]  = { 18, 24, 30, 36, 42 };
 constexpr uint16_t kChoiceTheme[]    = { 0, 1 };
+constexpr uint16_t kChoicePet[]      = { 0, 1 };
 
 constexpr SettingDef kSettings[] = {
   { "home",      SettingKind::CHOICE, 0,   0, 0,   kChoiceHome,    3, offsetof(NovaSettings, homePage),      false },
@@ -92,6 +96,7 @@ constexpr SettingDef kSettings[] = {
   { "aod_night", SettingKind::U8,     1,   0, 2,   nullptr,        0, offsetof(NovaSettings, aodNightCap),   false },
   { "mic_gain",  SettingKind::CHOICE, 24,  0, 0,   kChoiceMicGain, 5, offsetof(NovaSettings, micGainDb),     false },
   { "theme",     SettingKind::CHOICE, 0,   0, 0,   kChoiceTheme,   2, offsetof(NovaSettings, uiTheme),       false },
+  { "pet",       SettingKind::CHOICE, 0,   0, 0,   kChoicePet,     2, offsetof(NovaSettings, petKind),       true  },
 };
 
 uint16_t settingsFieldGet(const NovaSettings& cfg, const SettingDef& d);

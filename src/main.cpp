@@ -15,6 +15,8 @@
 #include "hw/audio.h"
 #include "hw/bus.h"
 #include "hw/hw.h"
+#include "hw/sdcard.h"
+#include <mbedtls/base64.h>
 #include "model/settings.h"
 #include "model/state.h"
 #include "net/net.h"
@@ -43,31 +45,56 @@ bool hasQuotaWorry(const NovaState& st) {
   return false;
 }
 
+void resolveActivePetRoot(uint8_t wantPet, char* out, size_t cap, bool* outMissingClawd = nullptr) {
+  if (outMissingClawd) *outMissingClawd = false;
+  if (wantPet == (uint8_t)PetKind::CLAWD) {
+    if (nvaPetHasAssets("/sdcard/pets/clawd")) {
+      snprintf(out, cap, "/sdcard/pets/clawd");
+      return;
+    }
+    if (nvaPetHasAssets("/pets/clawd")) {
+      snprintf(out, cap, "/pets/clawd");
+      return;
+    }
+    if (outMissingClawd) *outMissingClawd = true;
+  }
+  snprintf(out, cap, "/pets/nova");
+}
+
+uint8_t activeAudioPet() {
+  return (strcmp(nvaRootDir(), "/pets/nova") != 0) ? 1u : 0u;
+}
+
+inline void playPetSfx(SfxKind kind, uint8_t volPct) {
+  sfxPlayPet(kind, volPct, activeAudioPet());
+}
+
 NvaAnimKey pickWorkInterlude(const NovaState& st, uint8_t& cursor, NvaAnimKey lastKey,
                              uint64_t& lastWorkTokens, uint64_t todayTokens,
-                             const char** outBubble) {
+                             uint8_t petKind, const char** outBubble) {
   struct InterludeOpt { NvaAnimKey key; const char* say; };
   InterludeOpt opts[9];
   uint8_t nOpts = 0;
+  const bool clawd = (petKind == (uint8_t)PetKind::CLAWD);
 
   if (todayTokens > lastWorkTokens || st.ctxPct >= 35) {
-    opts[nOpts++] = { NvaAnimKey::EAT_TOKEN, "补充 Token 能量~" };
+    opts[nOpts++] = { NvaAnimKey::EAT_TOKEN, clawd ? "Token 栈要溢出啦!" : "补充 Token 能量~" };
   }
-  opts[nOpts++] = { NvaAnimKey::STRETCH, "敲久了伸个懒腰~" };
-  opts[nOpts++] = { NvaAnimKey::HUM, "边哼歌边等你~" };
-  opts[nOpts++] = { NvaAnimKey::HAPPY_RUN, "跑两圈提提神~" };
-  opts[nOpts++] = { NvaAnimKey::BUBBLE, "呼噜噜吐个泡泡~" };
+  opts[nOpts++] = { NvaAnimKey::STRETCH, clawd ? "18:00 到了吗? 活动下~" : "敲久了伸个懒腰~" };
+  opts[nOpts++] = { NvaAnimKey::HUM, clawd ? "端杯咖啡继续 Debug~" : "边哼歌边等你~" };
+  opts[nOpts++] = { NvaAnimKey::HAPPY_RUN, clawd ? "横跑两步清清缓存~" : "跑两圈提提神~" };
+  opts[nOpts++] = { NvaAnimKey::BUBBLE, clawd ? "写码也要有点松弛感~" : "呼噜噜吐个泡泡~" };
   if (hasQuotaWorry(st)) {
-    opts[nOpts++] = { NvaAnimKey::QUOTA_WORRY, "额度有点紧张..." };
+    opts[nOpts++] = { NvaAnimKey::QUOTA_WORRY, clawd ? "倒计时嘀嗒响, 省点烧..." : "额度有点紧张..." };
   } else {
-    opts[nOpts++] = { NvaAnimKey::QUOTA, "元气满满继续干!" };
+    opts[nOpts++] = { NvaAnimKey::QUOTA, clawd ? "LGTM, 额度管够冲!" : "元气满满继续干!" };
   }
-  opts[nOpts++] = { NvaAnimKey::CRAB_WALK, "横着溜达一圈~" };
+  opts[nOpts++] = { NvaAnimKey::CRAB_WALK, clawd ? "横着巡检一遍分支~" : "横着溜达一圈~" };
   if (todayTokens >= 500000ULL && todayTokens <= lastWorkTokens && st.ctxPct < 35) {
-    opts[nOpts++] = { NvaAnimKey::EAT_TOKEN, "炫口 Token 继续!" };
+    opts[nOpts++] = { NvaAnimKey::EAT_TOKEN, clawd ? "炫一口 Token 继续编!" : "炫口 Token 继续!" };
   }
   if (st.timeValid && aod::isNight(st.hour)) {
-    opts[nOpts++] = { NvaAnimKey::YAWN, "夜深了打个哈欠..." };
+    opts[nOpts++] = { NvaAnimKey::YAWN, clawd ? "02:00 还在加班吗..." : "夜深了打个哈欠..." };
   }
 
   cursor = (uint8_t)((cursor + 1) % nOpts);
@@ -123,7 +150,7 @@ volatile int16_t s_pendingTapY = 0;
 
 void pollSerialCommands(UiNav& nav, bool& needFull,
                         uint32_t& fpsFrames, int64_t& fpsWindowStartUs, int64_t& nextFrameAt) {
-  static char line[192];
+  static char line[1536];
   static size_t pos = 0;
   while (Serial.available() > 0) {
     char ch = (char)Serial.read();
@@ -274,6 +301,46 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             if (sec > 600) sec = 600;
             settingsMut().aodIdleSec = (uint16_t)sec;
             settingsSave();
+          } else if (strcmp(cmd, "sd") == 0) {
+            hwSdPrintStatus(true);
+          } else if (strcmp(cmd, "sdtest") == 0) {
+            hwSdRunSelfTest();
+          } else if (strcmp(cmd, "sdformat") == 0) {
+            if (strcmp(doc["confirm"] | "", "FAT32") == 0) {
+              hwSdFormat();
+            } else {
+              Serial.println("{\"sdformat\":{\"ok\":false,\"err\":\"confirm_required\"}}");
+            }
+          } else if (strcmp(cmd, "sdmkdir") == 0) {
+            const char* p = doc["path"] | "";
+            bool ok = hwSdMkdir(p);
+            Serial.printf("{\"sdmkdir\":{\"ok\":%s,\"path\":\"%s\"}}\n", ok ? "true" : "false", p);
+          } else if (strcmp(cmd, "sdput") == 0) {
+            const char* p = doc["path"] | "";
+            bool append = doc["append"] | false;
+            const char* b64 = doc["b64"] | "";
+            size_t b64Len = strlen(b64);
+            uint8_t raw[960];
+            size_t outLen = 0;
+            bool ok = (b64Len > 0) &&
+                      (mbedtls_base64_decode(raw, sizeof(raw), &outLen,
+                                             (const unsigned char*)b64, b64Len) == 0) &&
+                      hwSdWriteFileChunk(p, append, raw, outLen);
+            Serial.printf("{\"sdput\":{\"ok\":%s,\"bytes\":%u}}\n", ok ? "true" : "false", (unsigned)outLen);
+          } else if (strcmp(cmd, "pet") == 0) {
+            const char* p = doc["pet"] | "";
+            uint8_t want = (strcmp(p, "clawd") == 0 || (doc["pet"] | -1) == 1) ? 1 : 0;
+            settingsMut().petKind = want;
+            settingsSave();
+            char nextRoot[64];
+            bool missingClawd = false;
+            resolveActivePetRoot(want, nextRoot, sizeof(nextRoot), &missingClawd);
+            bool switched = nvaSwitchRoot(nextRoot);
+            netPublishPrefs();
+            needFull = true;
+            Serial.printf("{\"pet\":{\"want\":%u,\"ok\":%s,\"root\":\"%s\",\"missing\":%s}}\n",
+                          (unsigned)want, switched ? "true" : "false", nvaRootDir(),
+                          missingClawd ? "true" : "false");
           }
         }
       } else if (strstr(line, "shot") != nullptr) {
@@ -650,7 +717,7 @@ void uiTaskFn(void*) {
                              recSnap.rmsDb, recSnap.clipPermille)) {
         novaStateRead(&st);
       }
-      sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+      playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
       needFull = true;
     }
 
@@ -706,9 +773,9 @@ void uiTaskFn(void*) {
       });
       if (sent && dtext[0]) {
         netPublishChatSend(did, dtext, targetId, mode ? mode : "queue");
-        sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+        playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
       } else {
-        sfxPlay(SfxKind::DENY, cfg.soundPct);
+        playPetSfx(SfxKind::DENY, cfg.soundPct);
       }
       novaStateRead(&st);
       needFull = true;
@@ -1028,7 +1095,7 @@ void uiTaskFn(void*) {
           bright.invalidate();
         }
         if (!snap.faceDown) {
-          sfxPlay(SfxKind::APPROVAL_ARRIVE, cfg.soundPct);
+          playPetSfx(SfxKind::APPROVAL_ARRIVE, cfg.soundPct);
           lastInteractMs = nowMs;
         }
         if (!wasApprovalActive) {
@@ -1069,7 +1136,7 @@ void uiTaskFn(void*) {
             novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
             st.dockExpanded = false;
           }
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (prevPage != UiPage::SETTINGS && newPage == UiPage::SETTINGS) {
             playTransition(TransKind::SHEET_UP, 220);
           } else if (prevPage == UiPage::SETTINGS && newPage != UiPage::SETTINGS) {
@@ -1083,23 +1150,25 @@ void uiTaskFn(void*) {
         }
         case UiAction::TEST_SOUND:
           needFull = false;
-          if (!sfxSpeakFile("/audio/tap0.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
-            sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+          if (activeAudioPet() == 1) {
+            sfxPlayClawdEvent("done", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours);
+          } else if (!sfxSpeakFile("/audio/tap0.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
+            playPetSfx(SfxKind::NEW_EVENT, cfg.soundPct);
           }
           break;
         case UiAction::SYNC_HOST:
           netPublishSync();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::REPROVISION:
           settingsGrab = false;
           netRequestReprovision();
           nav.switchPage(UiPage::HOME, nowMs);
-          sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+          playPetSfx(SfxKind::NEW_EVENT, cfg.soundPct);
           break;
         case UiAction::CANCEL_PORTAL:
           netRequestCancelPortal();
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::PET_TAP:
           if (act.value == 0) {
@@ -1118,37 +1187,43 @@ void uiTaskFn(void*) {
             if (!aodActive) nvaSetState(clickAnimKey, true, true);
             if ((nowMs - lastTapVoiceMs) >= 800u) {
               lastTapVoiceMs = nowMs;
-              // 每条语音条与气泡台词同源：<variant>_<0|1>.adp（aux 来自 page_homeTap）。
-              const char* voiceBase = "click_wave";
-              switch (tapKey) {
-                case NvaAnimKey::CLICK_HAPPY:  voiceBase = "click_happy";  break;
-                case NvaAnimKey::CLICK_SHY:    voiceBase = "click_shy";    break;
-                case NvaAnimKey::CLICK_GIGGLE: voiceBase = "click_giggle"; break;
-                case NvaAnimKey::CLICK_ANGRY:  voiceBase = "click_angry";  break;
-                case NvaAnimKey::WAKE_UP:      voiceBase = "wake";         break;
-                default: break;
+              if (activeAudioPet() == 1) {
+                sfxPlayClawdReaction((uint8_t)tapKey, cfg.soundPct, st.hour, st.timeValid, cfg.quietHours);
+              } else {
+                // 每条语音条与气泡台词同源：<variant>_<0|1>.adp（aux 来自 page_homeTap）。
+                const char* voiceBase = "click_wave";
+                switch (tapKey) {
+                  case NvaAnimKey::CLICK_HAPPY:  voiceBase = "click_happy";  break;
+                  case NvaAnimKey::CLICK_SHY:    voiceBase = "click_shy";    break;
+                  case NvaAnimKey::CLICK_GIGGLE: voiceBase = "click_giggle"; break;
+                  case NvaAnimKey::CLICK_ANGRY:  voiceBase = "click_angry";  break;
+                  case NvaAnimKey::WAKE_UP:      voiceBase = "wake";         break;
+                  default: break;
+                }
+                char voicePath[40];
+                snprintf(voicePath, sizeof(voicePath), "/audio/%s_%d.adp", voiceBase, act.aux & 1);
+                bool spoke = sfxSpeakFile(voicePath, cfg.soundPct, st.hour, st.timeValid, cfg.quietHours);
+                if (!spoke) {
+                  spoke = sfxSpeakFile(kLegacyTapVoices[tapVoiceIdx % 3], cfg.soundPct,
+                                       st.hour, st.timeValid, cfg.quietHours);
+                }
+                if (!spoke) playPetSfx(SfxKind::NEW_EVENT, cfg.soundPct);
+                tapVoiceIdx++;
               }
-              char voicePath[40];
-              snprintf(voicePath, sizeof(voicePath), "/audio/%s_%d.adp", voiceBase, act.aux & 1);
-              bool spoke = sfxSpeakFile(voicePath, cfg.soundPct, st.hour, st.timeValid, cfg.quietHours);
-              if (!spoke) {
-                spoke = sfxSpeakFile(kLegacyTapVoices[tapVoiceIdx % 3], cfg.soundPct,
-                                     st.hour, st.timeValid, cfg.quietHours);
-              }
-              if (!spoke) sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
-              tapVoiceIdx++;
             }
           } else if (act.value == 1) {
             clickAnimActive = false;
             oneShotActive = false;
             if ((nowMs - lastTapVoiceMs) >= 800u) {
               lastTapVoiceMs = nowMs;
-              if (!sfxSpeakFile("/audio/run.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
-                sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+              if (activeAudioPet() == 1) {
+                sfxPlayPet(SfxKind::NAV_CHIRP, cfg.soundPct, 1);
+              } else if (!sfxSpeakFile("/audio/run.adp", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours)) {
+                playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
               }
             }
           } else {
-            sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+            playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           }
           break;
         case UiAction::APPROVE:
@@ -1161,7 +1236,7 @@ void uiTaskFn(void*) {
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
-          sfxPlay(SfxKind::ACCEPT, cfg.soundPct);
+          playPetSfx(SfxKind::ACCEPT, cfg.soundPct);
           playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::DENY:
@@ -1174,7 +1249,7 @@ void uiTaskFn(void*) {
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 8500u;
           nvaSetState(oneShotKey, true, true);
-          sfxPlay(SfxKind::DENY, cfg.soundPct);
+          playPetSfx(SfxKind::DENY, cfg.soundPct);
           playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::TO_PC:
@@ -1187,16 +1262,24 @@ void uiTaskFn(void*) {
           oneShotActive = true;
           oneShotSafetyEndMs = nowMs + 13500u;
           nvaSetState(oneShotKey, true, true);
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           playTransition(TransKind::POP_OUT, 170);
           break;
         case UiAction::RANK_REDRAW:
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           playTransition(TransKind::FADE, 150);
           break;
         case UiAction::RESTORE_DEFAULTS:
           settingsRestoreDefaults();
           nav.applyTheme((ui::UiTheme)settingsGet().uiTheme, nowMs);
+          {
+            char nextRoot[64];
+            resolveActivePetRoot(settingsGet().petKind, nextRoot, sizeof(nextRoot));
+            nvaSwitchRoot(nextRoot);
+            clickAnimActive = false;
+            oneShotActive = false;
+            workInterludeActive = false;
+          }
           if (st.dockExpanded) {
             novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
             st.dockExpanded = false;
@@ -1204,10 +1287,10 @@ void uiTaskFn(void*) {
           bright.invalidate();
           netPublishPrefs();
           needFull = true;
-          sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+          playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
           break;
         case UiAction::SETTINGS_REDRAW:
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (act.value == 0 || act.value == 1) {
             playTransition(TransKind::FADE, 150);
           } else {
@@ -1219,11 +1302,11 @@ void uiTaskFn(void*) {
           needFull = false;
           needTokensHud = true;
           needTokensSettle = true;
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::DOCK_TOGGLE:
           novaStateWithLock([](NovaState& s) { s.dockExpanded = !s.dockExpanded; });
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           needFull = true;
           break;
         case UiAction::CHAT_REC_TOGGLE:
@@ -1264,14 +1347,14 @@ void uiTaskFn(void*) {
               s.recGen++;
             });
             hwBusRequestMicGain(next);
-            sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+            playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
           }
           break;
         case UiAction::CHAT_PLAY_TTS:
           needFull = false;
           if (act.value >= 0 && act.value < (int)st.nChatMsgs && !st.chatMsgs[act.value].isUser) {
             netPublishChatTts(st.chatMsgs[act.value].text);
-            sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+            playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           }
           break;
         case UiAction::CHAT_DRAFT_CANCEL:
@@ -1282,7 +1365,7 @@ void uiTaskFn(void*) {
             s.boardGen++;
           });
           novaStateRead(&st);
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           needFull = true;
           break;
         case UiAction::CHAT_DRAFT_SEND:
@@ -1300,7 +1383,7 @@ void uiTaskFn(void*) {
             }
           });
           novaStateRead(&st);
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           needFull = true;
           break;
         case UiAction::CHAT_SELECT_SESS: {
@@ -1330,7 +1413,7 @@ void uiTaskFn(void*) {
             setChatToast("请回电脑端确认此审批");
           }
           novaStateRead(&st);
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           needFull = true;
           break;
         }
@@ -1340,7 +1423,7 @@ void uiTaskFn(void*) {
             s.boardGen++;
           });
           novaStateRead(&st);
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           needFull = true;
           break;
         case UiAction::CHAT_REPLAY_LAST:
@@ -1348,12 +1431,12 @@ void uiTaskFn(void*) {
           if (act.value == 0 && st.chatDelivery.kind == ChatDelivKind::REPLY && st.chatDelivery.text[0]) {
             netPublishChatTts(st.chatDelivery.text);
             setChatToast("播报中...");
-            sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+            playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
             needFull = true;
           } else if (st.lastSayText[0]) {
             netPublishChatTts(st.lastSayText);
             setChatToast("播报中...");
-            sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+            playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
             needFull = true;
           }
           break;
@@ -1362,7 +1445,7 @@ void uiTaskFn(void*) {
             setChatToast("等待审批同步中...");
             needFull = true;
           }
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::CHAT_QUICK_SEND:
           break;
@@ -1374,7 +1457,7 @@ void uiTaskFn(void*) {
                 needSettingsList = true;
                 netPublishPrefs();
                 if (settingsGet().soundPct > 0) {
-                  sfxPlay(SfxKind::SETTING_OK, settingsGet().soundPct);
+                  playPetSfx(SfxKind::SETTING_OK, settingsGet().soundPct);
                 }
                 break;
               case UiAction::SET_TTS:
@@ -1383,13 +1466,13 @@ void uiTaskFn(void*) {
                 needFull = false;
                 needSettingsList = true;
                 netPublishPrefs();
-                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+                playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               case UiAction::SET_BRIGHT:
                 needFull = false;
                 needSettingsList = true;
                 bright.invalidate();   // 交给统一亮度逻辑落地
-                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+                playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               case UiAction::SET_THEME:
                 // 换主题等于整屏换绘制，必须走整屏重绘并触发所有页面的主题钩子（清空旧缓存/旧动画覆盖）。
@@ -1400,13 +1483,29 @@ void uiTaskFn(void*) {
                 }
                 needFull = true;
                 bright.invalidate();
-                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+                playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
+              case UiAction::SET_PET: {
+                char nextRoot[64];
+                bool missingClawd = false;
+                resolveActivePetRoot(settingsGet().petKind, nextRoot, sizeof(nextRoot), &missingClawd);
+                nvaSwitchRoot(nextRoot);
+                clickAnimActive = false;
+                oneShotActive = false;
+                workInterludeActive = false;
+                netPublishPrefs();
+                needFull = true;
+                playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
+                if (missingClawd) {
+                  pageHomeShowBubble("请先插含 /pets/clawd 的 TF 卡", 5500u, nowMs);
+                }
+                break;
+              }
               case UiAction::SET_AOD_MODE:
               case UiAction::SET_AOD_NIGHT:
                 bright.invalidate();
                 needFull = true;
-                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+                playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               case UiAction::SET_MIC_GAIN:
                 needFull = false;
@@ -1416,10 +1515,10 @@ void uiTaskFn(void*) {
                   s.recGen++;
                 });
                 hwBusRequestMicGain(settingsGet().micGainDb);
-                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+                playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               default:
-                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+                playPetSfx(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
             }
           }
@@ -1598,7 +1697,7 @@ void uiTaskFn(void*) {
                 s.recGen++;
                 s.boardGen++;
               });
-              sfxPlay(SfxKind::DENY, cfg.soundPct);
+              playPetSfx(SfxKind::DENY, cfg.soundPct);
             } else {
               hwAudioRecStop();
             }
@@ -1697,7 +1796,7 @@ void uiTaskFn(void*) {
             novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
             st.dockExpanded = false;
           }
-          sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
+          playPetSfx(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (next != prev) {
             TransKind kind = (uiPageRingIndex(next) > uiPageRingIndex(prev))
                                ? TransKind::SLIDE_LEFT
@@ -1729,10 +1828,10 @@ void uiTaskFn(void*) {
           novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
           st.dockExpanded = false;
         }
-        sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+        playPetSfx(SfxKind::NEW_EVENT, cfg.soundPct);
         playTransition(TransKind::SHEET_UP, 220);
       } else {
-        sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
+        playPetSfx(SfxKind::NEW_EVENT, cfg.soundPct);
       }
     }
 
@@ -1807,6 +1906,9 @@ void uiTaskFn(void*) {
       }
       oneShotActive = true;
       nvaSetState(oneShotKey, true, true);
+      if (activeAudioPet() == 1) {
+        sfxPlayClawdEvent(st.turnError ? "error" : "done", cfg.soundPct, st.hour, st.timeValid, cfg.quietHours);
+      }
     }
     lastRunCount = st.run;
 
@@ -1968,7 +2070,8 @@ void uiTaskFn(void*) {
         } else if (!pageHomeIsWalking() && (int32_t)(nowMs - nextInterludeMs) >= 0) {
           const char* bubbleTxt = nullptr;
           workInterludeKey = pickWorkInterlude(st, workInterludeCursor, lastInterludeKey,
-                                               lastWorkTokenTotal, todayTokens, &bubbleTxt);
+                                               lastWorkTokenTotal, todayTokens,
+                                               activeAudioPet(), &bubbleTxt);
           workInterludeActive = true;
           workInterludeStartCycle = nvaLoopCycles();
           workInterludeEndMs = nowMs + 10500u;
@@ -2357,7 +2460,10 @@ void setup() {
   }
   Serial.printf("nova: deviceId=%s\n", devId);
 
-  if (!nvaInit("/pets/nova")) {
+  char petRoot[64];
+  bool missingClawd = false;
+  resolveActivePetRoot(settingsGet().petKind, petRoot, sizeof(petRoot), &missingClawd);
+  if (!nvaInit(petRoot)) {
     Serial.println("nvaInit: no .nva assets found, using fallback orb");
   }
   if (!hwBusStart()) {
@@ -2370,9 +2476,15 @@ void setup() {
   }
 
   BusSnapshot initSnap = hwBusSnapshot();
-  if (!sfxSpeakFile("/audio/boot.adp", settingsGet().soundPct, initSnap.time.H,
-                    initSnap.timeValid, settingsGet().quietHours)) {
-    sfxPlay(SfxKind::NEW_EVENT, settingsGet().soundPct);
+  if (activeAudioPet() == 1) {
+    sfxPlayClawdEvent("boot", settingsGet().soundPct, initSnap.time.H,
+                      initSnap.timeValid, settingsGet().quietHours);
+  } else if (!sfxSpeakFile("/audio/boot.adp", settingsGet().soundPct, initSnap.time.H,
+                           initSnap.timeValid, settingsGet().quietHours)) {
+    playPetSfx(SfxKind::NEW_EVENT, settingsGet().soundPct);
+  }
+  if (missingClawd) {
+    pageHomeShowBubble("请先插含 /pets/clawd 的 TF 卡", 5500u, millis());
   }
   xTaskCreatePinnedToCore(uiTaskFn, "task_ui", 10240, nullptr, 5, nullptr, 1);
 }

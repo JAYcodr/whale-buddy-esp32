@@ -48,6 +48,7 @@
 // Capability flags
 #define BOARD_HAS_PSRAM            1
 #define BOARD_HAS_TCA9554          0
+#define BOARD_HAS_SDMMC            0
 #define BOARD_HAS_PCF85063         1
 #define BOARD_HAS_PA_CTRL          1
 #define BOARD_HAS_AXP2101          1
