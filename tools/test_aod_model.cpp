@@ -93,6 +93,97 @@ int main() {
   CHECK(driftX(0) != driftX(150000u));
   CHECK(driftX(150000u) == driftX(150000u + 600000u));
 
+  // ── 优雅退场状态机（播完当前轮 + 书签 + 哈欠 → AOD）───────────────
+  {
+    // 1. 正在播 HUM（非平静动作）：到点不抢断，等 loopCycles 递增才退入 YAWN 并推进书签
+    RetireMachine rm;
+    RetireInput in{};
+    in.nowMs = 120000;
+    in.canRetire = true;
+    in.retireToAod = true;
+    in.onHomePage = true;
+    in.nvaReady = true;
+    in.animKey = 20;  // HUM
+    in.loopCycles = 5;
+
+    auto r = rm.step(in);
+    CHECK(r.phase == RetirePhase::DRAINING && !r.enterAodNow && !r.enterYawnNow && !r.bookmarkAdvance);
+
+    in.nowMs = 124000;
+    r = rm.step(in);  // 同一轮未结束
+    CHECK(r.phase == RetirePhase::DRAINING && !r.enterYawnNow);
+
+    in.nowMs = 126000;
+    in.loopCycles = 6;  // 本轮播完
+    r = rm.step(in);
+    CHECK(r.phase == RetirePhase::YAWN && r.enterYawnNow && r.bookmarkAdvance && !r.enterAodNow);
+
+    // 2. YAWN 阶段：先看到 YAWN 帧再等 oneShotEnded
+    in.nowMs = 126200;
+    in.isYawnPose = true;
+    in.oneShotEnded = false;
+    r = rm.step(in);
+    CHECK(r.phase == RetirePhase::YAWN && !r.enterAodNow);
+
+    in.nowMs = 136000;
+    in.oneShotEnded = true;
+    r = rm.step(in);
+    CHECK(r.phase == RetirePhase::SLEEPING && r.enterAodNow);
+  }
+
+  {
+    // 2. 平静 IDLE 到点：跳过 DRAINING 直接打哈欠，且不推进书签
+    RetireMachine rm;
+    RetireInput in{};
+    in.nowMs = 120000;
+    in.canRetire = true;
+    in.retireToAod = true;
+    in.onHomePage = true;
+    in.nvaReady = true;
+    in.isCalmPose = true;
+    auto r = rm.step(in);
+    CHECK(r.phase == RetirePhase::YAWN && r.enterYawnNow && !r.bookmarkAdvance);
+
+    // 中途用户交互 -> 立即归位 ACTIVE
+    in.canRetire = false;
+    in.nowMs = 122000;
+    r = rm.step(in);
+    CHECK(r.phase == RetirePhase::ACTIVE && !r.enterAodNow);
+  }
+
+  {
+    // 3. 长任务跑着（busyTask）：等当前循环播完后跳过哈欠直接进 AOD
+    RetireMachine rm;
+    RetireInput in{};
+    in.nowMs = 120000;
+    in.canRetire = true;
+    in.retireToAod = true;
+    in.onHomePage = true;
+    in.nvaReady = true;
+    in.busyTask = true;
+    in.animKey = 15;  // CODING
+    in.loopCycles = 2;
+    auto r = rm.step(in);
+    CHECK(r.phase == RetirePhase::DRAINING);
+
+    in.nowMs = 140000;  // 触发硬上限 kMaxDrainMs=15s
+    r = rm.step(in);
+    CHECK(r.phase == RetirePhase::SLEEPING && r.enterAodNow && !r.enterYawnNow);
+  }
+
+  {
+    // 4. 非主屏 / 无动画资产时直接进 AOD，不拖延
+    RetireMachine rm;
+    RetireInput in{};
+    in.nowMs = 120000;
+    in.canRetire = true;
+    in.retireToAod = true;
+    in.onHomePage = false;
+    in.nvaReady = true;
+    auto r = rm.step(in);
+    CHECK(r.phase == RetirePhase::SLEEPING && r.enterAodNow);
+  }
+
   std::printf("%d checks, %d failed\n", g_checks, g_fail);
   return g_fail ? 1 : 0;
 }

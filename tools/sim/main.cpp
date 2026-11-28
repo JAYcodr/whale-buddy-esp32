@@ -650,10 +650,8 @@ int main(int argc, char** argv) {
     if (cs.confirmId) pageSettingsDebugConfirm(cs.confirmId);
     nav.setPage(cs.page);
     if (cs.aod) {
-      // 真机按 run/wait 选定格姿势；模拟器同样先播三帧再定格。
-      const NvaAnimKey pose = (st.run > 0) ? NvaAnimKey::WORKING
-                            : (st.wait > 0 ? NvaAnimKey::WAITING : NvaAnimKey::SLEEP);
-      nvaSetState(pose, false);
+      // 真机 AOD 统一以睡觉姿势缓慢循环呼吸；模拟器同样先播三帧睡觉姿势。
+      nvaSetState(NvaAnimKey::SLEEP, false);
       for (int i = 0; i < 3; i++) nvaTick(cs.drawNowMs + (uint32_t)i * 120u);
       pageHomeDrawAod(canvas, st, cs.drawNowMs);
     } else {
@@ -940,6 +938,10 @@ int main(int argc, char** argv) {
         failIf(pageHomeWorkAnimForTool("Write") == NvaAnimKey::CODING, "Write -> CODING") ||
         failIf(pageHomeWorkAnimForTool("grep_search") == NvaAnimKey::ARCHIVE, "grep_search -> ARCHIVE") ||
         failIf(pageHomeWorkAnimForTool("ReadFile") == NvaAnimKey::ARCHIVE, "ReadFile -> ARCHIVE") ||
+        failIf(pageHomeWorkAnimForTool("run_command") == NvaAnimKey::CODING, "run_command -> CODING") ||
+        failIf(pageHomeWorkAnimForTool("replace_file_content") == NvaAnimKey::CODING, "replace_file_content -> CODING") ||
+        failIf(pageHomeWorkAnimForTool("view_file") == NvaAnimKey::ARCHIVE, "view_file -> ARCHIVE") ||
+        failIf(pageHomeWorkAnimForTool("list_dir") == NvaAnimKey::ARCHIVE, "list_dir -> ARCHIVE") ||
         failIf(pageHomeWorkAnimForTool("browser") == NvaAnimKey::WORKING, "browser -> WORKING")) {
       std::fclose(manifest);
       return 1;
@@ -1009,16 +1011,17 @@ int main(int argc, char** argv) {
       return 1;
     }
 
-    // Demo 胶囊支持 0..23 切换与烧屏偏移热区
+    // Demo 动作预览仅通过串口命令设置，日常点击状态胶囊 / TIDE 眉标不误触进入 Demo
     pageHomeSetDemoOverride(23);
     if (failIf(pageHomeDemoOverride() == 23, "demo override 23")) {
       std::fclose(manifest);
       return 1;
     }
+    pageHomeSetDemoOverride(-1);
     st.burnInStep = 7;  // ox=+2, oy=+1
-    UiAction pillWrap = pageHomeTap(86 + 2, 308 + 1, st);
-    if (failIf(pillWrap.kind == UiAction::PET_TAP && pillWrap.value == 2 &&
-               pageHomeDemoOverride() == -1, "pill wrap at 23 -> -1 with burnOffset")) {
+    UiAction pillTap = pageHomeTap(86 + 2, 308 + 1, st);
+    if (failIf(pillTap.kind == UiAction::NONE && pageHomeDemoOverride() == -1,
+               "OCEAN status pill tap does not enter demo")) {
       std::fclose(manifest);
       return 1;
     }
@@ -1069,6 +1072,133 @@ int main(int argc, char** argv) {
                pageHomeIsWalking() && pageHomeIsRunning(), "empty stage tap -> running")) {
       std::fclose(manifest);
       return 1;
+    }
+
+    // 导演剧本断点书签：播完当前步推进到下一步；断线重推同内容剧本时保持书签不回零
+    pageHomeBookmarkAdvance(st, false);
+    st.nChoreoSteps = 2;
+    st.choreoGen = 101;
+    st.choreoSteps[0].x = 184;
+    st.choreoSteps[0].run = false;
+    st.choreoSteps[0].anim = (uint8_t)NvaAnimKey::HUM;
+    st.choreoSteps[0].durMs = 10000;
+    std::strcpy(st.choreoSteps[0].say, "第一步哼歌");
+    st.choreoSteps[1].x = 184;
+    st.choreoSteps[1].run = false;
+    st.choreoSteps[1].anim = (uint8_t)NvaAnimKey::BUBBLE;
+    st.choreoSteps[1].durMs = 10000;
+    std::strcpy(st.choreoSteps[1].say, "第二步冒泡");
+    st.nowMs = 113000u;
+    pageHomeSetDrainHold(false);
+    pageHomeTick(st, choreoCfg, 103, false);
+    if (failIf(pageHomeChoreoIdx() == 0 && pageHomeChoreoAnim() == (int)NvaAnimKey::HUM,
+               "choreo starts at step 0")) {
+      std::fclose(manifest);
+      return 1;
+    }
+    pageHomeBookmarkAdvance(st, true);
+    st.choreoGen = 102;  // 模拟重连重推同一份剧本
+    st.nowMs = 113500u;
+    pageHomeTick(st, choreoCfg, 104, false);
+    if (failIf(pageHomeChoreoIdx() == 1 && pageHomeChoreoAnim() == (int)NvaAnimKey::BUBBLE,
+               "identical choreo reconnect preserves bookmark step 1")) {
+      std::fclose(manifest);
+      return 1;
+    }
+    pageHomeBookmarkAdvance(st, false);
+
+    // TIDE 主题左上眉标不误触进入 Demo，轻戳舞台仍走正常互动，不锁死演示模式
+    ui::setActiveTheme(ui::UiTheme::TIDE);
+    st.burnInStep = 0;
+    UiAction tideTap = pageHomeTap(24, 160, st);
+    if (failIf(tideTap.kind == UiAction::PET_TAP && tideTap.value == 1 &&
+               pageHomeDemoOverride() == -1, "TIDE eyebrow tap stays out of demo")) {
+      std::fclose(manifest);
+      return 1;
+    }
+    pageHomeBookmarkAdvance(st, false);
+    pageHomeSetDemoOverride(-1);
+    ui::setActiveTheme(ui::UiTheme::OCEAN);
+
+    // 跑步 / 螃蟹步到达屏幕边缘时自动折返换向，不原地贴墙空跑
+    st.nChoreoSteps = 1;
+    st.choreoGen = 105;
+    st.choreoSteps[0].x = 288;  // 右边界 PET_MAX_X
+    st.choreoSteps[0].run = true;
+    st.choreoSteps[0].anim = (uint8_t)NvaAnimKey::HAPPY_RUN;
+    st.choreoSteps[0].durMs = 15000;
+    st.choreoSteps[0].say[0] = '\0';
+    st.nowMs = 120000u;
+    pageHomeTick(st, choreoCfg, 105, false);
+    for (int f = 0; f < 60; f++) {
+      st.nowMs = 120050u + (uint32_t)f * 50u;
+      pageHomeTick(st, choreoCfg, (uint32_t)(106 + f), false);
+    }
+    if (failIf(pageHomeIsWalking() && pageHomeIsRunning(),
+               "HAPPY_RUN bounces back at right wall instead of stopping/stuck")) {
+      std::fclose(manifest);
+      return 1;
+    }
+    pageHomeBookmarkAdvance(st, false);
+
+    // AOD 局部熟睡脏矩形契约：只写包围盒内像素且严格保持 <= 64KB DMA 快传预算
+    {
+      constexpr uint16_t kSentinel = 0x5A3C;
+      uint16_t* fb = canvas.getFramebuffer();
+      nvaSetState(NvaAnimKey::SLEEP, false, true);
+      for (int i = 0; i < 4; i++) nvaTick(150000u + (uint32_t)i * 120u);
+      pageHomeDrawAod(canvas, st, 150500u);
+      for (size_t i = 0; i < (size_t)UI_W * UI_H; i++) fb[i] = kSentinel;
+      int16_t adx = 0, ady = 0, adw = 0, adh = 0;
+      pageHomeDrawAodPet(canvas, st, 150700u, &adx, &ady, &adw, &adh);
+      size_t outCnt = 0, inCnt = 0;
+      for (int y = 0; y < UI_H; y++) {
+        for (int x = 0; x < UI_W; x++) {
+          const bool in = (x >= adx && x < adx + adw && y >= ady && y < ady + adh);
+          const size_t idx = (size_t)y * UI_W + x;
+          if (in) { if (fb[idx] != kSentinel) inCnt++; }
+          else if (fb[idx] != kSentinel) outCnt++;
+        }
+      }
+      if (failIf(outCnt == 0 && inCnt > 0 && adw > 0 && adh > 0 &&
+                 (size_t)adw * (size_t)adh * 2u <= 65536u,
+                 "AOD partial pet rect strict bounds and <=64KB DMA")) {
+        std::fclose(manifest);
+        return 1;
+      }
+    }
+
+    // TIDE 白底气泡过期后下一帧必须完整清除气泡区域，不留残缺白块
+    {
+      ui::setActiveTheme(ui::UiTheme::TIDE);
+      NovaState tst;
+      populateSample(tst);
+      tst.run = 0; tst.wait = 0;
+      tst.burnInStep = 0;
+      tst.nowMs = 160000u;
+      NovaSettings tcfg;
+      nav.setPage(UiPage::HOME);
+      nvaSetState(NvaAnimKey::IDLE, false, true);
+      nvaTick(160050u);
+      pageHomeShowBubble("测试超长气泡不要残缺", 2000u, tst.nowMs);
+      nav.draw(canvas, tst, tcfg, 1, tst.nowMs);
+      tst.nowMs = 160500u;
+      pageHomeDrawStage(canvas, tst, tcfg, 2, nullptr, nullptr, nullptr, nullptr);
+      // 过期后画一帧：气泡区域右侧 (x=280..350, y=150..176) 不许残留任何纯白 (0xFFFF) 像素
+      tst.nowMs = 163000u;
+      pageHomeDrawStage(canvas, tst, tcfg, 3, nullptr, nullptr, nullptr, nullptr);
+      uint16_t* fb = canvas.getFramebuffer();
+      size_t strayWhite = 0;
+      for (int y = 148; y < 180; y++) {
+        for (int x = 270; x < 354; x++) {
+          if (fb[(size_t)y * UI_W + x] == 0xFFFFu) strayWhite++;
+        }
+      }
+      ui::setActiveTheme(ui::UiTheme::OCEAN);
+      if (failIf(strayWhite == 0, "TIDE expired bubble leaves zero stray white pixels")) {
+        std::fclose(manifest);
+        return 1;
+      }
     }
   }
 

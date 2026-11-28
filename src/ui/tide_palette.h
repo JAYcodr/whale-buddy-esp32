@@ -44,13 +44,15 @@ inline void drawTopStrip(NovaCanvas& c, const NovaState& st,
   const int16_t ox = ui::burnOffsetX(st.burnInStep);
   const int16_t oy = ui::burnOffsetY(st.burnInStep);
 
+  // 1.8 寸屏四角有圆角弧度，顶栏左右两端内缩 12px（距屏边 28px）避开圆角裁切。
+  constexpr int16_t kStripPadX = 12;
   if (leftOverride && leftOverride[0]) {
-    ui::drawText(c, ui::fontAscii14(), UI_SAFE_L + 2 + ox, 24 + oy,
+    ui::drawText(c, ui::fontAscii14(), UI_SAFE_L + kStripPadX + ox, 24 + oy,
                  leftOverride, dimOn(bgCol), bgCol);
   } else {
     char clk[8];
     snprintf(clk, sizeof(clk), "%02u:%02u", st.hour, st.minute);
-    ui::drawText(c, ui::fontAscii14(), UI_SAFE_L + 2 + ox, 24 + oy, clk, WHITE, bgCol);
+    ui::drawText(c, ui::fontAscii14(), UI_SAFE_L + kStripPadX + ox, 24 + oy, clk, WHITE, bgCol);
   }
 
   // 锐角方点页码指示器（0px 圆角，与原版胶囊区分）
@@ -70,7 +72,7 @@ inline void drawTopStrip(NovaCanvas& c, const NovaState& st,
 
   char bat[12];
   snprintf(bat, sizeof(bat), "%u%%", (unsigned)st.battPct);
-  ui::drawTextRight(c, ui::fontAscii14(), UI_SAFE_R - 2 + ox, 24 + oy, bat, WHITE, bgCol);
+  ui::drawTextRight(c, ui::fontAscii14(), UI_SAFE_R - kStripPadX + ox, 24 + oy, bat, WHITE, bgCol);
 }
 
 // ── 潮汐纯白大色块比例条（标签在条上方，绝不产生字色撞块）────────────

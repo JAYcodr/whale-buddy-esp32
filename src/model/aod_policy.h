@@ -77,4 +77,156 @@ inline int16_t driftY(uint32_t nowMs) {
   return DY[(nowMs / 150000u) % 4u];
 }
 
+// ── 优雅退场状态机（等当前动画周期播完 + 书签推进 + 哈欠前奏 → 进 AOD/小憩）──────
+// 代替「一到时间立刻截断当前动作/提前 45 秒硬睡死」：
+//   ACTIVE → (到闲置阈值且有动作在播) DRAINING → YAWN → (播完一轮哈欠) 通知进 AOD
+// 任何用户输入、审批、配网或离线低电会立即打断退场并归位 ACTIVE。
+enum class RetirePhase : uint8_t {
+  ACTIVE   = 0,
+  DRAINING = 1,
+  YAWN     = 2,
+  SLEEPING = 3,
+};
+
+constexpr uint32_t kMaxDrainMs = 15000u;  // 等待当前循环播完的硬上限，防长任务/异常卡死 AOD
+constexpr uint32_t kMaxYawnMs  = 10500u;  // yawn.nva 100 帧 @10fps = 10s，留 0.5s 裕量
+
+struct RetireInput {
+  uint32_t nowMs;
+  bool     canRetire;       // 是否满足退场总开关（AOD 条件，或插电且 AOD=OFF 的长闲置小憩）
+  bool     retireToAod;     // true=退场完进入 AOD；false=仅进入本地 SLEEP 姿态
+  bool     onHomePage;      // 非主屏不演收尾动画，到点直接进 AOD
+  bool     nvaReady;        // 无 .nva 资产时跳过等播完与哈欠
+  bool     busyTask;        // st.run > 0 || st.wait > 0（长任务跳过哈欠，AOD 展示 WORKING）
+  bool     walking;         // 主屏是否正在移动走路
+  bool     isCalmPose;      // 当前是否已是 IDLE 或 SLEEP（无需等本轮播完）
+  bool     isYawnPose;      // 当前前台渲染的动画是否为 YAWN
+  bool     isSleepPose;     // 当前前台渲染的动画是否为 SLEEP
+  bool     oneShotActive;   // 正在播放单次动作（click / success / error）
+  bool     oneShotEnded;    // nvaIsEnded()
+  uint8_t  animKey;         // 当前正在播的 NvaAnimKey
+  uint32_t loopCycles;      // nvaLoopCycles()
+};
+
+struct RetireStepResult {
+  RetirePhase phase           = RetirePhase::ACTIVE;
+  bool        enterYawnNow    = false;  // 刚切入 YAWN，调用方需 restart 一次 YAWN 动画
+  bool        enterAodNow     = false;  // 退场演出完成，立即调用 beginAodEnter()
+  bool        bookmarkAdvance = false;  // 当前剧本/动作已完整播完，推进书签到下一项
+};
+
+struct RetireMachine {
+  RetirePhase phase            = RetirePhase::ACTIVE;
+  uint32_t    drainStartMs     = 0;
+  uint32_t    drainStartCycles = 0;
+  uint8_t     drainStartKey    = 0;
+  bool        drainWasOneShot  = false;
+  uint32_t    yawnStartMs      = 0;
+  uint32_t    yawnStartCycles  = 0;
+  bool        yawnSeenKey      = false;
+
+  void reset() {
+    phase = RetirePhase::ACTIVE;
+    drainStartMs = 0;
+    drainStartCycles = 0;
+    drainStartKey = 0;
+    drainWasOneShot = false;
+    yawnStartMs = 0;
+    yawnStartCycles = 0;
+    yawnSeenKey = false;
+  }
+
+  RetireStepResult step(const RetireInput& in) {
+    RetireStepResult out;
+    if (!in.canRetire) {
+      reset();
+      return out;
+    }
+
+    if (phase == RetirePhase::ACTIVE) {
+      if (!in.onHomePage || !in.nvaReady) {
+        if (in.retireToAod) {
+          phase = RetirePhase::SLEEPING;
+          out.enterAodNow = true;
+        }
+        out.phase = phase;
+        return out;
+      }
+      // 空闲呆站 / 已睡着且没在走路/单次反应 → 不必等周期，直接进入收尾
+      if (in.isCalmPose && !in.walking && !in.oneShotActive) {
+        if (in.busyTask || in.isSleepPose) {
+          phase = RetirePhase::SLEEPING;
+          out.enterAodNow = in.retireToAod;
+        } else {
+          phase = RetirePhase::YAWN;
+          yawnStartMs = in.nowMs;
+          yawnStartCycles = in.loopCycles;
+          yawnSeenKey = false;
+          out.enterYawnNow = true;
+        }
+        out.phase = phase;
+        return out;
+      }
+      // 有动作/脚步正在演：保持该动作到本轮自然结束再收尾
+      phase = RetirePhase::DRAINING;
+      drainStartMs = in.nowMs;
+      drainStartCycles = in.loopCycles;
+      drainStartKey = in.animKey;
+      drainWasOneShot = in.oneShotActive;
+      out.phase = phase;
+      return out;
+    }
+
+    if (phase == RetirePhase::DRAINING) {
+      const bool timedOut = (uint32_t)(in.nowMs - drainStartMs) >= kMaxDrainMs;
+      bool animDone = false;
+      if (drainWasOneShot) {
+        animDone = !in.oneShotActive || (in.animKey == drainStartKey && in.oneShotEnded);
+      } else {
+        animDone = (in.loopCycles > drainStartCycles) || in.isCalmPose;
+      }
+      if (!timedOut && (in.walking || !animDone)) {
+        out.phase = phase;
+        return out;
+      }
+      // 只有真正在播非平静动作/非单次点击时，播完才把日常书签推到下一幕
+      out.bookmarkAdvance = !drainWasOneShot && !in.isCalmPose;
+      if (in.busyTask) {
+        phase = RetirePhase::SLEEPING;
+        out.enterAodNow = in.retireToAod;
+      } else {
+        phase = RetirePhase::YAWN;
+        yawnStartMs = in.nowMs;
+        yawnStartCycles = in.loopCycles;
+        yawnSeenKey = false;
+        out.enterYawnNow = true;
+      }
+      out.phase = phase;
+      return out;
+    }
+
+    if (phase == RetirePhase::YAWN) {
+      // 长任务中途到来：不必继续哈欠，直接切入 AOD 显示 WORKING
+      if (in.busyTask) {
+        phase = RetirePhase::SLEEPING;
+        out.enterAodNow = in.retireToAod;
+        out.phase = phase;
+        return out;
+      }
+      if (in.isYawnPose) yawnSeenKey = true;
+      const bool timedOut = (uint32_t)(in.nowMs - yawnStartMs) >= kMaxYawnMs;
+      const bool clipDone = yawnSeenKey && (in.oneShotEnded || in.loopCycles > yawnStartCycles);
+      if (clipDone || timedOut) {
+        phase = RetirePhase::SLEEPING;
+        out.enterAodNow = in.retireToAod;
+      }
+      out.phase = phase;
+      return out;
+    }
+
+    out.phase = phase;
+    return out;
+  }
+};
+
 }  // namespace aod

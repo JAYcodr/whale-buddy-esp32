@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef NOVA_HOST_SIM
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #endif
 
@@ -22,7 +23,6 @@ constexpr int16_t STAGE_BOTTOM = 304;
 constexpr int16_t PET_MIN_X    = 80;
 constexpr int16_t PET_MAX_X    = 288;
 constexpr int16_t PET_BASE_Y   = 298;
-constexpr ui::Rect PILL_RECT{ 86, 308, 196, 28 };
 
 // ── AP 配网二维码 ────────────────────────────────────────────────────────
 // 载荷是 Wi-Fi 标准格式，扫完只负责连上设备热点；家里 WiFi 与 Broker 仍走
@@ -120,12 +120,6 @@ ui::Rect apCancelPortalRect(const NovaState& st) {
                    BTN_CANCEL_PORTAL.w, BTN_CANCEL_PORTAL.h };
 }
 
-ui::Rect statusPillRect(const NovaState& st) {
-  return ui::Rect{ (int16_t)(PILL_RECT.x + ui::burnOffsetX(st.burnInStep)),
-                   (int16_t)(PILL_RECT.y + ui::burnOffsetY(st.burnInStep)),
-                   PILL_RECT.w, PILL_RECT.h };
-}
-
 bool containsCaseInsensitive(const char* haystack, const char* needle) {
   if (!haystack || !needle || !needle[0]) return false;
   for (; *haystack; haystack++) {
@@ -152,12 +146,71 @@ uint32_t s_nextRoamMs       = 8000;
 int      s_sparkFrames      = 0;
 int      s_demoAnim         = -1;  // -1 = auto
 bool     s_idleResting      = false;
+bool     s_drainHold        = false;
+uint8_t  s_continuousMove   = 0;   // 0=none, 1=crab_walk, 2=happy_run
 
-uint32_t s_seenChoreoGen    = 0;
+bool isLocomotionAnim(int animIdx) {
+  return animIdx == (int)NvaAnimKey::CRAB_WALK ||
+         animIdx == (int)NvaAnimKey::HAPPY_RUN;
+}
+
+float bounceOppositeTarget(float curX, uint32_t seed) {
+  const float span = (float)((seed * 29u) % 61u);
+  if (curX >= 184.0f) {
+    return 92.0f + span;   // [92..152]
+  }
+  return 216.0f + span;    // [216..276]
+}
+
+#ifndef NOVA_HOST_SIM
+RTC_DATA_ATTR uint32_t s_seenChoreoSig = 0;
+RTC_DATA_ATTR uint8_t  s_choreoIdx     = 0;
+#else
+uint32_t s_seenChoreoSig    = 0;
 uint8_t  s_choreoIdx        = 0;
+#endif
+uint32_t s_seenChoreoGen    = 0;
 bool     s_choreoArrived    = true;
 bool     s_choreoStepInit   = false;
 uint32_t s_choreoStepEnd    = 0;
+
+uint32_t choreoSignature(const NovaState& st) {
+  uint32_t h = 2166136261u;
+  auto mixBytes = [&](const void* p, size_t n) {
+    const uint8_t* b = (const uint8_t*)p;
+    for (size_t i = 0; i < n; i++) {
+      h ^= b[i];
+      h *= 16777619u;
+    }
+  };
+  mixBytes(&st.nChoreoSteps, 1);
+  mixBytes(st.choreoMood, strnlen(st.choreoMood, sizeof(st.choreoMood)));
+  for (uint8_t i = 0; i < st.nChoreoSteps && i < MAX_CHOREO_STEPS; i++) {
+    const ChoreoStep& s = st.choreoSteps[i];
+    mixBytes(&s.x, sizeof(s.x));
+    mixBytes(&s.run, sizeof(s.run));
+    mixBytes(&s.anim, sizeof(s.anim));
+    mixBytes(&s.durMs, sizeof(s.durMs));
+    mixBytes(s.say, strnlen(s.say, sizeof(s.say)));
+  }
+  return h;
+}
+
+const char* demoTagLabel(int idx) {
+  static constexpr const char* const kDemoTags[] = {
+    "展示: 待机", "展示: 思考", "展示: 忙碌",
+    "展示: 等待", "展示: 庆祝", "展示: 委屈",
+    "展示: 挥手", "展示: 熟睡", "展示: 富足",
+    "展示: 跃动", "展示: 害羞", "展示: 傲娇", "展示: 挠痒",
+    "展示: 蟹步", "展示: 小跑", "展示: 敲码", "展示: 归档",
+    "展示: 懒腰", "展示: 哈欠", "展示: 惊醒",
+    "展示: 哼歌", "展示: 干饭", "展示: 冒泡", "展示: 算账",
+  };
+  static_assert(sizeof(kDemoTags) / sizeof(kDemoTags[0]) == (size_t)NvaAnimKey::COUNT,
+                "kDemoTags 必须与 NvaAnimKey::COUNT 同步");
+  const int safe = (idx >= 0) ? (idx % (int)NvaAnimKey::COUNT) : 0;
+  return kDemoTags[safe];
+}
 uint32_t s_choreoStartCycle = 0;
 int      s_choreoAnim       = -1;
 
@@ -176,6 +229,8 @@ NvaAnimKey s_lastClickKey   = NvaAnimKey::COUNT;
 
 int16_t s_prevX0 = 72, s_prevY0 = 62, s_prevX1 = 296, s_prevY1 = 304;
 bool    s_hasPrevBox = false;
+ui::Rect s_prevBubbleRect{ 0, 0, 0, 0 };
+bool     s_prevHadBubble = false;
 
 const char* const kClickWaveQuotes[] = {
   "在呢主人!",
@@ -334,21 +389,33 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
     s_runSpeed = false;
     s_userTargetLock = false;
   }
+  if (s_petX < (float)PET_MIN_X) s_petX = (float)PET_MIN_X;
+  if (s_petX > (float)PET_MAX_X) s_petX = (float)PET_MAX_X;
 
   if (st.choreoGen != s_seenChoreoGen) {
     s_seenChoreoGen = st.choreoGen;
-    s_choreoIdx = 0;
-    s_choreoArrived = false;
-    s_choreoStepInit = false;
-    s_choreoStepEnd = 0;
+    const uint32_t sig = choreoSignature(st);
+    if (sig != s_seenChoreoSig) {
+      s_seenChoreoSig = sig;
+      s_choreoIdx = 0;
+      s_choreoArrived = false;
+      s_choreoStepInit = false;
+      s_choreoStepEnd = 0;
+    } else if (st.nChoreoSteps > 0 && s_choreoIdx >= st.nChoreoSteps) {
+      s_choreoIdx = 0;
+    }
   }
 
   // Execute LLM choreography script when enabled and in autonomous idle/patrol mode.
-  // 犯困/熟睡期间（75s..AOD，或关闭 AOD 后的长静置）必须暂停剧本推步，
+  // 犯困/熟睡期间（YAWN / SLEEP / AOD）必须暂停剧本推步，
   // 否则下一步 step.x / step.say 会把熟睡中的诺瓦拉起来“梦游螃蟹步”并顶着 Zzz 弹元气台词。
   if (cfg.choreoEnabled && st.nChoreoSteps > 0 && s_demoAnim < 0 && st.run == 0 && st.wait == 0 &&
       !st.approvalActive && !s_userTargetLock && !resting) {
     if (!s_choreoStepInit) {
+      if (s_drainHold) {
+        s_choreoAnim = -1;
+        return;
+      }
       if (s_choreoIdx >= st.nChoreoSteps) s_choreoIdx = 0;
       const ChoreoStep& step = st.choreoSteps[s_choreoIdx];
       const bool sleepyStep = (step.anim == (uint8_t)NvaAnimKey::SLEEP ||
@@ -376,22 +443,39 @@ void updateRoam(const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
       s_choreoStartCycle = nvaLoopCycles();
     }
 
-    if (s_choreoArrived && (int32_t)(st.nowMs - s_choreoStepEnd) >= 0) {
+    if (!s_drainHold && s_choreoArrived && (int32_t)(st.nowMs - s_choreoStepEnd) >= 0) {
       bool cycleComplete = (nvaLoopCycles() > s_choreoStartCycle);
       bool safetyExpired = ((int32_t)(st.nowMs - (s_choreoStepEnd + 5000u)) >= 0);
       if (cycleComplete || safetyExpired) {
         s_choreoIdx = (uint8_t)((s_choreoIdx + 1) % st.nChoreoSteps);
         s_choreoStepInit = false;
       }
+    } else if (!s_drainHold && s_choreoArrived && isLocomotionAnim(s_choreoAnim) &&
+               fabsf(s_targetX - s_petX) <= 1.2f) {
+      // 跑步/螃蟹步到达目标或屏幕边缘时自动折返换向，避免原地贴墙跑。
+      s_targetX = bounceOppositeTarget(s_petX, st.nowMs + frame);
+      s_runSpeed = (s_choreoAnim == (int)NvaAnimKey::HAPPY_RUN);
+      s_walkLeadUntilMs = 0;
     }
     return;
   }
   s_choreoAnim = -1;
   s_choreoStepInit = false;
 
+  // 外部状态机主动播放跑步/螃蟹步（工作小插曲、Demo 预览）时，到边缘自动折返。
+  if (s_continuousMove > 0 && !resting && !s_drainHold && !s_userTargetLock &&
+      !st.approvalActive && st.wait == 0) {
+    if (fabsf(s_targetX - s_petX) <= 1.2f) {
+      s_targetX = bounceOppositeTarget(s_petX, st.nowMs + frame);
+      s_runSpeed = (s_continuousMove == 2);
+      s_walkLeadUntilMs = 0;
+    }
+    return;
+  }
+
   // Built-in local fallback patrol when no LLM script is active.
   if (s_petX == s_targetX && (int32_t)(st.nowMs - s_nextRoamMs) >= 0 && st.wait == 0 && !st.approvalActive) {
-    if (resting) {
+    if (resting || s_drainHold) {
       s_nextRoamMs = st.nowMs + 12000u;
       return;
     }
@@ -537,19 +621,8 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
   uint16_t dotCol = ui::COL_ACCENT;
   char tagBuf[48] = "待机陪伴中";
   if (s_demoAnim >= 0) {
-    static constexpr const char* const kDemoTags[] = {
-      "展示: 待机", "展示: 思考", "展示: 忙碌",
-      "展示: 等待", "展示: 庆祝", "展示: 委屈",
-      "展示: 挥手", "展示: 熟睡", "展示: 富足",
-      "展示: 跃动", "展示: 害羞", "展示: 傲娇", "展示: 挠痒",
-      "展示: 蟹步", "展示: 小跑", "展示: 敲码", "展示: 归档",
-      "展示: 懒腰", "展示: 哈欠", "展示: 惊醒",
-      "展示: 哼歌", "展示: 干饭", "展示: 冒泡", "展示: 算账",
-    };
-    static_assert(sizeof(kDemoTags) / sizeof(kDemoTags[0]) == (size_t)NvaAnimKey::COUNT,
-                  "kDemoTags 必须与 NvaAnimKey::COUNT 同步");
     dotCol = ui::COL_VIOLET;
-    copyUtf8Safe(tagBuf, sizeof(tagBuf), kDemoTags[s_demoAnim % (int)NvaAnimKey::COUNT]);
+    copyUtf8Safe(tagBuf, sizeof(tagBuf), demoTagLabel(s_demoAnim));
   } else if (st.wait > 0) {
     dotCol = ui::COL_AMBER;
     copyUtf8Safe(tagBuf, sizeof(tagBuf), "等待确认");
@@ -622,6 +695,11 @@ inline void tideHomePalette(const NovaState& st, uint16_t* bg, uint16_t* giantCo
 }
 
 inline const char* tideEyebrow(const NovaState& st) {
+  if (s_demoAnim >= 0) {
+    static char s_demoEyebrow[48];
+    snprintf(s_demoEyebrow, sizeof(s_demoEyebrow), "DEMO · %s", demoTagLabel(s_demoAnim));
+    return s_demoEyebrow;
+  }
   if (st.approvalActive || st.turnError || st.wait > 0) return "ALERT · 异常";
   if (st.run > 0) return "ACTIVE · 运行中";
   return "STANDBY · 摸鱼中";
@@ -777,6 +855,7 @@ uint8_t   s_tideBgHour       = 255;
 uint8_t   s_tideBgMinute     = 255;
 uint8_t   s_tideBgBurnStep   = 255;
 uint8_t   s_tideBgStateKind  = 255;
+int       s_tideBgDemoAnim   = -1;
 
 uint16_t* ensureTideBgBuf() {
   if (s_tideBgBuf) return s_tideBgBuf;
@@ -804,7 +883,8 @@ inline bool tideBgMatches(const NovaState& st, uint16_t bg, uint16_t giantCol) {
          s_tideBgHour == st.hour &&
          s_tideBgMinute == st.minute &&
          s_tideBgBurnStep == st.burnInStep &&
-         s_tideBgStateKind == tideStateKind(st);
+         s_tideBgStateKind == tideStateKind(st) &&
+         s_tideBgDemoAnim == s_demoAnim;
 }
 
 void drawTideStageStatic(NovaCanvas& c, const NovaState& st, int16_t oy,
@@ -908,9 +988,17 @@ void drawStageContentTide(NovaCanvas& c, const NovaState& st, const NovaSettings
   s_hasPrevBox = true;
 
   ui::Rect dirty{ uX0, uY0, (int16_t)(uX1 - uX0), (int16_t)(uY1 - uY0) };
+  if (s_prevHadBubble) {
+    rectUnion(dirty, s_prevBubbleRect);
+  }
   if (showBubble) {
-    rectUnion(dirty, ui::Rect{ (int16_t)(bx - 2), (int16_t)(by - 2),
-                               (int16_t)(bw + 4), (int16_t)(kBubbleH + 4) });
+    const ui::Rect bubbleRect{ (int16_t)(bx - 2), (int16_t)(by - 2),
+                               (int16_t)(bw + 4), (int16_t)(kBubbleH + 4) };
+    rectUnion(dirty, bubbleRect);
+    s_prevBubbleRect = bubbleRect;
+    s_prevHadBubble = true;
+  } else {
+    s_prevHadBubble = false;
   }
 
   // 舞台背景（底色 + 1.44× 巨字时间 + 眉标）只随分钟 / 主题调色板 / 烧屏位移变化，
@@ -956,6 +1044,7 @@ void drawStageContentTide(NovaCanvas& c, const NovaState& st, const NovaSettings
       s_tideBgMinute = st.minute;
       s_tideBgBurnStep = st.burnInStep;
       s_tideBgStateKind = tideStateKind(st);
+      s_tideBgDemoAnim = s_demoAnim;
       s_tideBgValid = true;
     } else {
       restoreTideBgRect(c, dirty);
@@ -1041,6 +1130,7 @@ void drawHomeTide(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
   ui::tide::drawTopStrip(c, st, 1, bg, 6, topLeft);
 
   s_hasPrevBox = false;
+  s_prevHadBubble = false;
   drawStageContentTide(c, st, cfg, frame, nullptr, nullptr, nullptr, nullptr);
   drawTideDock(c, st, bg);
   if (st.dockExpanded && st.turnError && st.errMsg[0]) {
@@ -1074,13 +1164,15 @@ bool pageHomeIsRunning() {
 NvaAnimKey pageHomeWorkAnimForTool(const char* tool) {
   if (!tool || !tool[0]) return NvaAnimKey::THINKING;
   static constexpr const char* const kCodingTools[] = {
-    "edit", "write", "patch", "bash", "terminal", "cmd", "create",
+    "edit", "write", "patch", "bash", "terminal", "cmd", "command",
+    "shell", "exec", "create", "replace", "code", "apply",
   };
   for (const char* kw : kCodingTools) {
     if (containsCaseInsensitive(tool, kw)) return NvaAnimKey::CODING;
   }
   static constexpr const char* const kArchiveTools[] = {
     "read", "grep", "glob", "search", "find", "list", "fetch",
+    "view", "cat", "ls", "dir", "outline", "inspect", "web",
   };
   for (const char* kw : kArchiveTools) {
     if (containsCaseInsensitive(tool, kw)) return NvaAnimKey::ARCHIVE;
@@ -1091,6 +1183,33 @@ NvaAnimKey pageHomeWorkAnimForTool(const char* tool) {
 void pageHomeTriggerSquash(uint32_t nowMs) {
   s_squashStartMs = nowMs;
   s_squashActive = true;
+}
+
+void pageHomeSetDrainHold(bool hold) {
+  s_drainHold = hold;
+}
+
+void pageHomeSetContinuousMove(uint8_t mode) {
+  s_continuousMove = mode;
+}
+
+void pageHomeBookmarkAdvance(const NovaState& st, bool advanceChoreo) {
+  if (advanceChoreo && st.nChoreoSteps > 0 && s_choreoStepInit) {
+    s_choreoIdx = (uint8_t)((s_choreoIdx + 1) % st.nChoreoSteps);
+  }
+  s_choreoStepInit = false;
+  s_choreoAnim = -1;
+  s_targetX = s_petX;
+  s_runSpeed = false;
+  s_userTargetLock = false;
+}
+
+uint8_t pageHomeChoreoIdx() {
+  return s_choreoIdx;
+}
+
+void pageHomeShowBubble(const char* txt, uint32_t durMs, uint32_t nowMs) {
+  setBubble(txt, durMs, nowMs);
 }
 
 void pageHomeTick(const NovaState& st, const NovaSettings& cfg, uint32_t frame, bool idleResting) {
@@ -1321,6 +1440,9 @@ void drawAodTimeLine(NovaCanvas& c, const char* hh, const char* mm, int16_t base
                ui::COL_TEXT, ui::COL_BG);
 }
 
+int16_t s_aodPrevX0 = 100, s_aodPrevY0 = 230, s_aodPrevX1 = 268, s_aodPrevY1 = 420;
+bool    s_aodHasPrevBox = false;
+
 void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
   c.fillScreen(ui::COL_BG);
 
@@ -1355,10 +1477,21 @@ void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
                          dateBuf, ui::COL_DIM, ui::COL_BG);
   }
 
-  // 宠物：定格睡觉帧
-  if (!nvaDraw(c, (int16_t)(UI_W / 2 + ox), (int16_t)(418 + oy), false, 1.0f)) {
-    ui::aaFillCircle(c, (int16_t)(UI_W / 2 + ox), (int16_t)(400 + oy), 34, rgb565(20, 32, 52));
+  // 宠物：当前睡觉/工作中/等待帧（全屏绘制后同步脏矩形基准框）
+  const int16_t cx = (int16_t)(UI_W / 2 + ox);
+  const int16_t bottomY = (int16_t)(418 + oy);
+  if (!nvaDraw(c, cx, bottomY, false, 1.0f)) {
+    ui::aaFillCircle(c, cx, (int16_t)(400 + oy), 34, rgb565(20, 32, 52));
   }
+  const int16_t hw = nvaFrameWidth() / 2 + 2;
+  const int16_t fh = nvaFrameHeight();
+  s_aodPrevX0 = (int16_t)(cx - hw);
+  s_aodPrevX1 = (int16_t)(cx + hw);
+  s_aodPrevY0 = (int16_t)(bottomY - fh - 2);
+  s_aodPrevY1 = (int16_t)(bottomY + 2);
+  if (s_aodPrevY0 < (int16_t)(210 + oy)) s_aodPrevY0 = (int16_t)(210 + oy);
+  if (s_aodPrevY1 > (int16_t)(422 + oy)) s_aodPrevY1 = (int16_t)(422 + oy);
+  s_aodHasPrevBox = true;
 
   // 底部状态：AOD 里 run 恒为 0，不写它。
   char today[24] = "";
@@ -1381,6 +1514,49 @@ void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
                        statusBuf, ui::COL_MUTED, ui::COL_BG);
 }
 
+void pageHomeDrawAodPet(NovaCanvas& c, const NovaState& st, uint32_t nowMs,
+                        int16_t* outDx, int16_t* outDy, int16_t* outDw, int16_t* outDh) {
+  const int16_t ox = (int16_t)(ui::burnOffsetX(st.burnInStep) + aod::driftX(nowMs));
+  const int16_t oy = (int16_t)(ui::burnOffsetY(st.burnInStep) + aod::driftY(nowMs));
+  const int16_t cx = (int16_t)(UI_W / 2 + ox);
+  const int16_t bottomY = (int16_t)(418 + oy);
+
+  const int16_t hw = nvaFrameWidth() / 2 + 2;
+  const int16_t fh = nvaFrameHeight();
+  const int16_t minY = (int16_t)(210 + oy);
+  const int16_t maxY = (int16_t)(422 + oy);
+  int16_t curX0 = (int16_t)(cx - hw);
+  int16_t curX1 = (int16_t)(cx + hw);
+  int16_t curY0 = (int16_t)(bottomY - fh - 2);
+  int16_t curY1 = (int16_t)(bottomY + 2);
+  if (curX0 < 0) curX0 = 0;
+  if (curX1 > UI_W) curX1 = UI_W;
+  if (curY0 < minY) curY0 = minY;
+  if (curY1 > maxY) curY1 = maxY;
+
+  int16_t uX0 = s_aodHasPrevBox ? (curX0 < s_aodPrevX0 ? curX0 : s_aodPrevX0) : curX0;
+  int16_t uY0 = s_aodHasPrevBox ? (curY0 < s_aodPrevY0 ? curY0 : s_aodPrevY0) : curY0;
+  int16_t uX1 = s_aodHasPrevBox ? (curX1 > s_aodPrevX1 ? curX1 : s_aodPrevX1) : curX1;
+  int16_t uY1 = s_aodHasPrevBox ? (curY1 > s_aodPrevY1 ? curY1 : s_aodPrevY1) : curY1;
+  if (uX0 < 0) uX0 = 0;
+  if (uX1 > UI_W) uX1 = UI_W;
+  if (uY0 < minY) uY0 = minY;
+  if (uY1 > maxY) uY1 = maxY;
+
+  s_aodPrevX0 = curX0; s_aodPrevY0 = curY0; s_aodPrevX1 = curX1; s_aodPrevY1 = curY1;
+  s_aodHasPrevBox = true;
+
+  c.fillRect(uX0, uY0, (int16_t)(uX1 - uX0), (int16_t)(uY1 - uY0), ui::COL_BG);
+  if (!nvaDraw(c, cx, bottomY, false, 1.0f)) {
+    ui::aaFillCircle(c, cx, (int16_t)(400 + oy), 34, rgb565(20, 32, 52));
+  }
+
+  if (outDx) *outDx = uX0;
+  if (outDy) *outDy = uY0;
+  if (outDw) *outDw = (int16_t)(uX1 - uX0);
+  if (outDh) *outDh = (int16_t)(uY1 - uY0);
+}
+
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
   if (st.wifiApMode && !st.wifiConnected && apCancelPortalRect(st).contains(x, y)) {
     return UiAction{ UiAction::CANCEL_PORTAL, 0 };
@@ -1398,18 +1574,7 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     return UiAction{ UiAction::DOCK_TOGGLE, 0 };
   }
 
-  // 潮汐版无中置状态胶囊（该区域现在是诺瓦落脚舞台），只有原版 OCEAN 拦截 pillR。
-  if (!ui::isTideTheme()) {
-    const ui::Rect pillR = statusPillRect(st);
-    if (pillR.contains(x, y)) {
-      if (s_demoAnim < 0) s_demoAnim = 1;
-      else if (s_demoAnim >= (int)NvaAnimKey::COUNT - 1) s_demoAnim = -1;
-      else s_demoAnim++;
-      setBubble((s_demoAnim < 0) ? "恢复自动状态" : "切换动作!", 3500u, st.nowMs);
-      return UiAction{ UiAction::PET_TAP, 2 };
-    }
-  }
-
+  // Demo 动作预览仅通过串口 {"cmd":"demo","anim":N} 调试使用，避免日常误触进入。
   const int16_t stageTop = ui::isTideTheme() ? TIDE_STRIP_H : STAGE_TOP;
   const int16_t stageBot = ui::isTideTheme() ? TIDE_STAGE_BOTTOM : STAGE_BOTTOM;
   if (y >= stageTop && y <= stageBot) {
@@ -1492,23 +1657,18 @@ bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettin
     *out = apCancelPortalRect(st);
     return true;
   }
-  if (!ui::isTideTheme()) {
-    const ui::Rect pillR = statusPillRect(st);
-    if (pillR.contains(x, y)) {
-      *out = pillR;
-      return true;
-    }
-  }
   return false;
 }
 
 void pageHomeOnEnter(uint32_t nowMs) {
   (void)nowMs;
   s_hasPrevBox = false;
+  s_prevHadBubble = false;
 }
 
 void pageHomeOnExit() {
   s_hasPrevBox = false;
+  s_prevHadBubble = false;
   s_squashActive = false;
   s_pendingSquashTap = false;
   s_sparkFrames = 0;
@@ -1519,6 +1679,7 @@ void pageHomeOnExit() {
 
 void pageHomeOnThemeChange() {
   s_hasPrevBox = false;
+  s_prevHadBubble = false;
   s_tideBgValid = false;
   s_demoAnim = -1;
   s_squashActive = false;

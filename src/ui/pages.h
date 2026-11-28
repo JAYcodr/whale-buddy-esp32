@@ -74,11 +74,18 @@ void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, u
 void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame,
                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
 void pageHomeTick(const NovaState& st, const NovaSettings& cfg, uint32_t frame, bool idleResting);
+void pageHomeSetDrainHold(bool hold);
+void pageHomeSetContinuousMove(uint8_t mode);  // 0=none, 1=crab_walk, 2=happy_run
+void pageHomeBookmarkAdvance(const NovaState& st, bool advanceChoreo);
+uint8_t pageHomeChoreoIdx();
+void pageHomeShowBubble(const char* txt, uint32_t durMs, uint32_t nowMs);
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st);
 void pageHomeOnEnter(uint32_t nowMs);
 void pageHomeOnExit();
 void pageHomeOnThemeChange();
 void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
+void pageHomeDrawAodPet(NovaCanvas& c, const NovaState& st, uint32_t nowMs,
+                        int16_t* outDx, int16_t* outDy, int16_t* outDw, int16_t* outDh);
 int pageHomeDemoOverride();  // -1 = auto, >=0 = NvaAnimKey index
 void pageHomeSetDemoOverride(int idx);
 int pageHomeChoreoAnim();    // -1 = none, >=0 = NvaAnimKey index from LLM script

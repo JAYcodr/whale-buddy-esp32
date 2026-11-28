@@ -28,6 +28,59 @@
 namespace {
 
 constexpr uint32_t KEY1_LONG_MS = 800;
+RTC_DATA_ATTR uint8_t s_rtcBgPoolCursor = 0;
+
+bool hasQuotaWorry(const NovaState& st) {
+  for (uint8_t i = 0; i < st.nCards && i < 3; i++) {
+    const QuotaCard& card = st.cards[i];
+    if (strcmp(card.kind, "bal") == 0 && card.val < 15.0) return true;
+    if (strcmp(card.kind, "win") == 0) {
+      for (uint8_t b = 0; b < card.nBars && b < 2; b++) {
+        if (card.bars[b].pct >= 80) return true;
+      }
+    }
+  }
+  return false;
+}
+
+NvaAnimKey pickWorkInterlude(const NovaState& st, uint8_t& cursor, NvaAnimKey lastKey,
+                             uint64_t& lastWorkTokens, uint64_t todayTokens,
+                             const char** outBubble) {
+  struct InterludeOpt { NvaAnimKey key; const char* say; };
+  InterludeOpt opts[9];
+  uint8_t nOpts = 0;
+
+  if (todayTokens > lastWorkTokens || st.ctxPct >= 35) {
+    opts[nOpts++] = { NvaAnimKey::EAT_TOKEN, "补充 Token 能量~" };
+  }
+  opts[nOpts++] = { NvaAnimKey::STRETCH, "敲久了伸个懒腰~" };
+  opts[nOpts++] = { NvaAnimKey::HUM, "边哼歌边等你~" };
+  opts[nOpts++] = { NvaAnimKey::HAPPY_RUN, "跑两圈提提神~" };
+  opts[nOpts++] = { NvaAnimKey::BUBBLE, "呼噜噜吐个泡泡~" };
+  if (hasQuotaWorry(st)) {
+    opts[nOpts++] = { NvaAnimKey::QUOTA_WORRY, "额度有点紧张..." };
+  } else {
+    opts[nOpts++] = { NvaAnimKey::QUOTA, "元气满满继续干!" };
+  }
+  opts[nOpts++] = { NvaAnimKey::CRAB_WALK, "横着溜达一圈~" };
+  if (todayTokens >= 500000ULL && todayTokens <= lastWorkTokens && st.ctxPct < 35) {
+    opts[nOpts++] = { NvaAnimKey::EAT_TOKEN, "炫口 Token 继续!" };
+  }
+  if (st.timeValid && aod::isNight(st.hour)) {
+    opts[nOpts++] = { NvaAnimKey::YAWN, "夜深了打个哈欠..." };
+  }
+
+  cursor = (uint8_t)((cursor + 1) % nOpts);
+  if (nOpts > 1 && opts[cursor].key == lastKey) {
+    cursor = (uint8_t)((cursor + 1) % nOpts);
+  }
+  const InterludeOpt& pick = opts[cursor];
+  if (pick.key == NvaAnimKey::EAT_TOKEN) {
+    lastWorkTokens = todayTokens;
+  }
+  if (outBubble) *outBubble = pick.say;
+  return pick.key;
+}
 
 void sendUsbScreenshot() {
   Arduino_Canvas* c = hwCanvas();
@@ -259,10 +312,13 @@ void uiTaskFn(void*) {
 
   // v0.5.0：AOD + 观测
   bool     aodActive = false;
+  bool     prevAodActive = false;
   bool     aodForced = false;       // 串口 aodforce 打开的验收模式
   uint32_t aodEnterMs = 0;
   NvaAnimKey aodPoseApplied = NvaAnimKey::COUNT;
   bool     swallowTap = false;      // 唤醒 AOD 的那一击不派发
+  aod::RetireMachine    retire;
+  aod::RetireStepResult retireRes;
   enum class AodFade : uint8_t { NONE, ENTER_DIM, ENTER_RISE, EXIT_DIM, EXIT_RISE };
   constexpr uint32_t kAodDimMs       = 250u;
   constexpr uint32_t kAodEnterRiseMs = 250u;
@@ -313,11 +369,24 @@ void uiTaskFn(void*) {
   NvaAnimKey oneShotKey = NvaAnimKey::SUCCESS;
   NvaAnimKey bgAutoKey = NvaAnimKey::IDLE;
   NvaAnimKey bgLastNonIdle = NvaAnimKey::QUOTA;
-  uint8_t    bgPoolCursor = 0;
-  uint32_t   bgNextSwitchCycle = 2;
+  uint8_t    bgPoolCursor = s_rtcBgPoolCursor;
+  uint32_t   bgNextSwitchCycle = 1;
   bool       wasInBgPool = false;
+  bool       bgResumePending = false;
+  uint64_t   lastWakeTokenTotal = 0;
   NvaAnimKey heldWorkKey = NvaAnimKey::THINKING;
   uint32_t   lastWorkSwitchMs = 0;
+  uint32_t   toolFreshUntilMs = 0;
+  char       lastSeenTool[24] = "";
+  uint32_t   lastWorkStateGen = 0;
+  uint32_t   nextInterludeMs = 0;
+  bool       workInterludeActive = false;
+  NvaAnimKey workInterludeKey = NvaAnimKey::STRETCH;
+  NvaAnimKey lastInterludeKey = NvaAnimKey::COUNT;
+  uint32_t   workInterludeStartCycle = 0;
+  uint32_t   workInterludeEndMs = 0;
+  uint8_t    workInterludeCursor = 0;
+  uint64_t   lastWorkTokenTotal = 0;
 
   uint32_t lastApGen = 0;
   uint32_t lastStateGen = 0;
@@ -731,6 +800,8 @@ void uiTaskFn(void*) {
       }
     }
     if (aodActive) {
+      retire.reset();
+      retireRes = aod::RetireStepResult{};
       const bool exitNow = !aodForced &&
           aod::shouldExit(cfg.aodMode, snap.battery.usbPresent, st.approvalActive,
                           st.wifiApMode, screenOff, st.battPct);
@@ -738,12 +809,46 @@ void uiTaskFn(void*) {
         const bool urgent = st.approvalActive || st.wifiApMode || screenOff;
         beginAodExit(false, urgent);
       }
-    } else if (!aodForced && aod::shouldEnter(cfg.aodMode, snap.battery.usbPresent,
-                                              st.approvalActive, st.wifiApMode, screenOff,
-                                              dimmedForNap,
-                                              aod::idleSince(nowMs, lastInteractMs),
-                                              aodThresholdMs)) {
-      beginAodEnter();
+    } else if (!aodForced) {
+      const uint32_t idleSinceInput = aod::idleSince(nowMs, lastInteractMs);
+      const bool aodEligible = aod::shouldEnter(
+          cfg.aodMode, snap.battery.usbPresent, st.approvalActive, st.wifiApMode,
+          screenOff, dimmedForNap, idleSinceInput, aodThresholdMs);
+      const bool offUsbIdleEligible =
+          (cfg.aodMode == aod::OFF && snap.battery.usbPresent && !st.approvalActive &&
+           !st.wifiApMode && !screenOff && !dimmedForNap && idleSinceInput >= 300000u);
+      const NvaAnimKey frontKey = nvaActiveState();
+      aod::RetireInput ri{};
+      ri.nowMs = nowMs;
+      ri.canRetire = aodEligible || offUsbIdleEligible;
+      ri.retireToAod = aodEligible;
+      ri.onHomePage = (nav.currentPage() == UiPage::HOME);
+      ri.nvaReady = nvaAvailable();
+      ri.busyTask = (st.run > 0 || st.wait > 0 || st.approvalActive);
+      ri.walking = pageHomeIsWalking();
+      ri.animKey = (uint8_t)frontKey;
+      ri.isYawnPose = (frontKey == NvaAnimKey::YAWN);
+      ri.isSleepPose = (frontKey == NvaAnimKey::SLEEP);
+      ri.isCalmPose = !nvaIsSwitching() &&
+                      (frontKey == NvaAnimKey::IDLE || frontKey == NvaAnimKey::SLEEP);
+      ri.oneShotActive = clickAnimActive || oneShotActive;
+      ri.oneShotEnded = nvaIsEnded();
+      ri.loopCycles = nvaLoopCycles();
+
+      retireRes = retire.step(ri);
+      if (retireRes.bookmarkAdvance) {
+        pageHomeBookmarkAdvance(st, true);
+        if (bgAutoKey != NvaAnimKey::IDLE) bgResumePending = true;
+        s_rtcBgPoolCursor = bgPoolCursor;
+      }
+      if (retireRes.enterYawnNow) {
+        clickAnimActive = false;
+        oneShotActive = false;
+        nvaSetState(NvaAnimKey::YAWN, true, true);
+      }
+      if (retireRes.enterAodNow) {
+        beginAodEnter();
+      }
     }
     if (aodFade == AodFade::ENTER_DIM && (st.approvalActive || st.wifiApMode)) {
       beginAodExit(false, true);
@@ -778,11 +883,10 @@ void uiTaskFn(void*) {
       }
     }
 
-    // AOD 定格姿势：有任务摆 WORKING、等审批摆 WAITING、其余 SLEEP。
-    // 换姿势时重开 0.9s 解码窗口，解出一帧后冻结。
+    // AOD 定格/微动姿势：始终展示睡觉动画（运行态由底部状态栏体现）。
+    // 换姿势时重开 0.9s 解码窗口，或持续按功耗策略缓慢循环呼吸。
     if (aodActive) {
-      const NvaAnimKey want = (st.run > 0) ? NvaAnimKey::WORKING
-                            : (st.wait > 0 ? NvaAnimKey::WAITING : NvaAnimKey::SLEEP);
+      const NvaAnimKey want = NvaAnimKey::SLEEP;
       if (want != aodPoseApplied) {
         aodPoseApplied = want;
         aodEnterMs = nowMs;
@@ -790,6 +894,24 @@ void uiTaskFn(void*) {
         needFull = true;
       }
     }
+    if (!prevAodActive && aodActive) {
+      if (st.nTokenDays > 0) {
+        lastWakeTokenTotal = st.tokenDays[st.nTokenDays - 1].tokens;
+      }
+    } else if (prevAodActive && !aodActive) {
+      if (!screenOff && !dimmedForNap && !st.approvalActive && st.run == 0 && st.wait == 0 &&
+          nav.currentPage() == UiPage::HOME && nvaAvailable()) {
+        const uint32_t napMs = (nowMs >= aodEnterMs) ? (nowMs - aodEnterMs) : 0u;
+        oneShotKey = (napMs >= 300000u) ? NvaAnimKey::STRETCH : NvaAnimKey::WAKE_UP;
+        oneShotActive = true;
+        oneShotSafetyEndMs = nowMs + 11500u;
+        nvaSetState(oneShotKey, true, true);
+        pageHomeShowBubble((oneShotKey == NvaAnimKey::STRETCH) ? "睡饱伸个懒腰~" : "唔...醒啦主人!",
+                           4500u, nowMs);
+        bgResumePending = true;
+      }
+    }
+    prevAodActive = aodActive;
 
     // 观测字段：探针从 stat 读这些，别让它们跟主状态错过一整轮。
     novaStateWithLock([&](NovaState& s) {
@@ -1800,23 +1922,79 @@ void uiTaskFn(void*) {
       needFull = true;
     }
 
-    // Drive all 24 Nova animation states cleanly: play one-shots & choreo steps to full cycle end
-    // (inspired by dsh-pet AnimationFlow & aipets Director / ClipSelector).
-    const uint32_t idleMs = (nowMs >= lastInteractMs) ? (nowMs - lastInteractMs) : 0u;
-    const uint32_t sleepAtMs = snap.battery.usbPresent ? 90000u : 45000u;
-    const uint32_t yawnAtMs  = sleepAtMs - 15000u;
+    // Drive all 24 Nova animation states cleanly: let current cycle drain before YAWN -> AOD,
+    // keep choreo/pool bookmarks across AOD & sleep, and interleave work interludes during long runs.
     int demoIdx = pageHomeDemoOverride();
+    const uint64_t todayTokens =
+        (st.nTokenDays > 0) ? st.tokenDays[st.nTokenDays - 1].tokens : 0ULL;
+    const bool drainHold = (!aodActive && retireRes.phase == aod::RetirePhase::DRAINING);
     const bool idleResting = (!aodActive && !st.approvalActive && st.wait == 0 &&
                               st.run == 0 && demoIdx < 0 &&
-                              !clickAnimActive && !oneShotActive && idleMs >= yawnAtMs);
+                              !clickAnimActive && !oneShotActive &&
+                              (retireRes.phase == aod::RetirePhase::YAWN ||
+                               retireRes.phase == aod::RetirePhase::SLEEPING));
+    if (st.run == 0) {
+      lastWorkSwitchMs = 0;
+      toolFreshUntilMs = 0;
+      lastSeenTool[0] = '\0';
+      lastWorkStateGen = st.stateGen;
+      workInterludeActive = false;
+      nextInterludeMs = 0;
+    } else {
+      if (nextInterludeMs == 0) {
+        nextInterludeMs = nowMs + 35000u;
+        lastWorkTokenTotal = todayTokens;
+      }
+      if (st.stateGen != lastWorkStateGen || strcmp(st.lastTool, lastSeenTool) != 0) {
+        lastWorkStateGen = st.stateGen;
+        snprintf(lastSeenTool, sizeof(lastSeenTool), "%s", st.lastTool);
+        const bool wrappingResult =
+            (strncmp(st.msg, "整理 ", 7) == 0 || strcmp(st.msg, "思考中...") == 0);
+        if (wrappingResult) toolFreshUntilMs = nowMs + 2500u;
+        else if (st.lastTool[0]) toolFreshUntilMs = nowMs + 12000u;
+        else toolFreshUntilMs = 0;
+      }
+      if (!aodActive && !st.approvalActive && st.wait == 0 && demoIdx < 0 &&
+          !clickAnimActive && !oneShotActive && !drainHold) {
+        if (workInterludeActive) {
+          const bool cycleDone = (nvaActiveState() == workInterludeKey &&
+                                  nvaLoopCycles() > workInterludeStartCycle);
+          const bool timeUp = (int32_t)(nowMs - workInterludeEndMs) >= 0;
+          if (cycleDone || timeUp) {
+            workInterludeActive = false;
+            lastInterludeKey = workInterludeKey;
+            nextInterludeMs = nowMs + 42000u;
+          }
+        } else if (!pageHomeIsWalking() && (int32_t)(nowMs - nextInterludeMs) >= 0) {
+          const char* bubbleTxt = nullptr;
+          workInterludeKey = pickWorkInterlude(st, workInterludeCursor, lastInterludeKey,
+                                               lastWorkTokenTotal, todayTokens, &bubbleTxt);
+          workInterludeActive = true;
+          workInterludeStartCycle = nvaLoopCycles();
+          workInterludeEndMs = nowMs + 10500u;
+          if (bubbleTxt) pageHomeShowBubble(bubbleTxt, 4000u, nowMs);
+        }
+      } else if (aodActive || st.approvalActive || st.wait > 0 || clickAnimActive || oneShotActive) {
+        workInterludeActive = false;
+      }
+    }
+
+    uint8_t contMove = 0;
+    if (demoIdx == (int)NvaAnimKey::CRAB_WALK) contMove = 1;
+    else if (demoIdx == (int)NvaAnimKey::HAPPY_RUN) contMove = 2;
+    else if (st.run > 0 && workInterludeActive) {
+      if (workInterludeKey == NvaAnimKey::CRAB_WALK) contMove = 1;
+      else if (workInterludeKey == NvaAnimKey::HAPPY_RUN) contMove = 2;
+    }
+    pageHomeSetContinuousMove(contMove);
+    pageHomeSetDrainHold(drainHold);
     if (!aodActive && !screenOff && !dimmedForNap) {
       pageHomeTick(st, cfg, frame, idleResting);
     }
     int choreoAnim = pageHomeChoreoAnim();
     bool inBgPool = false;
-    if (st.run == 0) lastWorkSwitchMs = 0;
     if (aodActive) {
-      // AOD 期间宠物定格：姿势由上面的 aodPose 逻辑统一设置，严禁在主状态机调 nvaSetState。
+      // AOD 期间宠物姿势由上面的 aodPose 逻辑统一设置，严禁在主状态机调 nvaSetState。
     } else if (st.approvalActive || st.wait > 0) {
       clickAnimActive = false;
       oneShotActive = false;
@@ -1844,22 +2022,27 @@ void uiTaskFn(void*) {
     if (!aodActive && !st.approvalActive && st.wait == 0 && demoIdx < 0 &&
         !clickAnimActive && !oneShotActive) {
       if (st.run > 0) {
-        NvaAnimKey wantWork = pageHomeWorkAnimForTool(st.lastTool);
-        if (lastWorkSwitchMs == 0 || wantWork == heldWorkKey ||
-            (heldWorkKey == NvaAnimKey::THINKING && wantWork != NvaAnimKey::THINKING) ||
-            (uint32_t)(nowMs - lastWorkSwitchMs) >= 2500u) {
-          if (wantWork != heldWorkKey || lastWorkSwitchMs == 0) {
-            heldWorkKey = wantWork;
-            lastWorkSwitchMs = nowMs;
+        if (workInterludeActive) {
+          nvaSetState(workInterludeKey, false);
+        } else {
+          const char* activeTool = ((int32_t)(toolFreshUntilMs - nowMs) > 0) ? st.lastTool : "";
+          NvaAnimKey wantWork = pageHomeWorkAnimForTool(activeTool);
+          if (lastWorkSwitchMs == 0 || wantWork == heldWorkKey ||
+              (heldWorkKey == NvaAnimKey::THINKING && wantWork != NvaAnimKey::THINKING) ||
+              (uint32_t)(nowMs - lastWorkSwitchMs) >= 2500u) {
+            if (wantWork != heldWorkKey || lastWorkSwitchMs == 0) {
+              heldWorkKey = wantWork;
+              lastWorkSwitchMs = nowMs;
+            }
           }
+          nvaSetState(heldWorkKey, false);
         }
-        nvaSetState(heldWorkKey, false);
       } else if (pageHomeIsWalking()) {
         nvaSetState(pageHomeIsRunning() ? NvaAnimKey::HAPPY_RUN : NvaAnimKey::CRAB_WALK, false);
-      } else if (idleMs >= sleepAtMs) {
+      } else if (retireRes.phase == aod::RetirePhase::YAWN) {
+        nvaSetState(NvaAnimKey::YAWN, true);
+      } else if (retireRes.phase == aod::RetirePhase::SLEEPING) {
         nvaSetState(NvaAnimKey::SLEEP, false);
-      } else if (idleMs >= yawnAtMs) {
-        nvaSetState(NvaAnimKey::YAWN, false);
       } else if (choreoAnim >= 0 && choreoAnim < (int)NvaAnimKey::COUNT) {
         nvaSetState((NvaAnimKey)choreoAnim, false);
       } else {
@@ -1867,27 +2050,23 @@ void uiTaskFn(void*) {
         uint32_t cyc = nvaLoopCycles();
         if (!wasInBgPool) {
           bgAutoKey = NvaAnimKey::IDLE;
-          bgNextSwitchCycle = cyc + 2;
-        } else if (cyc >= bgNextSwitchCycle) {
+          if (bgResumePending) {
+            bgNextSwitchCycle = cyc;
+            bgResumePending = false;
+          } else {
+            bgNextSwitchCycle = cyc + 1;
+          }
+        } else if (!drainHold && cyc >= bgNextSwitchCycle) {
           if (bgAutoKey == NvaAnimKey::IDLE) {
             NvaAnimKey pool[8];
             uint8_t nPool = 0;
-            bool quotaWorry = false;
-            for (uint8_t i = 0; i < st.nCards && i < 3; i++) {
-              const QuotaCard& card = st.cards[i];
-              if (strcmp(card.kind, "bal") == 0 && card.val < 15.0) {
-                quotaWorry = true;
-              } else if (strcmp(card.kind, "win") == 0) {
-                for (uint8_t b = 0; b < card.nBars && b < 2; b++) {
-                  if (card.bars[b].pct >= 80) quotaWorry = true;
-                }
-              }
-            }
+            const bool quotaWorry = hasQuotaWorry(st);
             pool[nPool++] = NvaAnimKey::HUM;
             pool[nPool++] = NvaAnimKey::BUBBLE;
             pool[nPool++] = NvaAnimKey::STRETCH;
             pool[nPool++] = quotaWorry ? NvaAnimKey::QUOTA_WORRY : NvaAnimKey::QUOTA;
-            if (st.nTokenDays > 0 && st.tokenDays[st.nTokenDays - 1].tokens >= 100000000ULL) {
+            if (todayTokens >= 1000000ULL ||
+                (lastWakeTokenTotal > 0 && todayTokens > lastWakeTokenTotal)) {
               pool[nPool++] = NvaAnimKey::EAT_TOKEN;
             }
             if (st.sess > 0) {
@@ -1900,20 +2079,23 @@ void uiTaskFn(void*) {
             NvaAnimKey next = pool[bgPoolCursor];
             bgAutoKey = next;
             bgLastNonIdle = next;
+            s_rtcBgPoolCursor = bgPoolCursor;
+            if (next == NvaAnimKey::EAT_TOKEN) lastWakeTokenTotal = todayTokens;
             bgNextSwitchCycle = cyc + 1;  // play 1 full ~10s cycle before switching back
           } else {
             bgAutoKey = NvaAnimKey::IDLE;
-            bgNextSwitchCycle = cyc + 2;  // rest in IDLE for 2 full cycles (~20s)
+            bgNextSwitchCycle = cyc + 1;  // 1 cycle (~10s) breath before next pool action
           }
         }
         nvaSetState(bgAutoKey, false);
       }
     }
     wasInBgPool = inBgPool;
-    // 屏幕不亮就不解码；AOD 进入后先让目标姿势解 0.9s，然后冻结。
-    // 熄屏时原来还在 10fps 空转 zlib，纯白耗电（2026-11-23 实测补上）。
-    const bool animNeeded =
-        !screenOff && (!aodActive || (uint32_t)(nowMs - aodEnterMs) < 900u);
+    // 屏幕不亮就不解码；AOD 期间插电走 5fps、电池>20% 走 2fps 局部呼吸，熄屏/低电冻结省电。
+    const bool aodAnimate =
+        aodActive && nvaAvailable() &&
+        (snap.battery.usbPresent || st.battPct > 20u || (uint32_t)(nowMs - aodEnterMs) < 900u);
+    const bool animNeeded = !screenOff && (!aodActive || aodAnimate);
     if (animNeeded) {
       nvaTick(nowMs);
     }
@@ -2000,7 +2182,9 @@ void uiTaskFn(void*) {
                           : (tokensAnim ? tokensFps
                                         : (interactive ? 60 : (st.approvalActive ? 30 : 10)));
     if (screenOff || dimmedForNap) targetFps = 5;
-    else if (aodActive && aodFade == AodFade::NONE) targetFps = 4;   // 只在分钟/位移/状态变化时真画
+    else if (aodActive && aodFade == AodFade::NONE) {
+      targetFps = aodAnimate ? (snap.battery.usbPresent ? 5 : 2) : 4;
+    }
     int64_t frameUs = 1000000LL / targetFps;
 
     const int64_t drawStartUs = esp_timer_get_time();
@@ -2055,6 +2239,14 @@ void uiTaskFn(void*) {
         pageHomeDrawStage(*canvas, st, cfg, frame, &dx, &dy, &dw, &dh);
         syncPressAfterDraw({ dx, dy, dw, dh });
         hwDisplayPushRect(dx, dy, dw, dh);
+        lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
+        frame++;
+        fpsFrames++;
+      } else if (aodActive && aodFade == AodFade::NONE && aodAnimate) {
+        int16_t dx = 0, dy = 0, dw = 0, dh = 0;
+        int64_t t0 = esp_timer_get_time();
+        pageHomeDrawAodPet(*canvas, st, nowMs, &dx, &dy, &dw, &dh);
+        if (dw > 0 && dh > 0) hwDisplayPushRect(dx, dy, dw, dh);
         lastPushUs = (uint32_t)(esp_timer_get_time() - t0);
         frame++;
         fpsFrames++;
