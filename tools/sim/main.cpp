@@ -3,6 +3,7 @@
 #include "model/state.h"
 #include "ui/canvas.h"
 #include "ui/nav.h"
+#include "ui/theme.h"
 #include <canvas/Arduino_Canvas.h>
 #include <cstdio>
 #include <cstring>
@@ -264,6 +265,37 @@ static void mutateApPortalBurn(NovaState& st, NovaSettings& cfg) {
 }
 
 // 电源状态用例：顶栏三态 + 详情页状态串 + 设置页电源 tab。
+// 潮汐出图时把 cfg.uiTheme 同步成 1，否则设置页「界面风格」会显示深海原版，
+// 与实际渲染的主题对不上（真机上 main 已保证两者一致）。
+static void mutateTideSettings(NovaState&, NovaSettings& cfg) {
+  cfg.uiTheme = 1;
+  cfg.brightPct = 75;
+}
+
+static void mutateTideHomeClean(NovaState& st, NovaSettings&) {
+  st.nowMs = 20000;  // 避开前面局部测试残留的 13.5s 旧气泡
+}
+
+static void mutateTideHomeIdle(NovaState& st, NovaSettings&) {
+  st.run = 0;
+  st.wait = 0;
+  st.activeModel[0] = '\0';
+  st.msg[0] = '\0';
+  st.nowMs = 20000;
+}
+
+static void mutateTideHomeAlert(NovaState& st, NovaSettings& cfg) {
+  mutateDockError(st, cfg);
+  st.nowMs = 20000;
+}
+
+// 潮汐 heart-beat 断线态：WiFi / MQTT 全断，页头切信号绯红。
+static void mutateDetailOffline(NovaState& st, NovaSettings&) {
+  st.wifiConnected = false;
+  st.mqttConnected = false;
+  st.lastMqttRxMs = 0;
+}
+
 static void mutateDetailCharging(NovaState& st, NovaSettings&) {
   st.battPct = 64;
   st.battMv = 4050;
@@ -753,6 +785,144 @@ int main(int argc, char** argv) {
       }
     }
     std::fprintf(manifest, "page_home_stage_local ok\n");
+  }
+
+  // ── 潮汐（TIDE）主题出图：15 张独立 PNG，只写文件、不写 manifest ─────────
+  // 基线（51 项）必须零变更，所以这里刻意不 fprintf 任何哈希行；
+  // check.sh 只比对 manifest，这些图仅供人工 / Carbon 逐张终审。
+  {
+    struct TideCase {
+      const char* name;
+      UiPage page;
+      bool approval;
+      uint8_t settingsTab;
+      uint32_t drawNowMs;
+      void (*mutate)(NovaState&, NovaSettings&);
+      void (*afterDraw)();
+      bool aod;
+      uint8_t openId;
+      uint8_t confirmId;
+      int8_t anim;
+      uint8_t animTicks;
+    };
+    TideCase tides[] = {
+      { "home_work",      UiPage::HOME,     false, 0, 20000, mutateTideHomeClean, nullptr, false, 0, 0, (int8_t)NvaAnimKey::CODING, 3 },
+      { "home_idle",      UiPage::HOME,     false, 0, 20000, mutateTideHomeIdle,  nullptr, false, 0, 0, (int8_t)NvaAnimKey::IDLE,   2 },
+      { "home_alert",     UiPage::HOME,     false, 0, 20000, mutateTideHomeAlert, nullptr, false, 0, 0, (int8_t)NvaAnimKey::ERROR,  3 },
+      { "tokens",         UiPage::TOKENS,   false, 0, 6500, nullptr,              nullptr, false, 0, 0, -1 },
+      { "quota",          UiPage::QUOTA,    false, 0, 6500, nullptr,              nullptr, false, 0, 0, -1 },
+      { "approval",       UiPage::HOME,     true,  0, 6500, nullptr,              nullptr, false, 0, 0, -1 },
+      { "chat_list",      UiPage::CHAT,     false, 0, 6500, mutateChatThread,     nullptr, false, 0, 0, -1 },
+      { "chat_expand",    UiPage::CHAT,     false, 0, 6500, mutateChatSelected,   nullptr, false, 0, 0, -1 },
+      { "chat_rec",       UiPage::CHAT,     false, 0, 6500, mutateChatRec,        nullptr, false, 0, 0, -1 },
+      { "chat_draft",     UiPage::CHAT,     false, 0, 6500, mutateChatDraft,      nullptr, false, 0, 0, -1 },
+      // 展开「亮度」行：一张图里同时给出「界面风格」行与 38px 液位滑块。
+      { "settings",       UiPage::SETTINGS, false, 0, 6500, mutateTideSettings,   nullptr, false, 1, 0, -1 },
+      { "rank",           UiPage::RANK,     false, 0, 6500, nullptr,              nullptr, false, 0, 0, -1 },
+      { "detail_online",  UiPage::DETAIL,   false, 0, 6500, nullptr,              nullptr, false, 0, 0, -1 },
+      { "detail_offline", UiPage::DETAIL,   false, 0, 6500, mutateDetailOffline,  nullptr, false, 0, 0, -1 },
+      { "aod",            UiPage::HOME,     false, 0, 6500, mutateAodTime,        nullptr, true,  0, 0, -1 },
+    };
+
+    const ui::UiTheme savedTheme = ui::activeTheme();
+    ui::setActiveTheme(ui::UiTheme::TIDE);
+
+    for (const auto& tc : tides) {
+      NovaState st;
+      populateSample(st);
+      NovaSettings cfg;
+      st.approvalActive = tc.approval;
+      std::strcpy(st.apId, "ap_7f3");
+      std::strcpy(st.apTool, "Bash");
+      std::strcpy(st.apReason, "rm -rf /tmp/nova-cache && ./tools/pio.sh run -t uploadfs");
+      st.apTtlMs = 8000;
+      st.apArrivedMs = 1000;
+      if (tc.mutate) tc.mutate(st, cfg);
+      cfg.uiTheme = 1;
+      pageSettingsSetTab(tc.settingsTab);
+      if (tc.openId)    pageSettingsDebugOpen(tc.openId);
+      if (tc.confirmId) pageSettingsDebugConfirm(tc.confirmId);
+      // 前面 page_tokens_local 把 s_enterMs 设成 6500，鲸鱼群会以为刚入场而全员 alpha=0。
+      // 这里回到 0，让 6500ms 时游动动画已经结束、全部落位（与基线 tokens 用例同帧）。
+      if (tc.page == UiPage::TOKENS) pageTokensOnEnter(0);
+      nav.setPage(tc.page);
+      if (tc.aod) {
+        // AOD 走原版 pageHomeDrawAod()：潮汐开关不该污染熄屏表盘（纯黑省电防烧屏）。
+        const NvaAnimKey pose = (st.run > 0) ? NvaAnimKey::WORKING
+                              : (st.wait > 0 ? NvaAnimKey::WAITING : NvaAnimKey::SLEEP);
+        nvaSetState(pose, false);
+        for (int i = 0; i < 3; i++) nvaTick(tc.drawNowMs + (uint32_t)i * 120u);
+        pageHomeDrawAod(canvas, st, tc.drawNowMs);
+      } else {
+        if (tc.anim >= 0) {
+          nvaSetState((NvaAnimKey)tc.anim, false, true);
+          for (uint8_t i = 0; i < tc.animTicks; i++) nvaTick(tc.drawNowMs + (uint32_t)i * 120u);
+        }
+        nav.draw(canvas, st, cfg, 24, tc.drawNowMs);
+      }
+      if (tc.afterDraw) tc.afterDraw();
+      std::string path = outDir + "/tide_" + tc.name + ".png";
+      if (!saveRgb565Png(path.c_str(), canvas.getFramebuffer(), UI_W, UI_H)) return 1;
+      std::printf("wrote %s\n", path.c_str());
+    }
+
+    ui::setActiveTheme(savedTheme);
+    nav.setPage(UiPage::HOME);
+    pageSettingsOnEnter();
+    pageRankResetScroll();
+    pageTokensOnEnter(0);
+  }
+
+  // tide_home_stage_local：潮汐主屏舞台局部重绘契约 —— 哨兵法验证脏矩形之外
+  // 一个像素都不许写，且脏矩形不许越过舞台边界 [0..UI_W, 38..332]。
+  // 巨字时间背景一旦与脏矩形相交就必须整块重画，否则会留下被清成底色的黑洞。
+  {
+    ui::setActiveTheme(ui::UiTheme::TIDE);
+    NovaState st;
+    populateSample(st);
+    st.run = 0; st.wait = 0;
+    st.activeModel[0] = '\0'; st.msg[0] = '\0';
+    NovaSettings cfg;
+    nav.setPage(UiPage::HOME);
+    nvaSetState(NvaAnimKey::SLEEP, false, true);
+    for (int i = 0; i < 6; i++) nvaTick(6500u + (uint32_t)i * 120u);
+    nav.draw(canvas, st, cfg, 24, 6500);
+    pageHomeTap(184, 220, st);
+    nvaSetState(NvaAnimKey::SLEEP, false, true);
+    for (int i = 0; i < 4; i++) nvaTick(7300u + (uint32_t)i * 120u);
+
+    constexpr uint16_t kSentinel = 0xA55A;
+    uint16_t* fb = canvas.getFramebuffer();
+    const uint8_t burnSteps[4] = { 0, 7, 13, 21 };
+    for (int step = 0; step < 4; step++) {
+      st.burnInStep = burnSteps[step];
+      st.nowMs = 10100u + (uint32_t)step * 100u;
+      for (size_t i = 0; i < (size_t)UI_W * UI_H; i++) fb[i] = kSentinel;
+      int16_t dx = 0, dy = 0, dw = 0, dh = 0;
+      pageHomeDrawStage(canvas, st, cfg, (uint32_t)(25 + step), &dx, &dy, &dw, &dh);
+      size_t outside = 0, inside = 0;
+      int fx = -1, fy = -1;
+      for (int y = 0; y < UI_H; y++) {
+        for (int x = 0; x < UI_W; x++) {
+          const bool in = (x >= dx && x < dx + dw && y >= dy && y < dy + dh);
+          const size_t idx = (size_t)y * UI_W + x;
+          if (in) { if (fb[idx] != kSentinel) inside++; }
+          else if (fb[idx] != kSentinel) { if (outside == 0) { fx = x; fy = y; } outside++; }
+        }
+      }
+      if (outside != 0 || inside == 0 || dx < 0 || dy < 38 || dx + dw > UI_W || dy + dh > 338) {
+        std::printf("tide_home_stage_local: FAIL step=%d outside=%zu inside=%zu rect=%d,%d %dx%d first=%d,%d\n",
+                    step, outside, inside, dx, dy, dw, dh, fx, fy);
+        ui::setActiveTheme(ui::UiTheme::OCEAN);
+        std::fclose(manifest);
+        return 1;
+      }
+      std::printf("tide_home_stage_local: ok step=%d inside=%zu rect=%d,%d %dx%d\n",
+                  step, inside, dx, dy, dw, dh);
+    }
+    ui::setActiveTheme(ui::UiTheme::OCEAN);
+    nav.setPage(UiPage::HOME);
+    nvaSetState(NvaAnimKey::IDLE, false, true);
   }
 
   // 主屏交互与状态映射自检：覆盖工作姿势分类、睡醒惊醒、4 动作轮换、8 秒连戳傲娇与胶囊烧屏偏移。

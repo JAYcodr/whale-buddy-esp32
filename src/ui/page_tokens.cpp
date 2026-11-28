@@ -1,6 +1,7 @@
 #include "ui/pages.h"
 #include "ui/easing.h"
 #include "ui/theme.h"
+#include "ui/tide_palette.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -187,7 +188,8 @@ float whalePulseScale(uint8_t idx, uint32_t nowMs) {
 }
 
 void drawWhale(NovaCanvas& c, const WhaleGeom& g, uint16_t col,
-               bool isToday, bool isPeak, float selT) {
+               bool isToday, bool isPeak, float selT,
+               uint16_t eyeCol = kColEye, bool noGlow = false) {
   if (g.alpha <= 0.01f || g.w < 4.0f || g.h < 3.0f) return;
   uint16_t* fb = c.getFramebuffer();
   if (!fb) return;
@@ -195,7 +197,8 @@ void drawWhale(NovaCanvas& c, const WhaleGeom& g, uint16_t col,
   const int16_t W = (int16_t)c.width();
   const float x0 = g.cx - g.w * 0.5f;
   const float y0 = g.cy - g.h * 0.5f;
-  const float glowPad = (selT > 0.01f) ? 10.0f : (isToday ? 8.0f : (isPeak ? 4.0f : 1.0f));
+  const float glowPad = noGlow ? 1.5f
+                               : ((selT > 0.01f) ? 10.0f : (isToday ? 8.0f : (isPeak ? 4.0f : 1.0f)));
 
   int16_t px0 = (int16_t)floorf(x0 - glowPad);
   int16_t py0 = (int16_t)floorf(y0 - glowPad);
@@ -236,8 +239,8 @@ void drawWhale(NovaCanvas& c, const WhaleGeom& g, uint16_t col,
   const float fx1 = x0 + g.w * 0.42f, fy1 = y0 + g.h * 0.01f;
   const float fx2 = x0 + g.w * 0.46f, fy2 = y0 + g.h * 0.16f;
 
-  const float baseGlow = isToday ? 0.42f : (isPeak ? 0.16f : 0.0f);
-  const float maxGlowStrength = ease::lerp(baseGlow, 0.55f, selT);
+  const float baseGlow = noGlow ? 0.0f : (isToday ? 0.42f : (isPeak ? 0.16f : 0.0f));
+  const float maxGlowStrength = noGlow ? 0.0f : ease::lerp(baseGlow, 0.55f, selT);
 
   for (int16_t py = py0; py <= py1; py++) {
     uint16_t* row = fb + (int32_t)py * W;
@@ -293,7 +296,7 @@ void drawWhale(NovaCanvas& c, const WhaleGeom& g, uint16_t col,
         if (ed2 < eyeOuter * eyeOuter) {
           float ed = sqrtf(ed2) - eyeR;
           float eyeCov = clampf(0.5f - ed, 0.0f, 1.0f);
-          fg = ui::blend565(fg, kColEye, clampByte(eyeCov * 255.0f));
+          fg = ui::blend565(fg, eyeCol, clampByte(eyeCov * 255.0f));
         }
 
         row[px] = ui::blend565(row[px], fg, clampByte(cov * 255.0f));
@@ -482,6 +485,138 @@ int hitTestWhale(int16_t x, int16_t y, const NovaState& st, uint32_t nowMs) {
   return best;
 }
 
+// ── 潮汐（TIDE）Token 页 ──────────────────────────────────────────────
+// 契约 §4②：深翠海青淹没 + 顶部巨数 + 常规鲸鱼为浅翠白、选中/当日鲸鱼反转为
+// 深黑填充 + 纯白眼睛；底栏一条 1px 深翠分割线 + 两栏大字。
+constexpr int16_t TIDE_HUD_TOP_Y    = 44;
+constexpr int16_t TIDE_HUD_TOP_BOT  = 166;
+constexpr int16_t TIDE_FOOT_LINE_Y  = 356;
+constexpr int16_t TIDE_FOOT_BOT     = 432;
+
+void drawWhaleSchoolTide(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
+                         uint32_t nowMs) {
+  // 舞台必须清成深翠，不能留 OCEAN 的纯黑 memset。
+  c.fillRect(0, kPushTop, UI_W, kPushH, ui::tide::BG_TEAL);
+  if (st.nTokenDays == 0) return;
+
+  const uint64_t maxV = findMaxDayTokens(st);
+  const float bobScale = computeBobScale(st, cfg, nowMs);
+  const uint8_t n = (st.nTokenDays > MAX_TOKEN_DAYS) ? MAX_TOKEN_DAYS : st.nTokenDays;
+  if (s_selIdx >= (int)n) s_selIdx = -1;
+
+  // 常规鲸鱼：清脆纯白剪影；选中或当日：纯墨黑剪影 + 白色眼睛，关闭脏光晕。
+  const uint16_t fishCol = ui::blend565(ui::tide::BG_TEAL, ui::tide::WHITE, 232);
+
+  for (uint8_t i = 0; i < n; i++) {
+    const bool isToday = (i == (uint8_t)(n - 1));
+    const bool isPeak  = (st.tokenDays[i].tokens == maxV);
+    const float selT   = whaleSelT(i, nowMs);
+    const bool inverted = (s_selIdx >= 0) ? (s_selIdx == (int)i) : isToday;
+    const uint16_t col   = inverted ? ui::tide::SURF_DARK : fishCol;
+    const uint16_t eyeCol = inverted ? ui::tide::WHITE : ui::tide::BG_TEAL;
+
+    WhaleGeom g = computeWhaleGeom(st, i, maxV, nowMs, bobScale);
+    const float sc = whalePulseScale(i, nowMs);
+    g.w *= sc;
+    g.h *= sc;
+    drawWhale(c, g, col, isToday, isPeak, selT, eyeCol, true);
+  }
+}
+
+void drawTokensHudTide(NovaCanvas& c, const NovaState& st) {
+  const uint16_t bg  = ui::tide::BG_TEAL;
+  const uint16_t dim = ui::tide::dimOn(bg);
+  c.fillRect(0, 38, UI_W, TIDE_HUD_TOP_BOT - 38, bg);
+
+  if (st.nTokenDays == 0) {
+    ui::drawTextCentered(c, ui::fontCjk16(), UI_W / 2, 92, "暂未收到 Token 统计",
+                         ui::tide::WHITE, bg);
+    ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 122, "等待宿主端推送每日鲸群用量",
+                         dim, bg);
+    return;
+  }
+
+  const uint8_t n = (st.nTokenDays > MAX_TOKEN_DAYS) ? MAX_TOKEN_DAYS : st.nTokenDays;
+  if (s_selIdx >= (int)n) s_selIdx = -1;
+  const uint64_t maxV = findMaxDayTokens(st);
+  const int showIdx = (s_selIdx >= 0) ? s_selIdx : ((int)n - 1);
+  const TokenDay& focusDay = st.tokenDays[showIdx];
+
+  // 顶眉标 + 右上角纯黑反色标签
+  char dateLbl[32];
+  snprintf(dateLbl, sizeof(dateLbl), "%s · %s",
+           focusDay.date[0] ? focusDay.date : "--",
+           (s_selIdx >= 0) ? "选中用量" : "今日消耗");
+  ui::drawText(c, ui::fontCjk14(), UI_SAFE_L, 62, dateLbl, dim, bg);
+
+  char tag[16];
+  bool peakTag = (focusDay.tokens == maxV && maxV > 0);
+  if (peakTag) snprintf(tag, sizeof(tag), "PEAK");
+  else if (s_selIdx >= 0) snprintf(tag, sizeof(tag), "%s", focusDay.date[0] ? focusDay.date : "--");
+  else snprintf(tag, sizeof(tag), "TODAY");
+  ui::TextMetrics tm = ui::measureText(c, ui::fontAscii14(), tag);
+  const int16_t tagW = (int16_t)(tm.w + 18);
+  const int16_t tagX = (int16_t)(UI_SAFE_R - tagW);
+  c.fillRect(tagX, 46, tagW, 24, ui::tide::SURF_DARK);
+  ui::drawTextCenteredInRect(c, ui::fontAscii14(), { tagX, 46, tagW, 24 },
+                             tag, ui::tide::WHITE, ui::tide::SURF_DARK);
+
+  // 92px 巨型纯白数字横扫上半屏（如 3031 / 6.61）+ 右侧单位紧贴基线
+  char heroNum[24];
+  const char* heroUnit = "";
+  formatTokenCompact(focusDay.tokens, heroNum, sizeof(heroNum), &heroUnit);
+  ui::drawText(c, ui::fontNum92(), UI_SAFE_L, 144, heroNum, ui::tide::WHITE, bg);
+  if (heroUnit[0]) {
+    ui::TextMetrics nm = ui::measureText(c, ui::fontNum92(), heroNum);
+    ui::drawText(c, ui::fontCjk16(), (int16_t)(UI_SAFE_L + nm.w + 8), 140,
+                 heroUnit, dim, bg);
+  }
+}
+
+void drawTokensFootTide(NovaCanvas& c, const NovaState& st) {
+  const uint16_t bg  = ui::tide::BG_TEAL;
+  const uint16_t dim = ui::tide::dimOn(bg);
+  c.fillRect(0, TIDE_FOOT_LINE_Y - 2, UI_W, UI_H - (TIDE_FOOT_LINE_Y - 2), bg);
+  c.fillRect(0, TIDE_FOOT_LINE_Y, UI_W, 2, ui::tide::TEAL_LINE);
+
+  const uint8_t n = (st.nTokenDays > MAX_TOKEN_DAYS) ? MAX_TOKEN_DAYS : st.nTokenDays;
+  uint64_t avgV = st.tokenAvgOverride;
+  if (avgV == 0 && n > 0) {
+    uint64_t sum = 0;
+    for (uint8_t i = 0; i < n; i++) sum += st.tokenDays[i].tokens;
+    avgV = sum / n;
+  }
+
+  char avgStr[24];
+  const char* avgUnit = "";
+  formatTokenCompact(avgV, avgStr, sizeof(avgStr), &avgUnit);
+
+  char avgLine[48];
+  snprintf(avgLine, sizeof(avgLine), "日均 %s%s", avgStr, avgUnit);
+  char cacheLine[32];
+  snprintf(cacheLine, sizeof(cacheLine), "缓存 %.1f%%", st.tokenCachePct);
+
+  ui::drawText(c, ui::fontCjk16(), UI_SAFE_L, 396, avgLine, ui::tide::WHITE, bg);
+  ui::drawTextRight(c, ui::fontCjk16(), UI_SAFE_R, 396, cacheLine, ui::tide::WHITE, bg);
+
+  char hint[64];
+  if (s_selIdx >= 0) {
+    snprintf(hint, sizeof(hint), "已选 %s · 再点恢复今日",
+             st.tokenDays[s_selIdx].date[0] ? st.tokenDays[s_selIdx].date : "--");
+  } else {
+    snprintf(hint, sizeof(hint), "%u 条鲸一起游 · 点鲸鱼看精确用量", (unsigned)n);
+  }
+  ui::drawText(c, ui::fontCjk14(), UI_SAFE_L, 424, hint, dim, bg);
+}
+
+void drawTokensTide(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
+  c.fillScreen(ui::tide::BG_TEAL);
+  ui::tide::drawTopStrip(c, st, 0, ui::tide::BG_TEAL);
+  drawTokensHudTide(c, st);
+  drawWhaleSchoolTide(c, st, settingsGet(), nowMs);
+  drawTokensFootTide(c, st);
+}
+
 }  // namespace
 
 void pageTokensOnEnter(uint32_t nowMs) {
@@ -517,14 +652,27 @@ bool pageTokensIsAnimating(const NovaState& st, const NovaSettings& cfg, uint32_
 
 void pageTokensDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
                          uint32_t nowMs) {
+  if (ui::isTideTheme()) {
+    drawWhaleSchoolTide(c, st, cfg, nowMs);
+    return;
+  }
   drawWhaleSchool(c, st, cfg, nowMs);
 }
 
 void pageTokensDrawHud(NovaCanvas& c, const NovaState& st) {
+  if (ui::isTideTheme()) {
+    drawTokensHudTide(c, st);
+    drawTokensFootTide(c, st);
+    return;
+  }
   drawSelectionHud(c, st, true);
 }
 
 void pageTokensDraw(NovaCanvas& c, const NovaState& st, uint32_t nowMs) {
+  if (ui::isTideTheme()) {
+    drawTokensTide(c, st, nowMs);
+    return;
+  }
   c.fillScreen(ui::COL_BG);
   ui::drawTopBar(c, st, 0);
 
@@ -615,4 +763,16 @@ bool pageTokensHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSett
 
 ui::Rect pageTokensStageRect() {
   return { 0, kPushTop, UI_W, kPushH };
+}
+
+void pageTokensOnExit() {
+  s_pulseActive = false;
+  for (int i = 0; i < MAX_TOKEN_DAYS; i++) {
+    s_colActive[i] = false;
+  }
+}
+
+void pageTokensOnThemeChange() {
+  s_selIdx = -1;
+  pageTokensOnExit();
 }

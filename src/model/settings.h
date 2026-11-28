@@ -36,6 +36,7 @@ struct NovaSettings {
   uint16_t     aodIdleSec    = 120;                  // 60 / 120 / 300
   uint8_t      aodNightCap   = 1;                    // 0=一档 1=两档 2=跟随用户
   uint8_t      micGainDb     = 24;                   // 18 / 24 / 30 / 36 / 42
+  uint8_t      uiTheme       = 0;                    // 0=深海原版 1=深蓝潮汐（NVS key "theme"）
   char         brokerHost[40] = "192.168.31.15";
   uint16_t     brokerPort    = 1883;
 };
@@ -73,6 +74,7 @@ constexpr uint16_t kChoiceChgSpd[]   = { 0, 1, 2 };
 constexpr uint16_t kChoiceAodMode[]  = { 0, 1, 2 };
 constexpr uint16_t kChoiceAodIdle[]  = { 60, 120, 300 };
 constexpr uint16_t kChoiceMicGain[]  = { 18, 24, 30, 36, 42 };
+constexpr uint16_t kChoiceTheme[]    = { 0, 1 };
 
 constexpr SettingDef kSettings[] = {
   { "home",      SettingKind::CHOICE, 0,   0, 0,   kChoiceHome,    3, offsetof(NovaSettings, homePage),      false },
@@ -89,6 +91,7 @@ constexpr SettingDef kSettings[] = {
   { "aod_idle",  SettingKind::U16,    120, 0, 0,   kChoiceAodIdle, 3, offsetof(NovaSettings, aodIdleSec),     false },
   { "aod_night", SettingKind::U8,     1,   0, 2,   nullptr,        0, offsetof(NovaSettings, aodNightCap),   false },
   { "mic_gain",  SettingKind::CHOICE, 24,  0, 0,   kChoiceMicGain, 5, offsetof(NovaSettings, micGainDb),     false },
+  { "theme",     SettingKind::CHOICE, 0,   0, 0,   kChoiceTheme,   2, offsetof(NovaSettings, uiTheme),       false },
 };
 
 uint16_t settingsFieldGet(const NovaSettings& cfg, const SettingDef& d);

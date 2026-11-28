@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>深蓝潮汐 · 设置页 &amp; 命令看板页小样（368×448）</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d47d9'/%3E%3Cpath d='M7 19c0-5 4-9 10-9 4 0 7 2 8 5 1 2 0 5-3 6-4 1-11 1-15-2zm16-2l5-3v7l-5-3z' fill='%23ffffff'/%3E%3C/svg%3E">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --stage-bg: #0e1014;
+    --panel-bg: #15181f;
+    --panel-bd: #242936;
+    --ink: #eef2f9;
+    --ink-dim: #9aa4b8;
+    --ink-muted: #687288;
+    --cobalt: #0d47d9;
+    --cobalt-deep: #082e94;
+    --cobalt-dark: #07194a;
+    --crimson: #cc1f34;
+    --night: #081329;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Noto Sans SC", sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --din: "DIN Alternate", "Bahnschrift", "Helvetica Neue", var(--sans);
+  }
+  html, body {
+    background: var(--stage-bg); color: var(--ink);
+    font-family: var(--sans); -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    background: rgba(14,16,20,0.92); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--panel-bd);
+    padding: 14px 24px;
+  }
+  .topbar-inner {
+    max-width: 1420px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap;
+  }
+  .topbar h1 { font-size: 18px; font-weight: 700; }
+  .topbar span { font-size: 12.5px; color: var(--ink-dim); margin-left: 10px; }
+  .tip {
+    font-size: 12px; color: var(--ink-dim);
+    border: 1px solid var(--panel-bd); border-radius: 8px; padding: 5px 11px;
+  }
+
+  .wrap { max-width: 1420px; margin: 0 auto; padding: 26px 24px 72px; }
+  .section-hd {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap;
+    margin-bottom: 16px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--panel-bd);
+  }
+  .section-hd h2 { font-size: 20px; font-weight: 700; }
+  .section-hd p { font-size: 13.5px; color: var(--ink-dim); }
+
+  /* 屏幕展台行 */
+  .row-2 {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px; margin-bottom: 42px;
+  }
+  .row-3 {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px; margin-bottom: 42px;
+  }
+  @media (max-width: 1220px) { .row-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 860px) { .row-2, .row-3 { grid-template-columns: 1fr; } }
+
+  .demo-card {
+    background: var(--panel-bg); border: 1px solid var(--panel-bd);
+    border-radius: 18px; padding: 20px;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+  }
+  .demo-meta {
+    width: 100%; display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  }
+  .demo-meta strong { font-size: 15px; font-weight: 700; }
+  .demo-meta span { font-family: var(--mono); font-size: 11.5px; color: var(--ink-muted); }
+  .demo-note {
+    width: 100%; font-size: 13px; color: var(--ink-dim); line-height: 1.55;
+  }
+  .demo-note b { color: var(--ink); font-weight: 600; }
+
+  /* 硬件机身框 */
+  .bezel {
+    width: 356px; padding: 12px; border-radius: 28px;
+    background: linear-gradient(155deg, #272b35 0%, #111319 52%, #1d212a 100%);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 22px 44px -18px rgba(0,0,0,0.85);
+    position: relative;
+  }
+  .bezel::after {
+    content: ""; position: absolute; right: -4px; top: 88px;
+    width: 4px; height: 42px; border-radius: 0 3px 3px 0; background: #333947;
+  }
+  .screen-vp {
+    width: 332px; height: 404px; border-radius: 18px;
+    overflow: hidden; position: relative; background: #000;
+  }
+  .screen {
+    width: 368px; height: 448px;
+    transform-origin: 0 0; transform: scale(0.90217);
+    position: relative; overflow: hidden; user-select: none;
+    display: flex; flex-direction: column;
+    background: var(--cobalt); color: #ffffff;
+    font-family: var(--sans);
+  }
+
+  .sub-tabs {
+    display: flex; gap: 6px; flex-wrap: wrap; justify-content: center;
+  }
+  .sub-tab {
+    border: 1px solid var(--panel-bd); background: #1b202b; color: var(--ink-dim);
+    font-family: var(--sans); font-size: 12px; font-weight: 600;
+    padding: 5px 11px; border-radius: 8px; cursor: pointer;
+  }
+  .sub-tab.active { background: #ffffff; color: #0e1014; border-color: #ffffff; }
+
+  /* ═══════════════════════════════════════════════════════
+     深蓝潮汐 · 设置页内部样式 (368×448)
+  ═══════════════════════════════════════════════════════ */
+  .ts-hdr {
+    height: 58px; padding: 0 18px;
+    border-bottom: 2px solid #ffffff;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .ts-back {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 20px; font-weight: 800; letter-spacing: -0.01em;
+  }
+  .ts-hdr-tag {
+    font-family: var(--mono); font-size: 11px; font-weight: 800;
+    background: #ffffff; color: var(--cobalt); padding: 2px 7px;
+  }
+  .ts-scroll {
+    flex: 1; overflow-y: auto; scrollbar-width: none;
+  }
+  .ts-scroll::-webkit-scrollbar { display: none; }
+
+  .ts-grp {
+    padding: 12px 18px 6px;
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 11.5px; font-weight: 800;
+    letter-spacing: 0.08em; color: rgba(255,255,255,0.72);
+  }
+  .ts-grp-idx {
+    background: rgba(0,0,0,0.28); color: #ffffff; padding: 1px 6px;
+  }
+
+  .ts-row {
+    border-top: 1px solid rgba(255,255,255,0.24);
+    padding: 13px 18px;
+    transition: background .15s;
+  }
+  .ts-row:last-child { border-bottom: 1px solid rgba(255,255,255,0.24); }
+  .ts-row.open { background: rgba(6, 22, 68, 0.42); }
+  .ts-row.danger-armed { background: var(--crimson); }
+
+  .ts-row-hd {
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: pointer; gap: 10px;
+  }
+  .ts-lbl { font-size: 16.5px; font-weight: 700; }
+  .ts-val {
+    font-family: var(--mono); font-size: 14px; font-weight: 800;
+    color: rgba(255,255,255,0.92);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .ts-val.pill {
+    background: #ffffff; color: var(--cobalt); padding: 2px 9px;
+  }
+
+  /* 潮汐大色块二选一 / 多选 */
+  .ts-choices {
+    margin-top: 12px; display: grid; gap: 8px;
+  }
+  .ts-choices.c2 { grid-template-columns: 1fr 1fr; }
+  .ts-choices.c3 { grid-template-columns: repeat(3, 1fr); }
+  .ts-opt {
+    height: 44px; border: 1.5px solid rgba(255,255,255,0.5);
+    background: rgba(255,255,255,0.08); color: #ffffff;
+    font-family: var(--sans); font-size: 14.5px; font-weight: 700;
+    cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .ts-opt.sel {
+    background: #ffffff; color: var(--cobalt); border-color: #ffffff; font-weight: 800;
+  }
+
+  /* 潮汐大色块液位滑块 */
+  .ts-slider-box {
+    margin-top: 12px; height: 38px;
+    background: rgba(255,255,255,0.18);
+    position: relative; cursor: ew-resize;
+    border: 1.5px solid rgba(255,255,255,0.45);
+  }
+  .ts-slider-fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: #ffffff; pointer-events: none;
+  }
+  .ts-slider-ticks {
+    position: absolute; inset: 0; display: flex; justify-content: space-between;
+    padding: 0 10px; align-items: center; pointer-events: none;
+    font-family: var(--mono); font-size: 11px; font-weight: 800;
+  }
+  .ts-slider-range {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: 0; cursor: ew-resize; margin: 0;
+  }
+
+  /* 硬切分双格开关 */
+  .ts-switch {
+    display: inline-grid; grid-template-columns: 38px 38px;
+    border: 1.5px solid #ffffff; height: 28px; cursor: pointer;
+    font-size: 12px; font-weight: 800;
+  }
+  .ts-switch span {
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(255,255,255,0.55);
+  }
+  .ts-switch[data-on="true"] span:first-child { background: #ffffff; color: var(--cobalt); }
+  .ts-switch[data-on="false"] span:last-child { background: rgba(0,0,0,0.35); color: #ffffff; }
+
+  /* ═══════════════════════════════════════════════════════
+     深蓝潮汐 · 命令 / 语音看板页 (368×448)
+  ═══════════════════════════════════════════════════════ */
+  .cb-top {
+    height: 36px; padding: 8px 18px 0;
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: var(--mono); font-size: 12.5px; font-weight: 700;
+    color: rgba(255,255,255,0.84);
+  }
+  .cb-hdr {
+    padding: 4px 18px 10px;
+    border-bottom: 1.5px solid rgba(255,255,255,0.35);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .cb-title { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+  .cb-sub { font-size: 12px; color: rgba(255,255,255,0.75); margin-top: 2px; }
+  .cb-alert-badge {
+    background: var(--crimson); color: #ffffff;
+    font-size: 12.5px; font-weight: 800; padding: 5px 10px;
+    border: 1.5px solid #ffffff; cursor: pointer;
+  }
+  .cb-ok-badge {
+    background: #ffffff; color: var(--cobalt);
+    font-size: 12.5px; font-weight: 800; padding: 5px 10px;
+  }
+
+  .cb-body {
+    flex: 1; padding: 12px 16px 8px;
+    display: flex; flex-direction: column; gap: 8px;
+    overflow: hidden;
+  }
+
+  /* 几何命令方块 */
+  .cmd-blk {
+    padding: 11px 13px;
+    border-left: 5px solid #ffffff;
+    background: rgba(6, 22, 68, 0.52);
+    cursor: pointer;
+    display: flex; flex-direction: column; gap: 3px;
+    transition: transform .12s;
+  }
+  .cmd-blk.wait {
+    background: var(--crimson);
+    border-left-color: #ffffff;
+  }
+  .cmd-blk.idle {
+    background: rgba(255,255,255,0.10);
+    border-left-color: rgba(255,255,255,0.42);
+  }
+  .cmd-blk.mini {
+    padding: 8px 12px; flex-direction: row; align-items: center; justify-content: space-between;
+  }
+  .cmd-blk.expanded {
+    background: #ffffff; color: #081c52;
+    border-left: 6px solid #06153d;
+    padding: 12px 13px; gap: 7px;
+  }
+  .cmd-blk-top {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  }
+  .cmd-blk-name { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
+  .cmd-blk-time { font-family: var(--mono); font-size: 12.5px; font-weight: 800; opacity: 0.9; }
+  .cmd-blk-line {
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: 0.92;
+  }
+  .cmd-blk-meta { font-size: 12px; opacity: 0.72; }
+
+  .cmd-steps {
+    background: #081845; color: #eef4ff;
+    padding: 9px 10px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.55;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .cmd-steps div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd-steps span { color: #7db4ff; margin-right: 6px; }
+
+  /* 底部按住说话通栏大键 */
+  .cb-dock {
+    padding: 6px 16px 16px; flex-shrink: 0;
+  }
+  .cb-ptt {
+    width: 100%; height: 50px; border: 0;
+    background: #ffffff; color: var(--cobalt);
+    font-family: var(--sans); font-size: 16.5px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    cursor: pointer;
+  }
+  .cb-ptt:active { background: #dce8ff; }
+
+  /* 录音态（夜汐深蓝黑反差） */
+  .cb-rec {
+    flex: 1; background: var(--night);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 20px; text-align: center;
+    transition: background .2s;
+  }
+  .cb-rec.cancel { background: var(--crimson); }
+  .rec-bars {
+    display: flex; align-items: center; gap: 6px; height: 64px; margin-bottom: 18px;
+  }
+  .rec-bars i {
+    width: 6px; background: #ffffff; display: block;
+    animation: recPulse 0.8s ease-in-out infinite alternate;
+  }
+  @keyframes recPulse {
+    from { transform: scaleY(0.35); opacity: 0.65; }
+    to   { transform: scaleY(1); opacity: 1; }
+  }
+
+  /* 识别确认 & 回执卡 */
+  .cb-white-card {
+    background: #ffffff; color: #081c52;
+    padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    flex: 1;
+  }
+  .cb-btn-row {
+    margin-top: auto; display: grid; gap: 8px;
+  }
+  .cb-btn-row.r2 { grid-template-columns: 1fr 1.25fr; }
+  .cb-btn-row.r3 { grid-template-columns: 0.9fr 1fr 1fr; }
+  .cb-btn {
+    height: 44px; font-family: var(--sans); font-size: 14.5px; font-weight: 800;
+    cursor: pointer; border: 2px solid #081c52;
+  }
+  .cb-btn.ghost { background: transparent; color: #081c52; }
+  .cb-btn.solid { background: var(--cobalt); color: #ffffff; border-color: var(--cobalt); }
+  .cb-btn.red { background: var(--crimson); color: #ffffff; border-color: var(--crimson); }
+
+  /* ── 底部架构说明条 ───────────────────────────────────── */
+  .arch-grid {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;
+  }
+  @media (max-width: 900px) { .arch-grid { grid-template-columns: 1fr; } }
+  .arch-card {
+    background: var(--panel-bg); border: 1px solid var(--panel-bd);
+    border-radius: 14px; padding: 16px 18px;
+  }
+  .arch-card h3 { font-size: 14.5px; font-weight: 700; margin-bottom: 6px; }
+  .arch-card p { font-size: 13px; color: var(--ink-dim); line-height: 1.6; }
+  .arch-card code {
+    font-family: var(--mono); font-size: 12px; color: #b7d2ff;
+    background: #1d2331; padding: 1px 5px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div>
+      <h1>深蓝潮汐（Cobalt Tide）· 设置页 &amp; 命令看板页小样</h1>
+      <span>Waveshare 1.8" AMOLED · 368×448 真机比例 · 全部可点可拖</span>
+    </div>
+    <div class="tip">设置页可直接拖滑块/点主题/点恢复默认试红屏；看板页可点会话块与下方四态切换</div>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- ════════════ 一、设置页 ════════════ -->
+  <div class="section-hd">
+    <h2>1. 设置页 · 去卡片通栏 + 大色块液位滑块 + 危险红屏确认</h2>
+    <p>完全沿用深蓝潮汐语言：零大圆角卡片、纯白反色选中、滑块直接做成可盲操的 38px 液位大块。</p>
+  </div>
+
+  <section class="row-2">
+    <!-- 设置页 A：外观 & 亮度滑块（可实时互动） -->
+    <article class="demo-card">
+      <div class="demo-meta">
+        <strong>设置页 · 屏幕与主题切换（可交互）</strong>
+        <span>可点「界面风格」与拖动「亮度」</span>
+      </div>
+      <div class="bezel">
+        <div class="screen-vp">
+          <div class="screen" id="scr-set-a"></div>
+        </div>
+      </div>
+      <div class="demo-note">
+        <b>关键变化：</b>把「界面风格」放在第一组首位，点开是两块高对比实体色块（<b>深海黑 / 深蓝潮汐</b>）；亮度/音量滑块改成潮汐标志性的 <b>38px 纯白实心比例条</b>，1.8 寸屏手指一抹即准，彻底告别细线小圆点。
+      </div>
+    </article>
+
+    <!-- 设置页 B：声音开关 & 危险操作两步红屏 -->
+    <article class="demo-card">
+      <div class="demo-meta">
+        <strong>设置页 · 声音开关与危险操作（可交互）</strong>
+        <span>点「恢复默认」体验整行红屏确认</span>
+      </div>
+      <div class="bezel">
+        <div class="screen-vp">
+          <div class="screen" id="scr-set-b"></div>
+        </div>
+      </div>
+      <div class="demo-note">
+        <b>关键变化：</b>开关改为锐利<b>双格反色拨片（开 / 关）</b>；点「重新配网」或「恢复默认」第一下，该行直接切为<b>信号绯红整行淹没</b>并提示 3 秒内再点确认——跟审批拦截页共用同一套视觉信号。
+      </div>
+    </article>
+  </section>
+
+  <!-- ════════════ 二、命令 / 语音看板页 ════════════ -->
+  <div class="section-hd">
+    <h2>2. 命令看板页（page_chat）· 几何命令方块 + 全流程 4 态</h2>
+    <p>砍掉黑底细边圆角框：在跑会话带粗白左标、待审批会话直接红块跳出、选中会话整块反白展开终端步骤。</p>
+  </div>
+
+  <section class="row-3">
+    <!-- 看板 1：巡检 & 展开命令流（可点会话方块切换） -->
+    <article class="demo-card">
+      <div class="demo-meta">
+        <strong>态 A/B · 巡检列表 ⇄ 展开命令流</strong>
+        <span>点击方块展开/收起</span>
+      </div>
+      <div class="bezel">
+        <div class="screen-vp">
+          <div class="screen" id="scr-board-1"></div>
+        </div>
+      </div>
+      <div class="sub-tabs" id="tabs-b1">
+        <button class="sub-tab active" data-b1="list">全局巡检</button>
+        <button class="sub-tab" data-b1="expand">展开会话</button>
+      </div>
+      <div class="demo-note">
+        <b>一眼分轻重：</b>待审批的 <code>ASR 会话桥接</code> 整块染红，隔着工位都能看到；点中 <code>电量估算四改</code> 后整块反白并嵌入深靛蓝终端步骤区。
+      </div>
+    </article>
+
+    <!-- 看板 2：按住说话录音态 -->
+    <article class="demo-card">
+      <div class="demo-meta">
+        <strong>态 C · 按住说话（声波反差态）</strong>
+        <span>切正常 / 上滑取消红屏</span>
+      </div>
+      <div class="bezel">
+        <div class="screen-vp">
+          <div class="screen" id="scr-board-2"></div>
+        </div>
+      </div>
+      <div class="sub-tabs" id="tabs-b2">
+        <button class="sub-tab active" data-b2="rec">正在收音</button>
+        <button class="sub-tab" data-b2="cancel">上滑取消</button>
+      </div>
+      <div class="demo-note">
+        <b>仪式感反差：</b>按住纯白大键的瞬间，整屏从钴海蓝沉入<b>深夜汐黑</b>，15 根粗白声波柱 + 78px 巨字读秒；手指上滑超过阈值整屏立刻翻红，绝不误发。
+      </div>
+    </article>
+
+    <!-- 看板 3：识别确认 & 单卡回执 -->
+    <article class="demo-card">
+      <div class="demo-meta">
+        <strong>态 D · 识别确认 ⇄ 电报回执</strong>
+        <span>切换发送前 / 收到回复</span>
+      </div>
+      <div class="bezel">
+        <div class="screen-vp">
+          <div class="screen" id="scr-board-3"></div>
+        </div>
+      </div>
+      <div class="sub-tabs" id="tabs-b3">
+        <button class="sub-tab active" data-b3="draft">识别确认</button>
+        <button class="sub-tab" data-b3="reply">单卡回执</button>
+      </div>
+      <div class="demo-note">
+        <b>高对比白纸确认卡：</b>松手后识别文字直接印在纯白大卡上（不倒计时自动发）；撞上在跑会话直接给出<b>排队</b>（钴蓝）与<b>打断</b>（绯红）双色分流。
+      </div>
+    </article>
+  </section>
+
+  <!-- ════════════ 三、可切换主题工程拆解 ════════════ -->
+  <div class="section-hd">
+    <h2>3. 「深海原版 ⇄ 深蓝潮汐」做成可切换主题：到底难不难？</h2>
+    <p>读完 <code>nva.cpp</code> / <code>theme.cpp</code> / <code>settings.h</code> 后的真实结论：<b>不难，无架构阻塞，不占双份 Flash</b>。</p>
+  </div>
+
+  <section class="arch-grid">
+    <div class="arch-card">
+      <h3>① NVA 动画：已原生支持透明索引 0</h3>
+      <p><code>nva.cpp:541</code> 写像素前本来就判断 <code>if (idx)</code>，直接能压在钴海蓝和 <code>fontNum92()</code> 巨字时间前面！唯一细节是现有 <code>.nva</code> 边缘预乘了黑底——改 <code>convert_pet.py</code> 留 8 个半透边缘色槽做实时混合，<b>一套 10.4MB 动画同时通吃深黑与潮汐</b>。</p>
+    </div>
+    <div class="arch-card">
+      <h3>② 字体与 NVS：现成直接复用</h3>
+      <p><code>theme.cpp</code> 的 <code>drawText()</code> 已是读帧缓冲实时 4-bpp alpha 混合，任意底色都无毛边；92px 大数字 <code>fontNum92()</code> 也已在固件里。<code>settings.h</code> 加一项 <code>theme</code> 进 <code>kSettings[]</code> 只要 5 行，支持免重启热切。</p>
+    </div>
+    <div class="arch-card">
+      <h3>③ 真正的工作量在逐页排版分支</h3>
+      <p>想做到不“换皮”，<code>page_home / tokens / quota / approval / chat / settings / rank</code> 7 个页面需要按主题走各自的布局（约 1–2 天代码 + <code>tools/sim</code> 像素基线验证），功耗方面建议默认仅亮屏用潮汐、进 AOD 自动切回纯黑表盘省电防烧屏。</p>
+    </div>
+  </section>
+</main>
+
+<script>
+// ── 设置页状态 ──────────────────────────────────────
+const setState = {
+  theme: "tide",     // "dark" | "tide"
+  bright: 80,
+  sleepSec: "30秒",
+  tts: true,
+  quiet: true,
+  choreo: true,
+  dangerArmed: false
+};
+
+function renderSetA() {
+  const el = document.getElementById("scr-set-a");
+  const isDark = setState.theme === "dark";
+  el.style.background = isDark ? "#000000" : "#0d47d9";
+  el.innerHTML = `
+    <div class="ts-hdr" style="border-color:${isDark ? '#1e304e' : '#ffffff'}">
+      <div class="ts-back">‹ 设置</div>
+      <div class="ts-hdr-tag" style="${isDark ? 'background:#48c6ff;color:#000' : ''}">${isDark ? 'THEME · 深海黑' : 'THEME · 潮汐'}</div>
+    </div>
+    <div class="ts-scroll">
+      <div class="ts-grp"><span class="ts-grp-idx">01</span><span>屏幕与外观</span></div>
+
+      <div class="ts-row open">
+        <div class="ts-row-hd">
+          <span class="ts-lbl">界面风格</span>
+          <span class="ts-val pill" style="${isDark ? 'background:#48c6ff;color:#000' : ''}">${isDark ? '深海原版' : '深蓝潮汐'}</span>
+        </div>
+        <div class="ts-choices c2">
+          <button class="ts-opt ${isDark ? 'sel' : ''}" data-set-theme="dark" type="button" style="${isDark ? 'color:#000' : ''}">■ 深海原版</button>
+          <button class="ts-opt ${!isDark ? 'sel' : ''}" data-set-theme="tide" type="button">■ 深蓝潮汐</button>
+        </div>
+      </div>
+
+      <div class="ts-row open">
+        <div class="ts-row-hd">
+          <span class="ts-lbl">屏幕亮度</span>
+          <span class="ts-val" style="font-size:20px">${setState.bright}%</span>
+        </div>
+        <div class="ts-slider-box">
+          <div class="ts-slider-fill" style="width:${setState.bright}%"></div>
+          <div class="ts-slider-ticks">
+            <span style="color:${setState.bright > 18 ? (isDark ? '#000' : '#0d47d9') : '#fff'}">20%</span>
+            <span style="color:${setState.bright > 85 ? (isDark ? '#000' : '#0d47d9') : '#fff'}">100%</span>
+          </div>
+          <input class="ts-slider-range" type="range" min="20" max="100" step="5" value="${setState.bright}" data-bright-slider>
+        </div>
+      </div>
+
+      <div class="ts-row">
+        <div class="ts-row-hd">
+          <span class="ts-lbl">电池息屏</span>
+          <span class="ts-val">${setState.sleepSec} ›</span>
+        </div>
+        <div class="ts-choices c3">
+          ${["15秒", "30秒", "1分钟"].map(v =>
+            `<button class="ts-opt ${setState.sleepSec === v ? 'sel' : ''}" data-set-sleep="${v}" type="button" style="${isDark && setState.sleepSec === v ? 'color:#000' : ''}">${v}</button>`
+          ).join("")}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderSetB() {
+  const el = document.getElementById("scr-set-b");
+  el.innerHTML = `
+    <div class="ts-hdr">
+      <div class="ts-back">‹ 设置</div>
+      <div class="ts-hdr-tag">声音 · 设备</div>
+    </div>
+    <div class="ts-scroll">
+      <div class="ts-grp"><span class="ts-grp-idx">02</span><span>声音与语音</span></div>
+
+      <div class="ts-row">
+        <div class="ts-row-hd" data-toggle="tts">
+          <span class="ts-lbl">语音播报 (TTS)</span>
+          <div class="ts-switch" data-on="${setState.tts}"><span>开</span><span>关</span></div>
+        </div>
+      </div>
+
+      <div class="ts-row">
+        <div class="ts-row-hd" data-toggle="quiet">
+          <span class="ts-lbl">夜间静音 23–08</span>
+          <div class="ts-switch" data-on="${setState.quiet}"><span>开</span><span>关</span></div>
+        </div>
+      </div>
+
+      <div class="ts-row">
+        <div class="ts-row-hd" data-toggle="choreo">
+          <span class="ts-lbl">AI 摸鱼剧本</span>
+          <div class="ts-switch" data-on="${setState.choreo}"><span>开</span><span>关</span></div>
+        </div>
+      </div>
+
+      <div class="ts-grp"><span class="ts-grp-idx">03</span><span>设备维护 · 两步防误触</span></div>
+
+      <div class="ts-row">
+        <div class="ts-row-hd">
+          <span class="ts-lbl">重新配网 (AP)</span>
+          <span class="ts-val" style="border:1.5px solid rgba(255,255,255,0.65);padding:3px 10px">启动</span>
+        </div>
+      </div>
+
+      <div class="ts-row ${setState.dangerArmed ? 'danger-armed' : ''}" data-danger-reset style="cursor:pointer">
+        <div class="ts-row-hd">
+          <span class="ts-lbl">${setState.dangerArmed ? '!! 再点一次确认恢复' : '恢复出厂默认'}</span>
+          <span class="ts-val pill" style="${setState.dangerArmed ? 'color:#cc1f34' : 'background:transparent;color:#fff;border:1.5px solid #fff'}">
+            ${setState.dangerArmed ? '3s' : '重置'}
+          </span>
+        </div>
+        ${setState.dangerArmed ? '<div style="margin-top:6px;font-size:12.5px;opacity:.92">将重置全部 14 项偏好（保留 WiFi 与 Broker）</div>' : ''}
+      </div>
+    </div>`;
+}
+
+// ── 命令看板页状态 ──────────────────────────────────
+const boardState = {
+  b1: "list",     // "list" | "expand"
+  b2: "rec",      // "rec" | "cancel"
+  b3: "draft"     // "draft" | "reply"
+};
+
+function renderBoard1() {
+  const el = document.getElementById("scr-board-1");
+  const isExp = boardState.b1 === "expand";
+  el.innerHTML = `
+    <div class="cb-top"><span>00:32</span><span>92% ▮</span></div>
+    <div class="cb-hdr">
+      <div>
+        <div class="cb-title">命令看板</div>
+        <div class="cb-sub">${isExp ? '发往 · 电量估算四改' : '全局巡检 · 3 个会话'}</div>
+      </div>
+      <div class="cb-alert-badge">1 项待批</div>
+    </div>
+    <div class="cb-body">
+      ${isExp ? `
+        <div class="cmd-blk expanded" data-toggle-b1>
+          <div class="cmd-blk-top">
+            <span class="cmd-blk-name">● 电量估算四改</span>
+            <span class="cmd-blk-time">跑着 4:37 ✓</span>
+          </div>
+          <div class="cmd-blk-meta" style="color:#36508a;opacity:1">nova-buddy · 2 个断言失败</div>
+          <div class="cmd-steps">
+            <div><span>4:02</span>bash cargo test --release</div>
+            <div><span>3:40</span>edit battery_model.h</div>
+            <div><span>2:10</span>read power_probe.mjs</div>
+          </div>
+        </div>
+        <div class="cmd-blk wait mini" data-toggle-b1>
+          <span style="font-size:14px;font-weight:800">● ASR 会话桥接</span>
+          <span style="font-family:var(--mono);font-size:12px;font-weight:800">等审批 ›</span>
+        </div>
+        <div class="cmd-blk idle mini" data-toggle-b1>
+          <span style="font-size:14px;font-weight:700">DS-Bot 调研</span>
+          <span style="font-family:var(--mono);font-size:12px;opacity:.75">停着</span>
+        </div>
+      ` : `
+        <div class="cmd-blk" data-toggle-b1>
+          <div class="cmd-blk-top">
+            <span class="cmd-blk-name">● 电量估算四改</span>
+            <span class="cmd-blk-time">跑着 4:36</span>
+          </div>
+          <div class="cmd-blk-line">cargo test --release</div>
+          <div class="cmd-blk-meta">nova-buddy · 2 个断言失败</div>
+        </div>
+        <div class="cmd-blk wait" data-toggle-b1>
+          <div class="cmd-blk-top">
+            <span class="cmd-blk-name">! ASR 会话桥接</span>
+            <span class="cmd-blk-time">等审批</span>
+          </div>
+          <div class="cmd-blk-line">bash · rm -rf ./recordings</div>
+          <div class="cmd-blk-meta" style="opacity:.92">会删 6 个录音 · 点击处理</div>
+        </div>
+        <div class="cmd-blk idle" data-toggle-b1>
+          <div class="cmd-blk-top">
+            <span class="cmd-blk-name">DS-Bot 调研</span>
+            <span class="cmd-blk-time">停着</span>
+          </div>
+          <div class="cmd-blk-meta">ds-bot · 8 分钟前停下</div>
+        </div>
+      `}
+    </div>
+    <div class="cb-dock">
+      <button class="cb-ptt" type="button" data-toggle-b1>● 按住说话</button>
+    </div>`;
+}
+
+function renderBoard2() {
+  const el = document.getElementById("scr-board-2");
+  const isCancel = boardState.b2 === "cancel";
+  const heights = [18, 28, 44, 34, 56, 62, 48, 64, 52, 58, 38, 46, 30, 22, 16];
+  el.innerHTML = `
+    <div class="cb-rec ${isCancel ? 'cancel' : ''}">
+      <div style="font-family:var(--mono);font-size:12px;letter-spacing:.14em;opacity:.75;margin-bottom:26px">
+        ${isCancel ? 'RELEASE TO CANCEL' : 'RECORDING // 电量估算四改'}
+      </div>
+      <div class="rec-bars">
+        ${heights.map((h, i) => `<i style="height:${h}px;animation-delay:${(i * 0.06).toFixed(2)}s"></i>`).join("")}
+      </div>
+      <div style="font-family:var(--din);font-size:80px;font-weight:800;line-height:.92;letter-spacing:-0.04em">1.8</div>
+      <div style="margin-top:20px;font-size:17px;font-weight:800">
+        ${isCancel ? '松开手指即作废' : '松开发送 · 上滑取消'}
+      </div>
+      <div style="margin-top:8px;font-family:var(--mono);font-size:12px;opacity:.65">最长 10 秒 · 绝不自动发送</div>
+    </div>`;
+}
+
+function renderBoard3() {
+  const el = document.getElementById("scr-board-3");
+  const isDraft = boardState.b3 === "draft";
+  el.innerHTML = `
+    <div class="cb-top"><span>00:33</span><span>92% ▮</span></div>
+    <div class="cb-hdr">
+      <div>
+        <div class="cb-title">${isDraft ? '确认一下' : '已送达'}</div>
+        <div class="cb-sub">${isDraft ? '说完了 · 目标会话正在跑' : '发往 · 电量估算四改'}</div>
+      </div>
+      <div class="cb-ok-badge">${isDraft ? '换会话 ›' : '4秒前'}</div>
+    </div>
+    <div class="cb-body">
+      ${isDraft ? `
+        <div class="cb-white-card">
+          <div style="font-family:var(--mono);font-size:11.5px;font-weight:800;color:#0d47d9;letter-spacing:.08em">ASR 识别结果</div>
+          <div style="font-size:21px;font-weight:800;line-height:1.35;color:#071740">
+            「接着弄电量那个，把测试跑完」
+          </div>
+          <div style="padding:9px 10px;background:#eaf0ff;font-size:13px;font-weight:700;color:#0d47d9;display:flex;justify-content:space-between">
+            <span>发往：电量估算四改</span><span>在跑中</span>
+          </div>
+          <div class="cb-btn-row r3">
+            <button class="cb-btn ghost" type="button">重说</button>
+            <button class="cb-btn solid" type="button">排队发</button>
+            <button class="cb-btn red" type="button">打断发</button>
+          </div>
+        </div>
+      ` : `
+        <div class="cmd-blk mini" style="background:rgba(6,22,68,0.58)">
+          <span style="font-size:14.5px;font-weight:800">● 电量估算四改</span>
+          <span style="font-family:var(--mono);font-size:12px">已执行 ✓</span>
+        </div>
+        <div class="cb-white-card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="background:#0d47d9;color:#fff;font-size:11.5px;font-weight:800;padding:2px 8px">电报回执 · 冰糖已读</span>
+            <span style="font-family:var(--mono);font-size:12px;color:#4f6494">点卡重播 🔊</span>
+          </div>
+          <div style="font-size:19px;font-weight:800;line-height:1.42;color:#071740;margin-top:4px">
+            单测还剩 2 个失败，都在 fixtures 的时区断言上。
+          </div>
+          <div style="margin-top:auto;font-size:12.5px;color:#556a99;border-top:1px solid #d7e1f7;padding-top:8px">
+            另外 2 个会话在跑 · 点上方返回巡检
+          </div>
+        </div>
+      `}
+    </div>
+    <div class="cb-dock">
+      <button class="cb-ptt" type="button">● 按住继续追问</button>
+    </div>`;
+}
+
+// ── 事件绑定 ────────────────────────────────────────
+document.addEventListener("click", e => {
+  const th = e.target.closest("[data-set-theme]");
+  if (th) { setState.theme = th.dataset.setTheme; renderSetA(); return; }
+
+  const sl = e.target.closest("[data-set-sleep]");
+  if (sl) { setState.sleepSec = sl.dataset.setSleep; renderSetA(); return; }
+
+  const tg = e.target.closest("[data-toggle]");
+  if (tg) { const k = tg.dataset.toggle; setState[k] = !setState[k]; renderSetB(); return; }
+
+  if (e.target.closest("[data-danger-reset]")) {
+    setState.dangerArmed = !setState.dangerArmed;
+    renderSetB();
+    return;
+  }
+
+  if (e.target.closest("[data-toggle-b1]")) {
+    boardState.b1 = boardState.b1 === "list" ? "expand" : "list";
+    document.querySelectorAll("[data-b1]").forEach(b => b.classList.toggle("active", b.dataset.b1 === boardState.b1));
+    renderBoard1();
+    return;
+  }
+
+  const b1 = e.target.closest("[data-b1]");
+  if (b1) {
+    boardState.b1 = b1.dataset.b1;
+    document.querySelectorAll("[data-b1]").forEach(b => b.classList.toggle("active", b === b1));
+    renderBoard1(); return;
+  }
+  const b2 = e.target.closest("[data-b2]");
+  if (b2) {
+    boardState.b2 = b2.dataset.b2;
+    document.querySelectorAll("[data-b2]").forEach(b => b.classList.toggle("active", b === b2));
+    renderBoard2(); return;
+  }
+  const b3 = e.target.closest("[data-b3]");
+  if (b3) {
+    boardState.b3 = b3.dataset.b3;
+    document.querySelectorAll("[data-b3]").forEach(b => b.classList.toggle("active", b === b3));
+    renderBoard3(); return;
+  }
+});
+
+document.addEventListener("input", e => {
+  if (e.target.matches("[data-bright-slider]")) {
+    setState.bright = Number(e.target.value);
+    renderSetA();
+  }
+});
+
+// URL 参数便于截图验各态
+const q = new URLSearchParams(location.search);
+if (q.get("b1")) boardState.b1 = q.get("b1");
+if (q.get("b2")) boardState.b2 = q.get("b2");
+if (q.get("b3")) boardState.b3 = q.get("b3");
+if (q.get("armed") === "1") setState.dangerArmed = true;
+
+renderSetA();
+renderSetB();
+renderBoard1();
+renderBoard2();
+renderBoard3();
+</script>
+</body>
+</html>

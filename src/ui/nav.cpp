@@ -18,7 +18,26 @@ UiPage homeToPage(HomePageKind h) {
     default:                  return UiPage::HOME;
   }
 }
+void settingsEnterHook(uint32_t) { pageSettingsOnEnter(); }
+
+constexpr UiPageOps kPageRegistry[] = {
+  { UiPage::HOME,     pageHomeOnEnter,   pageHomeOnExit,     pageHomeOnThemeChange },
+  { UiPage::QUOTA,    nullptr,           pageQuotaOnExit,    nullptr },
+  { UiPage::RANK,     nullptr,           pageRankOnExit,     nullptr },
+  { UiPage::DETAIL,   nullptr,           nullptr,            nullptr },
+  { UiPage::SETTINGS, settingsEnterHook, pageSettingsOnExit, nullptr },
+  { UiPage::TOKENS,   pageTokensOnEnter, pageTokensOnExit,   pageTokensOnThemeChange },
+  { UiPage::CHAT,     nullptr,           pageChatOnExit,     nullptr },
+};
+
 }  // namespace
+
+const UiPageOps* uiPageOps(UiPage p) {
+  for (const UiPageOps& ops : kPageRegistry) {
+    if (ops.page == p) return &ops;
+  }
+  return nullptr;
+}
 
 int uiPageRingIndex(UiPage p) {
   for (int i = 0; i < 6; i++) {
@@ -27,16 +46,36 @@ int uiPageRingIndex(UiPage p) {
   return 6;
 }
 
-void UiNav::init(HomePageKind home) {
+void UiNav::init(HomePageKind home, uint32_t nowMs) {
   m_page = homeToPage(home);
+  const UiPageOps* ops = uiPageOps(m_page);
+  if (ops && ops->onEnter) ops->onEnter(nowMs);
 }
 
 void UiNav::setPage(UiPage p) {
   m_page = p;
 }
 
-void UiNav::goHome(HomePageKind home) {
-  m_page = homeToPage(home);
+bool UiNav::switchPage(UiPage next, uint32_t nowMs) {
+  if (next == m_page) return false;
+  const UiPageOps* oldOps = uiPageOps(m_page);
+  if (oldOps && oldOps->onExit) oldOps->onExit();
+  m_page = next;
+  const UiPageOps* newOps = uiPageOps(m_page);
+  if (newOps && newOps->onEnter) newOps->onEnter(nowMs);
+  return true;
+}
+
+void UiNav::applyTheme(ui::UiTheme theme, uint32_t nowMs) {
+  (void)nowMs;
+  ui::setActiveTheme(theme);
+  for (const UiPageOps& ops : kPageRegistry) {
+    if (ops.onThemeChange) ops.onThemeChange();
+  }
+}
+
+void UiNav::goHome(HomePageKind home, uint32_t nowMs) {
+  switchPage(homeToPage(home), nowMs);
 }
 
 UiAction UiNav::onSwipe(int16_t dx, int16_t dy) {
@@ -56,8 +95,8 @@ UiAction UiNav::onSwipe(int16_t dx, int16_t dy) {
   } else {
     idx = (idx + 5) % 6;
   }
-  m_page = kPageRing[idx];
-  return UiAction{ UiAction::GO_PAGE, (int)m_page };
+  // 不在这里直接改 m_page，交给 switchPage() 触发 old.onExit -> new.onEnter。
+  return UiAction{ UiAction::GO_PAGE, (int)kPageRing[idx] };
 }
 
 UiAction UiNav::onTap(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg) {

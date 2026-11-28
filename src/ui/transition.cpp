@@ -161,11 +161,16 @@ void transRun(Arduino_Canvas& canvas, const uint16_t* from, const uint16_t* to,
     return;
   }
 
-  const bool usePillFollow = (pills && pills->fromDot >= 0 && pills->toDot >= 0 &&
+  // 水平滑屏策略由主题描述符决定：OCEAN 冻结顶栏并启用圆点跟随，
+  // TIDE 各页底色不同且顶栏 38px，由 ThemeSpec 指定整屏（y=0..UI_H）平滑横移。
+  const ui::ThemeSpec& ts = ui::activeThemeSpec();
+  const bool usePillFollow = (ts.pillFollowSlide && pills && pills->fromDot >= 0 && pills->toDot >= 0 &&
                               pills->totalDots > 0 &&
                               (kind == TransKind::SLIDE_LEFT || kind == TransKind::SLIDE_RIGHT));
-  const int16_t slideSplitY = usePillFollow ? kSlidePillSplitY : kSlideSplitY;
-  if (kind == TransKind::SLIDE_LEFT || kind == TransKind::SLIDE_RIGHT) {
+  const int16_t slideSplitY = ts.pillFollowSlide
+                                ? (usePillFollow ? kSlidePillSplitY : kSlideSplitY)
+                                : ts.slideSplitY;
+  if ((kind == TransKind::SLIDE_LEFT || kind == TransKind::SLIDE_RIGHT) && slideSplitY > 0) {
     // Keep top status/clock band fixed from destination frame during horizontal slides.
     memcpy(fb, to, (size_t)slideSplitY * UI_W * sizeof(uint16_t));
   }

@@ -99,7 +99,7 @@ static const char* kStrPool[] = {
 
 static const char* kAllKeys[] = {
   "home", "pwr", "snd", "brt", "tts", "quiet", "choreo", "sleep_s",
-  "chg_lim", "chg_spd", "aod", "aod_idle", "aod_night", "mic_gain",
+  "chg_lim", "chg_spd", "aod", "aod_idle", "aod_night", "mic_gain", "theme",
   "nva", "mqtt_host", "mqtt_port",
 };
 
@@ -149,6 +149,7 @@ int main() {
   CHECK(d.aodIdleSec == 120);
   CHECK(d.aodNightCap == 1);
   CHECK(d.micGainDb == 24);
+  CHECK(d.uiTheme == 0);   // 界面风格默认深海原版
   CHECK(std::strcmp(d.brokerHost, "192.168.31.15") == 0);
   CHECK(d.brokerPort == 1883);
 

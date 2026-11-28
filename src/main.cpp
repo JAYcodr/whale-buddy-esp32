@@ -170,16 +170,21 @@ void pollSerialCommands(UiNav& nav, bool& needFull,
             if (ssid[0]) netRequestWifiConnect(ssid, pass);
           } else if (strcmp(cmd, "page") == 0) {
             const char* p = doc["page"] | "home";
-            if (strcmp(p, "home") == 0)          { nav.setPage(UiPage::HOME); needFull = true; }
-            else if (strcmp(p, "quota") == 0)    { nav.setPage(UiPage::QUOTA); needFull = true; }
-            else if (strcmp(p, "rank") == 0)     { nav.setPage(UiPage::RANK); needFull = true; }
-            else if (strcmp(p, "detail") == 0)   { nav.setPage(UiPage::DETAIL); needFull = true; }
-            else if (strcmp(p, "settings") == 0) { pageSettingsSetTab(0); nav.setPage(UiPage::SETTINGS); needFull = true; }
-            else if (strcmp(p, "settings_adv") == 0 || strcmp(p, "settings_sound") == 0) { pageSettingsSetTab(2); nav.setPage(UiPage::SETTINGS); needFull = true; }
-            else if (strcmp(p, "settings_power") == 0 || strcmp(p, "settings_batt") == 0) { pageSettingsSetTab(3); nav.setPage(UiPage::SETTINGS); needFull = true; }
-            else if (strcmp(p, "settings_display") == 0 || strcmp(p, "settings_aod") == 0) { pageSettingsSetTab(1); nav.setPage(UiPage::SETTINGS); needFull = true; }
-            else if (strcmp(p, "tokens") == 0)   { pageTokensOnEnter(millis()); nav.setPage(UiPage::TOKENS); needFull = true; }
-            else if (strcmp(p, "chat") == 0)     { nav.setPage(UiPage::CHAT); needFull = true; }
+            const uint32_t serialNowMs = millis();
+            const UiPage prevSerialPage = nav.currentPage();
+            if (strcmp(p, "home") == 0)          { nav.switchPage(UiPage::HOME, serialNowMs); needFull = true; }
+            else if (strcmp(p, "quota") == 0)    { nav.switchPage(UiPage::QUOTA, serialNowMs); needFull = true; }
+            else if (strcmp(p, "rank") == 0)     { nav.switchPage(UiPage::RANK, serialNowMs); needFull = true; }
+            else if (strcmp(p, "detail") == 0)   { nav.switchPage(UiPage::DETAIL, serialNowMs); needFull = true; }
+            else if (strcmp(p, "settings") == 0) { nav.switchPage(UiPage::SETTINGS, serialNowMs); pageSettingsSetTab(0); needFull = true; }
+            else if (strcmp(p, "settings_adv") == 0 || strcmp(p, "settings_sound") == 0) { nav.switchPage(UiPage::SETTINGS, serialNowMs); pageSettingsSetTab(2); needFull = true; }
+            else if (strcmp(p, "settings_power") == 0 || strcmp(p, "settings_batt") == 0) { nav.switchPage(UiPage::SETTINGS, serialNowMs); pageSettingsSetTab(3); needFull = true; }
+            else if (strcmp(p, "settings_display") == 0 || strcmp(p, "settings_aod") == 0) { nav.switchPage(UiPage::SETTINGS, serialNowMs); pageSettingsSetTab(1); needFull = true; }
+            else if (strcmp(p, "tokens") == 0)   { nav.switchPage(UiPage::TOKENS, serialNowMs); needFull = true; }
+            else if (strcmp(p, "chat") == 0)     { nav.switchPage(UiPage::CHAT, serialNowMs); needFull = true; }
+            if (prevSerialPage == UiPage::HOME && nav.currentPage() != UiPage::HOME) {
+              novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
+            }
             s_pendingInteract = true;
           } else if (strcmp(cmd, "tap") == 0) {
             // 真机验收用：把手动戳屏变成可重放的命令。
@@ -237,7 +242,7 @@ void uiTaskFn(void*) {
   esp_task_wdt_add(nullptr);
   Arduino_Canvas* canvas = hwCanvas();
   UiNav nav;
-  nav.init(settingsGet().homePage);
+  nav.init(settingsGet().homePage, millis());
 
   bool screenOff = false;
   bool dimmedForNap = false;
@@ -934,14 +939,13 @@ void uiTaskFn(void*) {
         case UiAction::GO_PAGE: {
           UiPage prevPage = (swipeOrigin >= 0) ? (UiPage)swipeOrigin : nav.currentPage();
           UiPage newPage  = (UiPage)act.value;
-          nav.setPage(newPage);
-          if (newPage == UiPage::SETTINGS && prevPage != UiPage::SETTINGS) {
-            pageSettingsOnEnter();
-          } else if (prevPage == UiPage::SETTINGS && newPage != UiPage::SETTINGS) {
-            pageSettingsCancelDrag();
+          nav.switchPage(newPage, nowMs);
+          if (prevPage == UiPage::SETTINGS && newPage != UiPage::SETTINGS) {
+            settingsGrab = false;
           }
-          if (newPage == UiPage::TOKENS && prevPage != UiPage::TOKENS) {
-            pageTokensOnEnter(nowMs);
+          if (prevPage == UiPage::HOME && newPage != UiPage::HOME && st.dockExpanded) {
+            novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
+            st.dockExpanded = false;
           }
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (prevPage != UiPage::SETTINGS && newPage == UiPage::SETTINGS) {
@@ -966,9 +970,9 @@ void uiTaskFn(void*) {
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           break;
         case UiAction::REPROVISION:
-          pageSettingsCancelDrag();
+          settingsGrab = false;
           netRequestReprovision();
-          nav.setPage(UiPage::HOME);
+          nav.switchPage(UiPage::HOME, nowMs);
           sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
           break;
         case UiAction::CANCEL_PORTAL:
@@ -1070,6 +1074,11 @@ void uiTaskFn(void*) {
           break;
         case UiAction::RESTORE_DEFAULTS:
           settingsRestoreDefaults();
+          nav.applyTheme((ui::UiTheme)settingsGet().uiTheme, nowMs);
+          if (st.dockExpanded) {
+            novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
+            st.dockExpanded = false;
+          }
           bright.invalidate();
           netPublishPrefs();
           needFull = true;
@@ -1258,6 +1267,17 @@ void uiTaskFn(void*) {
                 needFull = false;
                 needSettingsList = true;
                 bright.invalidate();   // 交给统一亮度逻辑落地
+                sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
+                break;
+              case UiAction::SET_THEME:
+                // 换主题等于整屏换绘制，必须走整屏重绘并触发所有页面的主题钩子（清空旧缓存/旧动画覆盖）。
+                nav.applyTheme((ui::UiTheme)settingsGet().uiTheme, nowMs);
+                if (st.dockExpanded) {
+                  novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
+                  st.dockExpanded = false;
+                }
+                needFull = true;
+                bright.invalidate();
                 sfxPlay(SfxKind::SETTING_OK, cfg.soundPct);
                 break;
               case UiAction::SET_AOD_MODE:
@@ -1546,11 +1566,14 @@ void uiTaskFn(void*) {
       } else if (ev.type == InputEvtType::KEY1_UP) {
         if (!key1LongFired && key1DownAt != 0) {
           UiPage prev = nav.currentPage();
-          nav.goHome(cfg.homePage);
+          nav.goHome(cfg.homePage, nowMs);
           UiPage next = nav.currentPage();
           if (prev == UiPage::SETTINGS && next != UiPage::SETTINGS) {
             settingsGrab = false;
-            pageSettingsCancelDrag();
+          }
+          if (prev == UiPage::HOME && next != UiPage::HOME && st.dockExpanded) {
+            novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
+            st.dockExpanded = false;
           }
           sfxPlay(SfxKind::NAV_CHIRP, cfg.soundPct);
           if (next != prev) {
@@ -1578,8 +1601,12 @@ void uiTaskFn(void*) {
     if (snap.key1Down && key1DownAt != 0 && !key1LongFired && (nowMs - key1DownAt >= KEY1_LONG_MS)) {
       key1LongFired = true;
       if (nav.currentPage() != UiPage::SETTINGS) {
-        pageSettingsOnEnter();
-        nav.setPage(UiPage::SETTINGS);
+        const UiPage prev = nav.currentPage();
+        nav.switchPage(UiPage::SETTINGS, nowMs);
+        if (prev == UiPage::HOME && st.dockExpanded) {
+          novaStateWithLock([](NovaState& s) { s.dockExpanded = false; });
+          st.dockExpanded = false;
+        }
         sfxPlay(SfxKind::NEW_EVENT, cfg.soundPct);
         playTransition(TransKind::SHEET_UP, 220);
       } else {
@@ -2035,8 +2062,11 @@ void uiTaskFn(void*) {
         int64_t t0 = esp_timer_get_time();
         if (needTokensHud) {
           pageTokensDrawHud(*canvas, st);
-          hwDisplayPushRect(0, 62, UI_W, 92);
-          hwDisplayPushRect(0, 414, UI_W, UI_H - 414);
+          const ui::ThemeSpec& ts = ui::activeThemeSpec();
+          hwDisplayPushRect(ts.tokensHudTopRect.x, ts.tokensHudTopRect.y,
+                            ts.tokensHudTopRect.w, ts.tokensHudTopRect.h);
+          hwDisplayPushRect(ts.tokensHudBotRect.x, ts.tokensHudBotRect.y,
+                            ts.tokensHudBotRect.w, ts.tokensHudBotRect.h);
           needTokensHud = false;
         }
         pageTokensDrawStage(*canvas, st, cfg, nowMs);
@@ -2103,11 +2133,12 @@ void uiTaskFn(void*) {
     nextFrameAt += frameUs;
     if (nextFrameAt < nowUs - frameUs) nextFrameAt = nowUs;
     int64_t waitUs = nextFrameAt - nowUs;
-    if (waitUs > 1000) {
-      vTaskDelay(pdMS_TO_TICKS((uint32_t)(waitUs / 1000)));
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(1));
-    }
+    // 同核低优先级 task_decode 需要空闲时间片读取 LittleFS .nva 与做 zlib 解压：
+    // 切换新动作期间至少让出 6ms 加速首帧落盘；动画页帧预算吃紧时至少让出 3ms 防饿死。
+    const uint32_t minYieldMs = nvaIsSwitching() ? 6u : (animPage ? 3u : 1u);
+    uint32_t delayMs = (waitUs > 1000) ? (uint32_t)(waitUs / 1000) : 1u;
+    if (delayMs < minYieldMs) delayMs = minYieldMs;
+    vTaskDelay(pdMS_TO_TICKS(delayMs));
   }
 }
 
@@ -2116,6 +2147,7 @@ void uiTaskFn(void*) {
 void setup() {
   hwInit();
   settingsLoad();
+  ui::setActiveTheme((ui::UiTheme)settingsGet().uiTheme);
   hwPowerTick(millis());
   hwDisplayBrightness(settingsGet().brightPct);
 

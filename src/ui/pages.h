@@ -34,6 +34,7 @@ struct UiAction {
     SET_AOD_NIGHT,
     SET_CHOREO,
     SET_MIC_GAIN,
+    SET_THEME,     // 界面风格：深海原版 / 深蓝潮汐
     RESTORE_DEFAULTS,
     TEST_SOUND,
     SYNC_HOST,
@@ -74,6 +75,9 @@ void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& c
                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
 void pageHomeTick(const NovaState& st, const NovaSettings& cfg, uint32_t frame, bool idleResting);
 UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st);
+void pageHomeOnEnter(uint32_t nowMs);
+void pageHomeOnExit();
+void pageHomeOnThemeChange();
 void pageHomeDrawAod(NovaCanvas& c, const NovaState& st, uint32_t nowMs);
 int pageHomeDemoOverride();  // -1 = auto, >=0 = NvaAnimKey index
 void pageHomeSetDemoOverride(int idx);
@@ -86,6 +90,7 @@ void pageHomeTriggerSquash(uint32_t nowMs);
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st);
 UiAction pageQuotaTap(int16_t x, int16_t y, const NovaState& st);
 bool pageQuotaTick(uint32_t nowMs);
+void pageQuotaOnExit();
 
 void pageRankDraw(NovaCanvas& c, const NovaState& st);
 void pageRankDrawList(NovaCanvas& c, const NovaState& st);
@@ -97,6 +102,7 @@ bool pageRankTouchMove(int16_t y, uint32_t ms, uint8_t nRows);
 void pageRankTouchUp(uint32_t ms, uint8_t nRows);
 bool pageRankTick(uint32_t nowMs);
 bool pageRankIsFlinging();
+void pageRankOnExit();
 
 void pageDetailDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg);
 UiAction pageDetailTap(int16_t x, int16_t y);
@@ -106,6 +112,7 @@ void pageSettingsDrawList(NovaCanvas& c, const NovaState& st, const NovaSettings
 UiAction pageSettingsTap(int16_t x, int16_t y, const NovaSettings& cfg);
 void pageSettingsSetTab(uint8_t tab);
 void pageSettingsOnEnter();
+void pageSettingsOnExit();
 void pageSettingsCancelDrag();
 bool pageSettingsTick(uint32_t nowMs);
 bool pageSettingsIsAnimating();
@@ -133,6 +140,8 @@ void pageTokensDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings&
 void pageTokensDrawHud(NovaCanvas& c, const NovaState& st);
 UiAction pageTokensTap(int16_t x, int16_t y, const NovaState& st, uint32_t nowMs);
 void pageTokensOnEnter(uint32_t nowMs);
+void pageTokensOnExit();
+void pageTokensOnThemeChange();
 bool pageTokensIsAnimating(const NovaState& st, const NovaSettings& cfg, uint32_t nowMs);
 
 void pageChatDraw(NovaCanvas& c, const NovaState& st);
@@ -146,7 +155,19 @@ void pageChatScrollTouchUp(uint32_t ms, const NovaState& st);
 bool pageChatTick(uint32_t nowMs, const NovaState& st);
 bool pageChatIsFlinging();
 void pageChatScrollCancel();
+void pageChatOnExit();
 const char* pageChatQuickCmdText(int idx);
+
+// 统一页面生命周期表（仿 Mooncake onEnter/onExit 与主题失效钩子）：
+// UiNav::switchPage / applyTheme 经此表驱动，确保切页/切主题清理瞬态状态。
+struct UiPageOps {
+  UiPage page;
+  void (*onEnter)(uint32_t nowMs);
+  void (*onExit)();
+  void (*onThemeChange)();
+};
+
+const UiPageOps* uiPageOps(UiPage p);
 
 int uiPageRingIndex(UiPage p);
 

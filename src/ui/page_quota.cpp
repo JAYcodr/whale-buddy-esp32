@@ -1,5 +1,6 @@
 #include "ui/pages.h"
 #include "ui/theme.h"
+#include "ui/tide_palette.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -88,9 +89,135 @@ int16_t cardY(int i, int nShow) {
   const int16_t gap = (int16_t)((356 - nShow * 112) / (nShow + 1));
   return (int16_t)(66 + gap + i * (112 + gap));
 }
+// ── 潮汐（TIDE）额度页 ────────────────────────────────────────────────
+// 契约 §4③：钴海蓝淹没 + 顶部巨字余额 + 纯白大色块比例条。
+// 硬规则：标签永远在条上方，绝不把字压在白块内部（撞色）。
+constexpr int16_t TIDE_HERO_TOP    = 44;
+constexpr int16_t TIDE_HERO_BOT    = 154;
+constexpr int16_t TIDE_WIN_TOP     = 164;
+constexpr int16_t TIDE_WIN_BOT     = 432;
+constexpr int16_t TIDE_BAR_H       = 22;
+constexpr int16_t TIDE_ROW_H       = 58;
+
+void drawQuotaHeroTide(NovaCanvas& c, const NovaState& st, const QuotaCard& bal, uint16_t bg) {
+  const uint16_t dim = ui::tide::dimOn(bg);
+  c.fillRect(0, TIDE_HERO_TOP - 6, UI_W, TIDE_HERO_BOT - TIDE_HERO_TOP + 6, bg);
+
+  ui::drawText(c, ui::fontAscii14(), UI_SAFE_L, 58, "DEEPSEEK BALANCE", dim, bg);
+
+  const uint32_t localElapsed = (st.quotaRxMs > 0 && st.nowMs > st.quotaRxMs)
+                                  ? ((st.nowMs - st.quotaRxMs) / 1000u) : 0u;
+  char ageBuf[16];
+  formatAge(bal.ageSec + localElapsed, ageBuf, sizeof(ageBuf));
+  ui::drawTextRight(c, ui::fontCjk14(), UI_SAFE_R, 58,
+                    s_syncPending ? "同步中…" : ageBuf, dim, bg);
+
+  // 升级为 92px 巨数余额，视觉一眼穿透；左侧「￥」与基线对齐。
+  const char* curSym = "￥";
+  ui::TextMetrics symM = ui::measureText(c, ui::fontCjk16(), curSym);
+  ui::drawText(c, ui::fontCjk16(), UI_SAFE_L, 134, curSym, dim, bg);
+
+  char valBuf[32];
+  snprintf(valBuf, sizeof(valBuf), "%.2f", bal.val);
+  ui::drawText(c, ui::fontNum92(), (int16_t)(UI_SAFE_L + symM.w + 2), 138, valBuf,
+               ui::tide::WHITE, bg);
+
+  c.fillRect(0, TIDE_HERO_BOT - 2, UI_W, 2, ui::tide::WHITE);
+}
+
+// 一条 win 卡的全部 bars 渲染成「标签行 + 纯白大色块」两组，纵向舒展排开。
+int16_t drawQuotaBarsTide(NovaCanvas& c, const QuotaCard& card, int16_t y,
+                          uint32_t localElapsed, uint16_t bg) {
+  const int bars = card.nBars > 2 ? 2 : card.nBars;
+  for (int b = 0; b < bars; b++) {
+    const QuotaBar& qb = card.bars[b];
+    const uint32_t liveReset = (qb.resetSec > localElapsed) ? (qb.resetSec - localElapsed) : 0u;
+
+    char left[48];
+    snprintf(left, sizeof(left), "%s · %s", card.name, formatBarLabel(qb.tag));
+    char leftBuf[48];
+    ui::fitUtf8Line(c, ui::fontCjk14(), left, UI_SAFE_W - 116, leftBuf, sizeof(leftBuf));
+    ui::drawText(c, ui::fontCjk14(), UI_SAFE_L, y, leftBuf, ui::tide::WHITE, bg);
+
+    char right[32];
+    char rstBuf[16];
+    ui::fmtResetTime(liveReset, rstBuf, sizeof(rstBuf));
+    snprintf(right, sizeof(right), "%u%% · %s", (unsigned)qb.pct, rstBuf);
+    ui::drawTextRight(c, ui::fontCjk14(), UI_SAFE_R, y, right, ui::tide::WHITE, bg);
+
+    ui::tide::drawBlockBar(c, UI_SAFE_L, (int16_t)(y + 9), UI_SAFE_W, TIDE_BAR_H, qb.pct, bg);
+    y = (int16_t)(y + TIDE_ROW_H);
+  }
+  return y;
+}
+
+void drawQuotaTide(NovaCanvas& c, const NovaState& st) {
+  const bool crit = (st.nCards > 0 && strcmp(st.cards[0].kind, "bal") == 0 &&
+                     st.cards[0].val < kBalCrit);
+  const uint16_t bg = crit ? ui::tide::BG_CRIMSON : ui::tide::BG_COBALT;
+  const uint16_t dim = ui::tide::dimOn(bg);
+
+  c.fillScreen(bg);
+  ui::tide::drawTopStrip(c, st, 2, bg);
+
+  if (st.nCards == 0) {
+    ui::drawTextCentered(c, ui::fontCjk16(), UI_W / 2, 200, "暂未收到订阅数据",
+                         ui::tide::WHITE, bg);
+    ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 232, "请确认电脑端 DSH 插件已运行",
+                         dim, bg);
+    return;
+  }
+
+  const uint32_t localElapsed = (st.quotaRxMs > 0 && st.nowMs > st.quotaRxMs)
+                                  ? ((st.nowMs - st.quotaRxMs) / 1000u) : 0u;
+  const int nShow = st.nCards > 3 ? 3 : st.nCards;
+
+  int firstWin = 0;
+  if (strcmp(st.cards[0].kind, "bal") == 0) {
+    drawQuotaHeroTide(c, st, st.cards[0], bg);
+    firstWin = 1;
+  } else {
+    ui::drawText(c, ui::fontAscii14(), UI_SAFE_L, 96, "NO BALANCE CARD", dim, bg);
+    c.fillRect(0, TIDE_HERO_BOT - 2, UI_W, 2, ui::tide::WHITE);
+  }
+
+  int16_t y = (int16_t)(TIDE_WIN_TOP + 20);
+  for (int i = firstWin; i < nShow; i++) {
+    const QuotaCard& card = st.cards[i];
+    if (y > TIDE_WIN_BOT - TIDE_ROW_H) break;
+
+    if (strcmp(card.kind, "win") == 0) {
+      y = drawQuotaBarsTide(c, card, y, localElapsed, bg);
+      y = (int16_t)(y + 4);
+    } else {
+      const WhyInfo info = whyText(card.why);
+      char nameBuf[32];
+      ui::fitUtf8Line(c, ui::fontCjk14(), card.name, UI_SAFE_W - 110, nameBuf, sizeof(nameBuf));
+      ui::drawText(c, ui::fontCjk14(), UI_SAFE_L, y, nameBuf, ui::tide::WHITE, bg);
+      ui::drawTextRight(c, ui::fontCjk14(), UI_SAFE_R, y, info.label, ui::tide::WHITE, bg);
+
+      const uint16_t boxBg = crit ? ui::tide::SURF_DARK : ui::tide::SURF_DEEP;
+      c.fillRect(UI_SAFE_L, (int16_t)(y + 9), UI_SAFE_W, TIDE_BAR_H, boxBg);
+      char whyBuf[48];
+      ui::fitUtf8Line(c, ui::fontCjk14(), info.detail, UI_SAFE_W - 24, whyBuf, sizeof(whyBuf));
+      ui::drawTextCenteredInRect(c, ui::fontCjk14(),
+                                 { UI_SAFE_L, (int16_t)(y + 9), UI_SAFE_W, TIDE_BAR_H },
+                                 whyBuf, ui::tide::WHITE, boxBg);
+      y = (int16_t)(y + TIDE_ROW_H);
+    }
+  }
+
+  ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 434, "轻点任意处立即刷新额度", dim, bg);
+}
+
 }  // namespace
 
 void pageQuotaDraw(NovaCanvas& c, const NovaState& st) {
+  if (ui::isTideTheme()) {
+    drawQuotaTide(c, st);
+    return;
+  }
+
   c.fillScreen(ui::COL_BG);
   ui::drawTopBar(c, st, 2);
 
@@ -264,4 +391,8 @@ bool pageQuotaHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSetti
     }
   }
   return false;
+}
+
+void pageQuotaOnExit() {
+  s_syncPending = false;
 }
