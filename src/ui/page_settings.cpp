@@ -1,6 +1,7 @@
 #include "ui/pages.h"
 #include "ui/easing.h"
 #include "ui/theme.h"
+#include "ui/tide_palette.h"
 #include <Arduino.h>
 #include <math.h>
 #include <stdio.h>
@@ -77,6 +78,7 @@ enum RowId : uint8_t {
   R_GRP_BAT,     R_CHGLIM, R_CHGSPD,
   R_GRP_BEH,     R_HOME, R_PWR, R_CHOREO,
   R_GRP_DEV,     R_REPROV, R_RESET,
+  R_THEME,       // 界面风格：放在屏幕组首位（见 kRows），枚举值追加在末尾以保持既有 id 稳定
   R_ROW_COUNT
 };
 
@@ -104,6 +106,8 @@ const char* const kPwrLbl[]     = { "自适应", "长续航", "灵动" };
 const uint16_t    kPwrVal[]     = { 0, 1, 2 };
 const char* const kMicGainLbl[] = { "18 dB", "24 dB", "30 dB", "36 dB", "42 dB" };
 const uint16_t    kMicGainVal[] = { 18, 24, 30, 36, 42 };
+const char* const kThemeLbl[] = { "深海原版", "深蓝潮汐" };
+const uint16_t    kThemeVal[] = { 0, 1 };
 
 constexpr ChoiceSet kSets[] = {
   { kSleepLbl,   kSleepVal,   4 },   // 0 息屏
@@ -115,6 +119,7 @@ constexpr ChoiceSet kSets[] = {
   { kHomeLbl,    kHomeVal,    3 },   // 6 默认首页
   { kPwrLbl,     kPwrVal,     3 },   // 7 功耗档
   { kMicGainLbl, kMicGainVal, 5 },   // 8 麦克风增益
+  { kThemeLbl,   kThemeVal,   2 },   // 9 界面风格
 };
 
 struct RowDef {
@@ -126,6 +131,7 @@ struct RowDef {
 
 constexpr RowDef kRows[] = {
   { RK_GROUP,  R_GRP_SCR,   "屏幕",          0 },
+  { RK_CHOICE, R_THEME,     "界面风格",      9 },
   { RK_SLIDER, R_BRIGHT,    "亮度",          0 },
   { RK_CHOICE, R_SLEEP,     "息屏",          0 },
 
@@ -233,6 +239,7 @@ uint16_t rowValue(const NovaSettings& cfg, uint8_t id) {
     case R_HOME:      return (uint16_t)cfg.homePage;
     case R_PWR:       return (uint16_t)cfg.powerProfile;
     case R_CHOREO:    return cfg.choreoEnabled ? 1 : 0;
+    case R_THEME:     return cfg.uiTheme;
     default:          return 0;
   }
 }
@@ -253,6 +260,7 @@ UiAction::Kind rowActionKind(uint8_t id) {
     case R_HOME:      return UiAction::SET_HOME;
     case R_PWR:       return UiAction::SET_POWER;
     case R_CHOREO:    return UiAction::SET_CHOREO;
+    case R_THEME:     return UiAction::SET_THEME;
     case R_TEST:      return UiAction::TEST_SOUND;
     case R_REPROV:    return UiAction::REPROVISION;
     case R_RESET:     return UiAction::RESTORE_DEFAULTS;
@@ -532,8 +540,8 @@ void drawSliderRow(NovaCanvas& c, int16_t top, const NovaSettings& cfg,
   if (v < lo) v = lo;
   if (v > hi) v = hi;
 
-  const int16_t x0 = (int16_t)(TEXT_X + SLIDER_INSET);
-  const int16_t x1 = (int16_t)(RIGHT_X - SLIDER_INSET);
+  const int16_t x0 = ui::isTideTheme() ? (int16_t)(UI_SAFE_L + 2) : (int16_t)(TEXT_X + SLIDER_INSET);
+  const int16_t x1 = ui::isTideTheme() ? (int16_t)(UI_SAFE_R - 4) : (int16_t)(RIGHT_X - SLIDER_INSET);
   const int16_t cy = (int16_t)(top + ROW_H + SLIDER_H / 2);
   const int16_t trackH = 8;
 
@@ -760,8 +768,8 @@ void applySliderX(int16_t x) {
   const bool bright = (r.id == R_BRIGHT);
   const int16_t lo = bright ? 20 : 0;
   const int16_t hi = 100;
-  const int16_t x0 = (int16_t)(TEXT_X + SLIDER_INSET);
-  const int16_t x1 = (int16_t)(RIGHT_X - SLIDER_INSET);
+  const int16_t x0 = ui::isTideTheme() ? (int16_t)(UI_SAFE_L + 2) : (int16_t)(TEXT_X + SLIDER_INSET);
+  const int16_t x1 = ui::isTideTheme() ? (int16_t)(UI_SAFE_R - 4) : (int16_t)(RIGHT_X - SLIDER_INSET);
   int16_t t = (int16_t)(x - x0);
   if (t < 0) t = 0;
   if (t > x1 - x0) t = (int16_t)(x1 - x0);
@@ -827,6 +835,10 @@ void pageSettingsSetTab(uint8_t tab) {
 
 void pageSettingsOnEnter() {
   resetTransientState(true);
+}
+
+void pageSettingsOnExit() {
+  resetTransientState(false);
 }
 
 void pageSettingsCancelDrag() {
@@ -1050,16 +1062,322 @@ bool pageSettingsTick(uint32_t nowMs) {
   return dirty;
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// 潮汐（TIDE）设置页绘制
+// 契约 §4⑥：去卡片通栏 + 38px 液位滑块 + 锐利双格开关 + 红屏二次确认。
+// 只换绘制原语，kRows / rowTop / hitTest / 滚动与滑块坐标换算全部复用，
+// 保证两种主题下手感和命中完全一致。
+// ══════════════════════════════════════════════════════════════════════
+namespace tide_draw {
+
+constexpr int16_t T_HDR_H       = 58;
+constexpr int16_t T_GROUP_BLK_W = 34;
+constexpr int16_t T_SLIDER_H    = 38;
+
+uint16_t firstGroupIndexPos(uint8_t idx) {
+  // 分组头左侧编号块：按 RK_GROUP 出现顺序数 01..06。
+  uint8_t n = 0;
+  for (uint8_t i = 0; i <= idx && i < kRowCount; i++) {
+    if (kRows[i].kind == RK_GROUP) n++;
+  }
+  return (uint16_t)n;
+}
+
+void drawHeaderTide(NovaCanvas& c) {
+  c.fillRect(0, 0, UI_W, T_HDR_H, ui::tide::BG_COBALT);
+
+  // 返回箭头（纯白粗线，0px 圆角语法）
+  c.drawLine(30, 22, 22, 30, ui::tide::WHITE);
+  c.drawLine(22, 30, 30, 38, ui::tide::WHITE);
+  c.drawLine(31, 22, 23, 30, ui::tide::WHITE);
+  c.drawLine(23, 30, 31, 38, ui::tide::WHITE);
+
+  ui::drawText(c, ui::fontCjk16(), 44, 37, "设置", ui::tide::WHITE, ui::tide::BG_COBALT);
+
+  // 右侧纯白反色小章「潮汐」
+  const char* badge = "潮汐";
+  ui::TextMetrics bm = ui::measureText(c, ui::fontCjk14(), badge);
+  const int16_t bw = (int16_t)(bm.w + 16);
+  const int16_t bx = (int16_t)(UI_SAFE_R - bw);
+  c.fillRect(bx, 16, bw, 24, ui::tide::WHITE);
+  ui::drawTextCenteredInRect(c, ui::fontCjk14(), { bx, 16, bw, 24 },
+                             badge, ui::tide::BG_COBALT, ui::tide::WHITE);
+
+  // 底 2px 纯白横线
+  c.fillRect(0, T_HDR_H - 2, UI_W, 2, ui::tide::WHITE);
+}
+
+void drawGroupHeaderTide(NovaCanvas& c, int16_t labelTop, const char* label, uint8_t idx) {
+  if (labelTop + GRP_H < LIST_TOP || labelTop > UI_H) return;
+
+  // 左侧 SURF_DEEP 编号块
+  char num[8];
+  snprintf(num, sizeof(num), "%02u", (unsigned)firstGroupIndexPos(idx));
+  const int16_t blkX = CARD_X;
+  const int16_t blkY = (int16_t)(labelTop + 4);
+  const int16_t blkH = 26;
+  c.fillRect(blkX, blkY, T_GROUP_BLK_W, blkH, ui::tide::SURF_DEEP);
+  ui::drawTextCenteredInRect(c, ui::fontAscii14(), { blkX, blkY, T_GROUP_BLK_W, blkH },
+                             num, ui::tide::WHITE, ui::tide::SURF_DEEP);
+
+  drawTextVC(c, ui::fontCjk14(), (int16_t)(blkX + T_GROUP_BLK_W + 10), labelTop, GRP_H,
+             label, ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+}
+
+// 未选：1.5px 白框半透；选中：纯白实心反色（钴蓝字）。
+void drawChoiceRowTide(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const RowDef& r) {
+  const ChoiceSet& cs = kSets[r.set];
+  const uint16_t cur = rowValue(cfg, r.id);
+  const uint16_t frameCol = ui::blend565(ui::tide::BG_COBALT, ui::tide::WHITE, 150);
+  for (uint8_t i = 0; i < cs.n; i++) {
+    const ui::Rect pr = choicePillRect(top, r.set, i);
+    const bool on = (cs.values[i] == cur);
+    if (on) {
+      c.fillRect(pr.x, pr.y, pr.w, pr.h, ui::tide::WHITE);
+      ui::drawTextCenteredInRect(c, ui::fontCjk14(), pr, cs.labels[i],
+                                 ui::tide::BG_COBALT, ui::tide::WHITE);
+    } else {
+      c.drawRect(pr.x, pr.y, pr.w, pr.h, frameCol);
+      c.drawRect(pr.x + 1, pr.y + 1, pr.w - 2, pr.h - 2, frameCol);
+      ui::drawTextCenteredInRect(c, ui::fontCjk14(), pr, cs.labels[i],
+                                 ui::tide::WHITE, ui::tide::BG_COBALT);
+    }
+  }
+}
+
+// 38px 实心液位滑块：宽度拉齐左右安全边距（与设计稿一致，不再缩成小短条）。
+void drawSliderRowTide(NovaCanvas& c, int16_t top, const NovaSettings& cfg, const RowDef& r) {
+  const bool bright = (r.id == R_BRIGHT);
+  const uint16_t lo = bright ? 20 : 0;
+  const uint16_t hi = 100;
+  uint16_t v = rowValue(cfg, r.id);
+  if (v < lo) v = lo;
+  if (v > hi) v = hi;
+
+  float dispV = (float)v;
+  if (s_sliderAnimRow >= 0 && kRows[s_sliderAnimRow].id == r.id) {
+    dispV = s_sliderShownVal;
+    if (dispV < (float)lo) dispV = (float)lo;
+    if (dispV > (float)hi) dispV = (float)hi;
+  }
+  const uint8_t pct = (uint8_t)lroundf((dispV - (float)lo) * 100.0f / (float)(hi - lo));
+
+  const int16_t x0 = UI_SAFE_L + 2;
+  const int16_t x1 = UI_SAFE_R - 4;
+  const int16_t barY = (int16_t)(top + ROW_H + (SLIDER_H + SLIDER_BOT_PAD - T_SLIDER_H) / 2);
+
+  ui::tide::drawSliderBar(c, x0, barY, (int16_t)(x1 - x0), T_SLIDER_H, pct,
+                          ui::tide::SURF_OPEN, bright ? "20%" : "0%", "100%");
+
+  // 浓度读数贴在条上方右端（纯白大号 DIN 数字，呼应潮汐层次）。
+  char pctBuf[8];
+  snprintf(pctBuf, sizeof(pctBuf), "%u%%", (unsigned)v);
+  drawTextVCRight(c, ui::fontAscii18(), RIGHT_X, top, ROW_H, pctBuf,
+                  ui::tide::WHITE, ui::tide::SURF_OPEN);
+}
+
+// 锐利双格开关：左「开」右「关」，选中格纯白实心反色，未选格白框。
+void drawToggleTide(NovaCanvas& c, int16_t top, bool on) {
+  constexpr int16_t cellW = 40;
+  constexpr int16_t cellH = 26;
+  const int16_t y = (int16_t)(top + (ROW_H - cellH) / 2);
+  const int16_t x1 = (int16_t)(RIGHT_X - cellW);
+  const int16_t x0 = (int16_t)(x1 - cellW);
+  const uint16_t frameCol = ui::blend565(ui::tide::BG_COBALT, ui::tide::WHITE, 150);
+
+  // 开
+  if (on) {
+    c.fillRect(x0, y, cellW, cellH, ui::tide::WHITE);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), { x0, y, cellW, cellH },
+                               "开", ui::tide::BG_COBALT, ui::tide::WHITE);
+  } else {
+    c.drawRect(x0, y, cellW, cellH, frameCol);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), { x0, y, cellW, cellH },
+                               "开", ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+  }
+  // 关
+  if (!on) {
+    c.fillRect(x1, y, cellW, cellH, ui::tide::WHITE);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), { x1, y, cellW, cellH },
+                               "关", ui::tide::BG_COBALT, ui::tide::WHITE);
+  } else {
+    c.drawRect(x1, y, cellW, cellH, frameCol);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), { x1, y, cellW, cellH },
+                               "关", ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+  }
+}
+
+void drawItemRowTide(NovaCanvas& c, int16_t top, const NovaSettings& cfg,
+                     uint8_t idx, bool lastInGroup) {
+  const RowDef& r = kRows[idx];
+  const bool confirm = ((int8_t)idx == s_confirmRow);
+  const bool open = ((int8_t)idx == s_openRow);
+
+  uint16_t rowBg = open ? ui::tide::SURF_OPEN : ui::tide::BG_COBALT;
+  uint16_t nameCol = ui::tide::WHITE;
+  if (r.id == R_REPROV) nameCol = ui::tide::WHITE;
+  if (r.id == R_RESET)  nameCol = ui::tide::WHITE;
+
+  if (confirm) {
+    rowBg = ui::tide::BG_CRIMSON;
+    nameCol = ui::tide::WHITE;
+    c.fillRect(0, top, UI_W, ROW_H, rowBg);
+  } else {
+    c.fillRect(0, top, UI_W, ROW_H, rowBg);
+  }
+
+  drawTextVC(c, ui::fontCjk16(), UI_SAFE_L + 2, top, ROW_H, r.label, nameCol, rowBg);
+
+  char val[24];
+  switch (r.kind) {
+    case RK_CHOICE:
+    case RK_SLIDER: {
+      if (r.kind == RK_CHOICE) {
+        valueText(cfg, r.id, val, sizeof(val));
+        if (r.id == R_THEME) {
+          // 「界面风格」右侧值做成纯白实心反色小章，与小样一致。
+          ui::TextMetrics vm = ui::measureText(c, ui::fontCjk14(), val);
+          const int16_t pw = (int16_t)(vm.w + 18);
+          const int16_t ph = 26;
+          const int16_t px = (int16_t)(RIGHT_X - pw);
+          const int16_t py = (int16_t)(top + (ROW_H - ph) / 2);
+          c.fillRect(px, py, pw, ph, ui::tide::WHITE);
+          ui::drawTextCenteredInRect(c, ui::fontCjk14(), { px, py, pw, ph },
+                                     val, ui::tide::BG_COBALT, ui::tide::WHITE);
+        } else {
+          drawTextVCRight(c, ui::fontCjk16(), RIGHT_X, top, ROW_H, val,
+                          confirm ? ui::tide::WHITE : ui::tide::WHITE_DIM, rowBg);
+        }
+      } else if (!open) {
+        valueText(cfg, r.id, val, sizeof(val));
+        drawTextVCRight(c, ui::fontAscii18(), RIGHT_X, top, ROW_H, val,
+                        ui::tide::WHITE_DIM, rowBg);
+      }
+      break;
+    }
+    case RK_TOGGLE:
+      drawToggleTide(c, top, rowValue(cfg, r.id) != 0);
+      break;
+    case RK_ACT:
+      if (r.id == R_TEST) {
+        drawPlayButton(c, (int16_t)(RIGHT_X - 18), (int16_t)(top + ROW_H / 2), true);
+      } else if (confirm) {
+        const ui::Rect badgeR{ (int16_t)(RIGHT_X - 74), (int16_t)(top + (ROW_H - 26) / 2), 74, 26 };
+        c.fillRect(badgeR.x, badgeR.y, badgeR.w, badgeR.h, ui::tide::WHITE);
+        ui::drawTextCenteredInRect(c, ui::fontCjk14(), badgeR, "再点确认",
+                                   ui::tide::BG_CRIMSON, ui::tide::WHITE);
+      } else {
+        const char* actLbl = (r.id == R_REPROV) ? "启动" : "重置";
+        const ui::Rect actR{ (int16_t)(RIGHT_X - 56), (int16_t)(top + (ROW_H - 28) / 2), 56, 28 };
+        c.drawRect(actR.x, actR.y, actR.w, actR.h, ui::tide::WHITE_DIM);
+        ui::drawTextCenteredInRect(c, ui::fontCjk14(), actR, actLbl, ui::tide::WHITE, rowBg);
+      }
+      break;
+    default:
+      break;
+  }
+
+  const float frac = rowExpandFrac(idx);
+  if (frac >= 0.55f && (r.kind == RK_SLIDER || r.kind == RK_CHOICE)) {
+    // 展开区底色采用通透深蓝 SURF_OPEN，不再乌黑。
+    const int16_t exH = (int16_t)(fullExtraH(idx) * frac);
+    if (exH > 0) c.fillRect(0, (int16_t)(top + ROW_H), UI_W, exH, ui::tide::SURF_OPEN);
+    const uint8_t alpha = (uint8_t)lroundf(frac * 255.0f);
+    if (frac >= 1.0f) {
+      if (r.kind == RK_SLIDER) drawSliderRowTide(c, top, cfg, r);
+      else drawChoiceRowTide(c, top, cfg, r);
+    } else if (alpha > 40) {
+      if (r.kind == RK_SLIDER) drawSliderRowTide(c, top, cfg, r);
+      else drawChoiceRowTide(c, top, cfg, r);
+    }
+  }
+
+  // 通栏 1px 柔和分割线（严格对齐设计稿，贯穿屏宽至滚动条前）
+  c.fillRect(0, (int16_t)(top + rowH(idx) - 1), UI_W - 8, 1, ui::tide::WHITE_LINE);
+}
+
+void drawScrollbarTide(NovaCanvas& c) {
+  const int16_t total = contentH();
+  if (total <= VIEW_H) return;
+  const int16_t trackY = (int16_t)(LIST_TOP + BAR_INSET);
+  const int16_t trackH = (int16_t)(VIEW_H - 2 * BAR_INSET);
+  int16_t thumbH = (int16_t)((int32_t)trackH * VIEW_H / total);
+  if (thumbH < 28) thumbH = 28;
+  const float m = maxScrollF();
+  float clamped = s_scrollY;
+  if (clamped < 0.0f) clamped = 0.0f;
+  if (clamped > m) clamped = m;
+  const int16_t thumbY = (m > 0.0f)
+      ? (int16_t)(trackY + (int32_t)lroundf((float)(trackH - thumbH) * (clamped / m)))
+      : trackY;
+  c.fillRect(UI_W - 5, trackY, BAR_W, trackH,
+             ui::blend565(ui::tide::BG_COBALT, ui::tide::WHITE, 50));
+  c.fillRect(UI_W - 5, thumbY, BAR_W, thumbH, ui::tide::WHITE);
+}
+
+void drawListTide(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg) {
+  c.fillRect(0, LIST_TOP, UI_W, VIEW_H, ui::tide::BG_COBALT);
+  const int16_t scrollPx = (int16_t)lroundf(s_scrollY);
+  int16_t y = (int16_t)(LIST_TOP - scrollPx);
+
+  uint8_t i = 0;
+  while (i < kRowCount) {
+    if (kRows[i].kind != RK_GROUP) {
+      y = (int16_t)(y + rowH(i));
+      i++;
+      continue;
+    }
+
+    const int16_t gh = rowH(i);
+    const int16_t labelTop = (i == 0) ? y : (int16_t)(y + GRP_GAP);
+    if (y + gh > LIST_TOP - 1 && y < UI_H) {
+      drawGroupHeaderTide(c, labelTop, kRows[i].label, i);
+    }
+    y = (int16_t)(y + gh);
+
+    const uint8_t firstItem = (uint8_t)(i + 1);
+    uint8_t endItem = firstItem;
+    while (endItem < kRowCount && kRows[endItem].kind != RK_GROUP) endItem++;
+
+    int16_t iy = y;
+    for (uint8_t j = firstItem; j < endItem; j++) {
+      const int16_t rh = rowH(j);
+      if (iy + rh > LIST_TOP - 1 && iy < UI_H) {
+        drawItemRowTide(c, iy, cfg, j, j + 1 == endItem);
+      }
+      iy = (int16_t)(iy + rh);
+    }
+    y = iy;
+    i = endItem;
+  }
+
+  if (y + TAIL_H > LIST_TOP && y < UI_H) {
+    char tail[48];
+    snprintf(tail, sizeof(tail), "v%s · Nova-%s", NOVA_FW_VER, st.deviceId);
+    ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, (int16_t)(y + 30), tail,
+                         ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+  }
+
+  drawScrollbarTide(c);
+}
+
+}  // namespace tide_draw
+
 void pageSettingsDrawList(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg) {
   if (!s_scrollTouchActive && !s_flinging && !s_bouncing && !s_scrollTween) {
     clampScroll();
+  }
+  if (ui::isTideTheme()) {
+    tide_draw::drawListTide(c, st, cfg);
+    tide_draw::drawHeaderTide(c);
+    return;
   }
   drawList(c, st, cfg);
   drawHeader(c);
 }
 
 void pageSettingsDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg) {
-  c.fillScreen(ui::COL_BG);
+  c.fillScreen(ui::isTideTheme() ? ui::tide::BG_COBALT : ui::COL_BG);
   pageSettingsDrawList(c, st, cfg);
 }
 

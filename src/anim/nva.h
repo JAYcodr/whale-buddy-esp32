@@ -36,6 +36,7 @@ bool nvaAvailable();
 void nvaSetState(NvaAnimKey key, bool once = false, bool restart = false);
 NvaAnimKey nvaCurrentState();
 NvaAnimKey nvaActiveState();
+bool nvaIsSwitching();
 bool nvaIsEnded();
 uint32_t nvaLoopCycles();
 void nvaTick(uint32_t nowMs);

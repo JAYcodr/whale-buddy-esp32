@@ -11,6 +11,47 @@
 
 namespace ui {
 
+// 全局主题轻状态：OCEAN = 深海原版（默认，51 项基线零变更），
+// TIDE = 深蓝潮汐（仅亮屏启用，AOD 恒回纯黑）。main.cpp 在 settingsLoad /
+// SET_THEME / RESTORE_DEFAULTS 之后同步；各页面用 isTideTheme() 分支。
+enum class UiTheme : uint8_t {
+  OCEAN = 0,
+  TIDE  = 1,
+};
+
+UiTheme activeTheme();
+void    setActiveTheme(UiTheme t);
+inline bool isTideTheme() { return activeTheme() == UiTheme::TIDE; }
+
+struct Rect {
+  int16_t x, y, w, h;
+  bool contains(int16_t px, int16_t py) const {
+    return px >= x && py >= y && px < (x + w) && py < (y + h);
+  }
+};
+
+// 主题轻描述符（数据驱动）：收口布局度量、滑屏分割线与局部推送区域，
+// 避免 transition.cpp / main.cpp 散落 if (isTideTheme()) 硬编码。
+struct ThemeSpec {
+  UiTheme     id;
+  const char* name;
+  int16_t     topStripH;
+  int16_t     slideSplitY;
+  bool        pillFollowSlide;
+  Rect        tokensHudTopRect;
+  Rect        tokensHudBotRect;
+  uint16_t    bgPrimary;
+  uint16_t    bgNight;
+  uint16_t    bgAlert;
+  uint16_t    bgTokens;
+  uint16_t    fgPrimary;
+  uint16_t    fgDim;
+  uint16_t    lineMuted;
+};
+
+const ThemeSpec& themeSpecFor(UiTheme t);
+inline const ThemeSpec& activeThemeSpec() { return themeSpecFor(activeTheme()); }
+
 // 4-bpp anti-aliased fonts (PingFang SC + DIN Alternate Bold).
 const AaFont* fontCjk14();
 const AaFont* fontCjk16();
@@ -37,13 +78,6 @@ constexpr uint16_t COL_VIOLET   = rgb565(168, 140, 255);
 constexpr uint16_t COL_GOLD     = rgb565(255, 206, 72);
 constexpr uint16_t COL_SILVER   = rgb565(198, 212, 232);
 constexpr uint16_t COL_BRONZE   = rgb565(224, 146, 86);
-
-struct Rect {
-  int16_t x, y, w, h;
-  bool contains(int16_t px, int16_t py) const {
-    return px >= x && py >= y && px < (x + w) && py < (y + h);
-  }
-};
 
 struct TextMetrics {
   int16_t  x1, y1;

@@ -1,6 +1,7 @@
 #include "ui/pages.h"
 #include "ui/easing.h"
 #include "ui/theme.h"
+#include "ui/tide_palette.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -267,6 +268,220 @@ void drawRankHeaderAndFooter(NovaCanvas& c, const NovaState& st, bool drawTopBar
   }
 }
 
+// ── 潮汐（TIDE）编程榜 ────────────────────────────────────────────────
+// 契约 §4④：钴海蓝记分牌；通栏平铺去圆角卡片；活跃模型整行反白为纯白底
+// + SURF_INK 深蓝字；第 1 名左侧 5px 纯白竖标；滚动条底轨混合白、滑块纯白。
+constexpr int16_t TIDE_LIST_RIGHT = UI_W - 12;   // 行右边界（留足 6px 缝隙不蹭滚动条）
+
+bool drawRankRowsAndScrollbarTide(NovaCanvas& c, const NovaState& st) {
+  c.fillRect(0, LIST_TOP - 2, UI_W, LIST_BOTTOM - (LIST_TOP - 2), ui::tide::BG_COBALT);
+
+  int16_t scrollPx = (int16_t)lroundf(s_scrollY);
+  bool topTouched = false;
+
+  for (int i = 0; i < st.nRows && i < MAX_RANK_ROWS; i++) {
+    const RankRow& row = st.rows[i];
+    const int16_t ry = (int16_t)(LIST_TOP + i * ROW_PITCH - scrollPx);
+    if (ry + ROW_H <= LIST_TOP - 2 || ry >= LIST_BOTTOM) continue;
+    if (ry < 60) topTouched = true;
+
+    const bool active = (st.activeModel[0] && strstr(st.activeModel, row.m) != nullptr);
+    const uint16_t rowBg = active ? ui::tide::WHITE : ui::tide::BG_COBALT;
+    const uint16_t fgMain = active ? ui::tide::SURF_INK : ui::tide::WHITE;
+    const uint16_t fgDim  = active ? ui::tide::MUTED_ON_W : ui::tide::WHITE_DIM;
+
+    c.fillRect(0, ry, TIDE_LIST_RIGHT, ROW_H, rowBg);
+
+    // 第 1 名：左侧 5px 纯白竖标上下各缩 4px，与第 2 名反白行形成清晰切割。
+    if (row.r == 1) {
+      c.fillRect(0, (int16_t)(ry + 4), 5, (int16_t)(ROW_H - 8),
+                 active ? ui::tide::SURF_INK : ui::tide::WHITE);
+    }
+
+    // 两位记分牌序号（01 / 02 / 03 ...）
+    char rankStr[8];
+    snprintf(rankStr, sizeof(rankStr), "%02u", row.r);
+    ui::drawText(c, ui::fontNum24(), 12, (int16_t)(ry + 36), rankStr, fgMain, rowBg);
+
+    // 模型名 + 强度标 / NEW 标
+    char scoreBuf[12];
+    snprintf(scoreBuf, sizeof(scoreBuf), "%.1f", row.s);
+    ui::TextMetrics scoreM = ui::measureText(c, ui::fontNum24(), scoreBuf);
+
+    const int16_t nameX = 52;
+    const int16_t scoreX = (int16_t)(TIDE_LIST_RIGHT - 10 - (int16_t)scoreM.w);
+    bool hasE = (row.e[0] != '\0');
+    int16_t eW = 0;
+    if (hasE) {
+      ui::TextMetrics em = ui::measureText(c, ui::fontAscii14(), row.e);
+      eW = (int16_t)(em.w + 10);
+    }
+    int16_t newW = 0;
+    if (row.isNew) {
+      ui::TextMetrics nm2 = ui::measureText(c, ui::fontAscii14(), "NEW");
+      newW = (int16_t)(nm2.w + 10);
+    }
+    int16_t nameMaxW = (int16_t)(scoreX - 6 - nameX - (hasE ? eW + 4 : 0) -
+                                 (row.isNew ? newW + 4 : 0));
+    if (nameMaxW < 30) nameMaxW = 30;
+
+    char modelBuf[36];
+    ui::fitUtf8Line(c, ui::fontCjk14(), row.m, nameMaxW, modelBuf, sizeof(modelBuf));
+    ui::drawText(c, ui::fontCjk14(), nameX, (int16_t)(ry + 24), modelBuf, fgMain, rowBg);
+
+    ui::TextMetrics nm = ui::measureText(c, ui::fontCjk14(), modelBuf);
+    int16_t px = (int16_t)(nameX + (int16_t)nm.w + 6);
+    if (hasE) {
+      c.drawRect(px, (int16_t)(ry + 9), eW, 20, fgDim);
+      ui::drawTextCenteredInRect(c, ui::fontAscii14(), { px, (int16_t)(ry + 9), eW, 20 },
+                                 row.e, fgDim, rowBg);
+      px = (int16_t)(px + eW + 5);
+    }
+    if (row.isNew) {
+      c.fillRect(px, (int16_t)(ry + 9), newW, 20, fgMain);
+      ui::drawTextCenteredInRect(c, ui::fontAscii14(), { px, (int16_t)(ry + 9), newW, 20 },
+                                 "NEW", rowBg, fgMain);
+    }
+
+    // 副行指标：全纯白 / 浅蓝，去掉原版五颜六色
+    char numBuf[10];
+    if (s_viewMode == 0) {
+      ui::drawText(c, ui::fontAscii14(), nameX, (int16_t)(ry + 45), "B", fgDim, rowBg);
+      snprintf(numBuf, sizeof(numBuf), "%u", row.b);
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(nameX + 13), (int16_t)(ry + 45),
+                   numBuf, fgMain, rowBg);
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(nameX + 48), (int16_t)(ry + 45), "F", fgDim, rowBg);
+      snprintf(numBuf, sizeof(numBuf), "%u", row.f);
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(nameX + 61), (int16_t)(ry + 45),
+                   numBuf, fgMain, rowBg);
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(nameX + 96), (int16_t)(ry + 45), "K", fgDim, rowBg);
+      snprintf(numBuf, sizeof(numBuf), "%u", row.k);
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(nameX + 109), (int16_t)(ry + 45),
+                   numBuf, fgMain, rowBg);
+    } else {
+      ui::drawText(c, ui::fontAscii14(), nameX, (int16_t)(ry + 45), "A", fgDim, rowBg);
+      snprintf(numBuf, sizeof(numBuf), "%u", row.a);
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(nameX + 13), (int16_t)(ry + 45),
+                   numBuf, fgMain, rowBg);
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(nameX + 48), (int16_t)(ry + 45), "Q", fgDim, rowBg);
+      snprintf(numBuf, sizeof(numBuf), "%u", row.q);
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(nameX + 61), (int16_t)(ry + 45),
+                   numBuf, fgMain, rowBg);
+      char rawMeta[28], meta[28];
+      if (row.dur[0] && row.cost[0]) snprintf(rawMeta, sizeof(rawMeta), "%s %s", row.dur, row.cost);
+      else if (row.dur[0]) snprintf(rawMeta, sizeof(rawMeta), "%s", row.dur);
+      else snprintf(rawMeta, sizeof(rawMeta), "%s", row.cost[0] ? row.cost : "--");
+      ui::fitUtf8Line(c, ui::fontCjk14(), rawMeta, 104, meta, sizeof(meta));
+      ui::drawText(c, ui::fontCjk14(), (int16_t)(nameX + 96), (int16_t)(ry + 45), meta, fgDim, rowBg);
+    }
+
+    // 总分右对齐（fontNum24）
+    ui::drawTextRight(c, ui::fontNum24(), (int16_t)(TIDE_LIST_RIGHT - 12), (int16_t)(ry + 36),
+                      scoreBuf, fgMain, rowBg);
+
+    // 行间 1px 柔和分割线
+    c.fillRect(0, (int16_t)(ry + ROW_H), TIDE_LIST_RIGHT, 1, ui::tide::WHITE_LINE);
+  }
+
+  const int16_t maxS = maxScrollFor(st.nRows);
+  if (maxS > 0) {
+    const int16_t sbX = UI_W - 6;
+    const int16_t sbY = LIST_TOP;
+    const int16_t sbH = (int16_t)(LIST_BOTTOM - LIST_TOP - 6);
+    c.fillRect(sbX, sbY, 4, sbH, ui::blend565(ui::tide::BG_COBALT, ui::tide::WHITE, 50));
+    int16_t thumbH = (int16_t)((int32_t)sbH * (LIST_BOTTOM - LIST_TOP) / (st.nRows * ROW_PITCH));
+    if (thumbH < 24) thumbH = 24;
+    int16_t clampedScroll = scrollPx;
+    if (clampedScroll < 0) clampedScroll = 0;
+    if (clampedScroll > maxS) clampedScroll = maxS;
+    const int16_t thumbY = (int16_t)(sbY + (int32_t)(sbH - thumbH) * clampedScroll / maxS);
+    c.fillRect(sbX, thumbY, 4, thumbH, ui::tide::WHITE);
+  }
+
+  return topTouched;
+}
+
+void drawRankHeaderAndFooterTide(NovaCanvas& c, const NovaState& st, bool drawTopBar) {
+  if (drawTopBar) {
+    c.fillRect(0, 0, UI_W, LIST_TOP - 2, ui::tide::BG_COBALT);
+    ui::tide::drawTopStrip(c, st, 3, ui::tide::BG_COBALT);
+  } else {
+    c.fillRect(0, 38, UI_W, LIST_TOP - 2 - 38, ui::tide::BG_COBALT);
+  }
+  c.fillRect(0, LIST_BOTTOM, UI_W, UI_H - LIST_BOTTOM, ui::tide::BG_COBALT);
+
+  int16_t maxS = maxScrollFor(st.nRows);
+  int16_t clampedScroll = (int16_t)lroundf(s_scrollY);
+  if (clampedScroll < 0) clampedScroll = 0;
+  if (clampedScroll > maxS) clampedScroll = maxS;
+
+  int firstVis = (clampedScroll + 12) / ROW_PITCH + 1;
+  int lastVis = (clampedScroll + (LIST_BOTTOM - LIST_TOP) - 12) / ROW_PITCH + 1;
+  if (firstVis < 1) firstVis = 1;
+  if (lastVis > st.nRows) lastVis = st.nRows;
+  if (lastVis < firstVis) lastVis = firstVis;
+
+  char titleBuf[40];
+  snprintf(titleBuf, sizeof(titleBuf), "编程榜 %d-%d/%u", firstVis, lastVis, (unsigned)st.nRows);
+  ui::drawText(c, ui::fontCjk16(), UI_SAFE_L, 80, titleBuf, ui::tide::WHITE, ui::tide::BG_COBALT);
+
+  // 模式切换钮：纯白实心反色（钴蓝字），往上缩 4px 给下方 2px 白线留出呼吸缝
+  const char* modeLbl = (s_viewMode == 0) ? "B·F·K 维度" : "审美·耗时";
+  const ui::Rect tideModeR{ BTN_MODE.x, (int16_t)(BTN_MODE.y - 5), BTN_MODE.w, BTN_MODE.h };
+  c.fillRect(tideModeR.x, tideModeR.y, tideModeR.w, tideModeR.h, ui::tide::WHITE);
+  ui::drawTextCenteredInRect(c, ui::fontCjk14(), tideModeR, modeLbl,
+                             ui::tide::BG_COBALT, ui::tide::WHITE);
+
+  // 表头下方 2px 纯白实线
+  c.fillRect(0, 93, UI_W, 2, ui::tide::WHITE);
+
+  if (s_hasScrolled) {
+    char ageBuf[16];
+    if (st.rankRxMs == 0) {
+      snprintf(ageBuf, sizeof(ageBuf), "--");
+    } else {
+      uint32_t ageSec = (st.nowMs >= st.rankRxMs) ? ((st.nowMs - st.rankRxMs) / 1000u) : 0u;
+      if (ageSec < 60) snprintf(ageBuf, sizeof(ageBuf), "%us前", (unsigned)ageSec);
+      else if (ageSec < 3600) snprintf(ageBuf, sizeof(ageBuf), "%um前", (unsigned)(ageSec / 60));
+      else snprintf(ageBuf, sizeof(ageBuf), "%uh前", (unsigned)(ageSec / 3600));
+    }
+    char footBuf[64];
+    const char* src = st.rankSrc[0] ? st.rankSrc : "ModelDial";
+    const char* lic = st.rankLic[0] ? st.rankLic : "CC BY 4.0";
+    snprintf(footBuf, sizeof(footBuf), "%s · %s · 更新于 %s", src, lic, ageBuf);
+    ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 424, footBuf,
+                         ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+  } else {
+    ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 424,
+                         "上下滑动翻榜 · ModelDial CC BY 4.0",
+                         ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+  }
+}
+
+void drawRankTide(NovaCanvas& c, const NovaState& st) {
+  c.fillScreen(ui::tide::BG_COBALT);
+
+  int16_t maxS = maxScrollFor(st.nRows);
+  if (!s_touchActive && !s_flinging && !s_bouncing) {
+    if (s_scrollY > (float)maxS) s_scrollY = (float)maxS;
+    if (s_scrollY < 0.0f) s_scrollY = 0.0f;
+  }
+
+  if (st.nRows == 0) {
+    ui::tide::drawTopStrip(c, st, 3, ui::tide::BG_COBALT);
+    ui::drawText(c, ui::fontCjk16(), UI_SAFE_L, 84, "编程榜", ui::tide::WHITE, ui::tide::BG_COBALT);
+    c.fillRect(0, 90, UI_W, 2, ui::tide::WHITE);
+    ui::drawTextCentered(c, ui::fontCjk16(), UI_W / 2, 200, "暂无榜单数据",
+                         ui::tide::WHITE, ui::tide::BG_COBALT);
+    ui::drawTextCentered(c, ui::fontCjk14(), UI_W / 2, 232, "等待 DSH 同步 ModelDial",
+                         ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+    return;
+  }
+
+  drawRankRowsAndScrollbarTide(c, st);
+  drawRankHeaderAndFooterTide(c, st, true);
+}
+
 }  // namespace
 
 void pageRankResetScroll() {
@@ -501,6 +716,12 @@ void pageRankDrawList(NovaCanvas& c, const NovaState& st) {
   s_lastNRows = st.nRows;
   if (st.nRows == 0) return;
 
+  if (ui::isTideTheme()) {
+    bool topTouched = drawRankRowsAndScrollbarTide(c, st);
+    drawRankHeaderAndFooterTide(c, st, topTouched);
+    return;
+  }
+
   bool topTouched = drawRankRowsAndScrollbar(c, st);
   // Keep fb outside [96, 391) spotless so partial display pushes never leak clipped row edges.
   drawRankHeaderAndFooter(c, st, topTouched);
@@ -508,6 +729,10 @@ void pageRankDrawList(NovaCanvas& c, const NovaState& st) {
 
 void pageRankDraw(NovaCanvas& c, const NovaState& st) {
   s_lastNRows = st.nRows;
+  if (ui::isTideTheme()) {
+    drawRankTide(c, st);
+    return;
+  }
   c.fillScreen(ui::COL_BG);
 
   int16_t maxS = maxScrollFor(st.nRows);
@@ -532,7 +757,10 @@ void pageRankDraw(NovaCanvas& c, const NovaState& st) {
 }
 
 UiAction pageRankTap(int16_t x, int16_t y) {
-  if (BTN_MODE.contains(x, y)) {
+  const ui::Rect btn = ui::isTideTheme()
+                         ? ui::Rect{ BTN_MODE.x, (int16_t)(BTN_MODE.y - 5), BTN_MODE.w, BTN_MODE.h }
+                         : BTN_MODE;
+  if (btn.contains(x, y)) {
     s_viewMode = (s_viewMode + 1) % 2;
     return UiAction{ UiAction::RANK_REDRAW, 0 };
   }
@@ -542,8 +770,11 @@ UiAction pageRankTap(int16_t x, int16_t y) {
 bool pageRankHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettings&,
                      ui::Rect* out) {
   if (!out || st.nRows == 0) return false;
-  if (BTN_MODE.contains(x, y)) {
-    *out = BTN_MODE;
+  const ui::Rect btn = ui::isTideTheme()
+                         ? ui::Rect{ BTN_MODE.x, (int16_t)(BTN_MODE.y - 5), BTN_MODE.w, BTN_MODE.h }
+                         : BTN_MODE;
+  if (btn.contains(x, y)) {
+    *out = btn;
     return true;
   }
   return false;
@@ -553,4 +784,12 @@ ui::Rect pageRankListRect() {
   // 推送从 LIST_TOP 上方的清底色带起 2px（96）：98 是滚动裁切线，
   // 这 2px 差值是有意的，别对齐成 98。
   return { 0, LIST_TOP - 2, UI_W, LIST_BOTTOM - (LIST_TOP - 2) };
+}
+
+void pageRankOnExit() {
+  s_touchActive = false;
+  s_flinging = false;
+  s_bouncing = false;
+  s_flingVel = 0.0f;
+  s_sampleCount = 0;
 }

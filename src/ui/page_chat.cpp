@@ -1,6 +1,7 @@
 #include "ui/pages.h"
 #include "ui/icons.h"
 #include "ui/theme.h"
+#include "ui/tide_palette.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -741,6 +742,517 @@ void drawToast(NovaCanvas& c, const NovaState& st) {
   ui::drawTextCenteredInRect(c, ui::fontCjk14(), tr, st.boardToast, ui::COL_TEXT, ui::COL_CARD_HI);
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// 潮汐（TIDE）命令看板
+// 契约 §4⑦：几何命令方块（零圆角）+ 待批红块 + 反白展开 + 夜汐录音 + 白纸回执。
+// 所有矩形全部复用原版的 boardCardRect / dockBtnRect / draftCardRect /
+// delivCardRect / draftActionRects，保证命中判定两种主题完全一致。
+// ══════════════════════════════════════════════════════════════════════
+namespace tide_draw {
+
+void drawHeaderTide(NovaCanvas& c, const NovaState& st, const BoardSession* target) {
+  const int16_t ox = ui::burnOffsetX(st.burnInStep);
+  const int16_t oy = ui::burnOffsetY(st.burnInStep);
+
+  c.fillRect(0, 38, UI_W, (int16_t)(VIEW_TOP_BASE + oy - 38), ui::tide::BG_COBALT);
+  ui::tide::drawTopStrip(c, st, 5, ui::tide::BG_COBALT);
+
+  const char* hdTitle = st.chatDraftActive ? "确认一下"
+                       : (st.chatDelivery.kind != ChatDelivKind::NONE ? "已送达" : "命令看板");
+  ui::drawText(c, ui::fontCjk16(), (int16_t)(UI_SAFE_L + 2 + ox), (int16_t)(78 + oy),
+               hdTitle, ui::tide::WHITE, ui::tide::BG_COBALT);
+
+  char sub[72] = {};
+  uint16_t subCol = ui::tide::WHITE_DIM;
+  if (st.chatDraftActive) {
+    snprintf(sub, sizeof(sub), "说完了 · 确认一下");
+  } else if (target) {
+    char rawSub[72];
+    snprintf(rawSub, sizeof(rawSub), "发往 · %s", target->name);
+    ui::fitUtf8Line(c, ui::fontCjk14(), rawSub, (int16_t)(UI_SAFE_W - 114), sub, sizeof(sub));
+    subCol = ui::tide::WHITE;
+  } else {
+    snprintf(sub, sizeof(sub), "全局 · 只读巡检");
+  }
+  ui::drawText(c, ui::fontCjk14(), (int16_t)(UI_SAFE_L + 2 + ox), (int16_t)(98 + oy),
+               sub, subCol, ui::tide::BG_COBALT);
+
+  // 右侧反白状态章：待批 -> 绯红实心 + 纯白细框，其余 -> 纯白实心
+  char badgeTxt[24] = {};
+  uint16_t ignoreBg = 0, ignoreBd = 0, ignoreFg = 0;
+  bool hasWait = false;
+  computeHeaderBadge(st, badgeTxt, sizeof(badgeTxt), &ignoreBg, &ignoreBd, &ignoreFg, &hasWait);
+  const ui::Rect br = headerBadgeRect(st, badgeTxt);
+  const uint16_t chipBg = hasWait ? ui::tide::BG_CRIMSON : ui::tide::WHITE;
+  c.fillRect(br.x, br.y, br.w, br.h, chipBg);
+  if (hasWait) {
+    c.drawRect(br.x, br.y, br.w, br.h, ui::tide::WHITE);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), br, badgeTxt, ui::tide::WHITE, chipBg);
+  } else {
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), br, badgeTxt, ui::tide::BG_COBALT, chipBg);
+  }
+  // 页头底部分割线，与下方方块群拉开清晰层次
+  c.fillRect(UI_SAFE_L + ox, (int16_t)(VIEW_TOP_BASE - 4 + oy), UI_SAFE_W, 1, ui::tide::WHITE_LINE);
+}
+
+void drawSessionCardTide(NovaCanvas& c, const NovaState& st, const BoardSession& s,
+                         ui::Rect r, bool selected, bool expanded, bool mini) {
+  const bool waiting = (s.state == BoardSessState::WAIT);
+  const bool running = (s.state == BoardSessState::RUN);
+
+  // 底色映射：展开卡反白为纯白，WAIT 整块绯红，RUN 深靛蓝，IDLE 轻蓝。
+  uint16_t bg = ui::tide::SURF_SUB;
+  uint16_t fgMain = ui::tide::WHITE;
+  uint16_t fgDim = ui::tide::WHITE_DIM;
+  if (expanded) {
+    bg = ui::tide::WHITE;
+    fgMain = ui::tide::SURF_INK;
+    fgDim = ui::tide::MUTED_ON_W;
+  } else if (waiting) {
+    bg = ui::tide::BG_CRIMSON;
+  } else if (running) {
+    bg = ui::tide::SURF_DEEP;
+  }
+
+  // 0px 圆角几何方块（去外黑框，白卡靠纯净白面 + 左侧 5px 深靛蓝竖标立住）
+  c.fillRect(r.x, r.y, r.w, r.h, bg);
+
+  // 左侧 5px 竖标：WAIT / RUN / 选中 都要
+  if (waiting || running || selected) {
+    const uint16_t barCol = expanded ? ui::tide::SURF_INK : ui::tide::WHITE;
+    c.fillRect(r.x, r.y, 5, r.h, barCol);
+  }
+
+  char timeBuf[24];
+  fmtSessTime(s, st.nowMs, st.boardRxMs, timeBuf, sizeof(timeBuf));
+  const uint16_t timeW = ui::measureText(c, ui::fontCjk14(), timeBuf).w;
+  const int16_t rightReserve = (int16_t)(timeW + (selected && !expanded ? 38 : 16));
+
+  const int16_t row1BaseY = mini ? (int16_t)(r.y + 24) : (int16_t)(r.y + 25);
+  int16_t nameX = (int16_t)(r.x + 16);
+  // 严格对齐设计稿：状态标志放在会话名左侧（在跑带实心圆点、待批带 !），右侧保持纯文字读数。
+  if (running) {
+    const uint16_t dotCol = expanded ? ui::tide::BG_COBALT : ui::tide::WHITE;
+    ui::aaFillCircle(c, (int16_t)(nameX + 3), (int16_t)(row1BaseY - 6), 3, dotCol);
+    nameX = (int16_t)(nameX + 12);
+  } else if (waiting) {
+    ui::drawText(c, ui::fontAscii18(), nameX, row1BaseY, "!", ui::tide::WHITE, bg);
+    nameX = (int16_t)(nameX + 12);
+  }
+
+  const int16_t nameMaxW = (int16_t)(r.x + r.w - rightReserve - nameX - 6);
+  char nameBuf[48];
+  const AaFont* nameFont = mini ? ui::fontCjk14() : ui::fontCjk16();
+  ui::fitUtf8Line(c, nameFont, s.name, nameMaxW > 40 ? nameMaxW : 40, nameBuf, sizeof(nameBuf));
+  ui::drawText(c, nameFont, nameX, row1BaseY, nameBuf, fgMain, bg);
+
+  const int16_t timeRightX = (int16_t)(r.x + r.w - (selected && !expanded ? 34 : 12));
+  ui::drawTextRight(c, ui::fontCjk14(), timeRightX, (int16_t)(row1BaseY - 1),
+                    timeBuf, waiting ? ui::tide::WHITE : fgDim, bg);
+
+  if (selected && !expanded) {
+    const int16_t cx = (int16_t)(r.x + r.w - 16);
+    const int16_t cy = (int16_t)(r.y + 18);
+    c.fillRect((int16_t)(cx - 9), (int16_t)(cy - 9), 18, 18, ui::tide::WHITE);
+    ui::drawIcon(c, kIconCheck12, (int16_t)(cx - 6), (int16_t)(cy - 6), ui::tide::BG_COBALT);
+  }
+
+  if (mini) return;
+
+  char line2[96] = {};
+  if (expanded) {
+    snprintf(line2, sizeof(line2), "%s", s.act[0] ? s.act : (s.note[0] ? s.note : "待命中"));
+  } else if (s.act[0] && s.note[0]) {
+    snprintf(line2, sizeof(line2), "%s · %s", s.act, s.note);
+  } else if (s.act[0]) {
+    snprintf(line2, sizeof(line2), "%s", s.act);
+  } else if (s.cwd[0] && s.note[0]) {
+    snprintf(line2, sizeof(line2), "%s · %s", s.cwd, s.note);
+  } else if (s.note[0]) {
+    snprintf(line2, sizeof(line2), "%s", s.note);
+  } else {
+    snprintf(line2, sizeof(line2), "%s", s.cwd[0] ? s.cwd : "待命中");
+  }
+  char line2Fit[96];
+  ui::fitUtf8Line(c, ui::fontCjk14(), line2, (int16_t)(r.w - 30), line2Fit, sizeof(line2Fit));
+  ui::drawText(c, ui::fontCjk14(), (int16_t)(r.x + 16), (int16_t)(r.y + 47),
+               line2Fit, waiting ? ui::tide::dimOn(ui::tide::BG_CRIMSON) : fgDim, bg);
+
+  if (!expanded) return;
+
+  char meta[80] = {};
+  if (s.cwd[0] && s.note[0]) snprintf(meta, sizeof(meta), "%s · %s", s.cwd, s.note);
+  else if (s.cwd[0]) snprintf(meta, sizeof(meta), "%s", s.cwd);
+  else snprintf(meta, sizeof(meta), "%s", s.note);
+  char metaFit[80];
+  ui::fitUtf8Line(c, ui::fontCjk14(), meta, (int16_t)(r.w - 30), metaFit, sizeof(metaFit));
+  ui::drawText(c, ui::fontCjk14(), (int16_t)(r.x + 16), (int16_t)(r.y + 68),
+               metaFit, ui::tide::MUTED_ON_W, bg);
+
+  const uint8_t ns = (s.nSteps <= MAX_SESS_STEPS) ? s.nSteps : (uint8_t)MAX_SESS_STEPS;
+  if (ns == 0) return;
+
+  // 步骤区：嵌 SURF_INK 深蓝终端盒，纯白等宽文本，左右对齐 16px。
+  const int16_t boxY = (int16_t)(r.y + 78);
+  const int16_t boxH = (int16_t)(10 + ns * 20);
+  c.fillRect((int16_t)(r.x + 14), boxY, (int16_t)(r.w - 26), boxH, ui::tide::SURF_INK);
+  for (uint8_t i = 0; i < ns; i++) {
+    const BoardStep& sp = s.steps[i];
+    const int16_t sy = (int16_t)(boxY + 19 + i * 20);
+    if (sp.time[0]) {
+      ui::drawText(c, ui::fontAscii14(), (int16_t)(r.x + 18), sy,
+                   sp.time, ui::tide::WHITE_DIM, ui::tide::SURF_INK);
+    }
+    char stepDesc[64];
+    if (sp.tool[0] && sp.arg[0]) snprintf(stepDesc, sizeof(stepDesc), "%s  %s", sp.tool, sp.arg);
+    else snprintf(stepDesc, sizeof(stepDesc), "%s", sp.arg[0] ? sp.arg : sp.tool);
+    char stepFit[64];
+    ui::fitUtf8Line(c, ui::fontCjk14(), stepDesc, (int16_t)(r.w - 86), stepFit, sizeof(stepFit));
+    ui::drawText(c, ui::fontCjk14(), (int16_t)(r.x + 62), sy,
+                 stepFit, ui::tide::WHITE, ui::tide::SURF_INK);
+  }
+}
+
+void drawLastSayBoxTide(NovaCanvas& c, const NovaState& st, const ui::Rect& lr) {
+  c.fillRect(lr.x, lr.y, lr.w, lr.h, ui::tide::SURF_DEEP);
+  char ago[20];
+  fmtAgoText(st.lastSayAgeSec, st.lastSayRxMs, st.nowMs, ago, sizeof(ago));
+  char hd[48];
+  snprintf(hd, sizeof(hd), "上次播报 · %s · 点按重播", ago);
+  ui::drawText(c, ui::fontCjk14(), (int16_t)(lr.x + 12), (int16_t)(lr.y + 21),
+               hd, ui::tide::WHITE_DIM, ui::tide::SURF_DEEP);
+  ui::drawIcon(c, kIconPlay12, (int16_t)(lr.x + lr.w - 22), (int16_t)(lr.y + 10), ui::tide::WHITE);
+
+  char line[128];
+  ui::fitUtf8Line(c, ui::fontCjk14(), st.lastSayText, (int16_t)(lr.w - 24), line, sizeof(line));
+  ui::drawText(c, ui::fontCjk14(), (int16_t)(lr.x + 12), (int16_t)(lr.y + 44),
+               line, ui::tide::WHITE, ui::tide::SURF_DEEP);
+}
+
+void drawDeliveryCardTide(NovaCanvas& c, const NovaState& st, const ui::Rect& dr) {
+  const ChatDelivery& d = st.chatDelivery;
+
+  char title[40] = {};
+  uint16_t accentBar = ui::tide::WHITE;
+  switch (d.kind) {
+    case ChatDelivKind::SENT:
+      snprintf(title, sizeof(title), "已送达");
+      break;
+    case ChatDelivKind::RUN: {
+      uint32_t extra = (d.updatedMs > 0 && st.nowMs >= d.updatedMs)
+                         ? ((st.nowMs - d.updatedMs) / 1000u) : 0u;
+      snprintf(title, sizeof(title), "在跑 · %lu 秒", (unsigned long)(d.secs + extra));
+      break;
+    }
+    case ChatDelivKind::REPLY:
+      snprintf(title, sizeof(title), "已送达");
+      break;
+    case ChatDelivKind::FAIL:
+      snprintf(title, sizeof(title), "未送达");
+      accentBar = ui::tide::BG_CRIMSON;
+      break;
+    case ChatDelivKind::MUTE:
+      snprintf(title, sizeof(title), "它没说完");
+      accentBar = ui::tide::MUTED_ON_W;
+      break;
+    default:
+      return;
+  }
+
+  // 白纸卡：纯白底 + SURF_INK 深蓝大字，左侧 5px 状态竖标。
+  c.fillRect(dr.x, dr.y, dr.w, dr.h, ui::tide::WHITE);
+  c.fillRect(dr.x, dr.y, 5, dr.h, accentBar);
+
+  ui::drawText(c, ui::fontCjk16(), (int16_t)(dr.x + 16), (int16_t)(dr.y + 30),
+               title, ui::tide::SURF_INK, ui::tide::WHITE);
+
+  if (d.kind == ChatDelivKind::REPLY) {
+    char ago[20];
+    fmtAgoText(d.secs, d.updatedMs, st.nowMs, ago, sizeof(ago));
+    ui::drawTextRight(c, ui::fontCjk14(), (int16_t)(dr.x + dr.w - 14), (int16_t)(dr.y + 30),
+                      ago, ui::tide::MUTED_ON_W, ui::tide::WHITE);
+  }
+
+  const int16_t bodyW = (int16_t)(dr.w - 32);
+  const int16_t bodyX = (int16_t)(dr.x + 16);
+  if (d.kind == ChatDelivKind::REPLY) {
+    const char* txt = d.text[0] ? d.text : "已完成";
+    ui::drawWrappedUtf8(c, ui::fontCjk16(), bodyX, (int16_t)(dr.y + 62),
+                        bodyW, 25, 3, txt, ui::tide::SURF_INK, ui::tide::WHITE);
+    const int16_t py = (int16_t)(dr.y + dr.h - 26);
+    ui::drawIcon(c, kIconPlay12, bodyX, py, ui::tide::BG_COBALT);
+    ui::drawText(c, ui::fontCjk14(), (int16_t)(bodyX + 16), (int16_t)(py + 11),
+                 "播报", ui::tide::BG_COBALT, ui::tide::WHITE);
+  } else {
+    char body[160] = {};
+    if (d.kind == ChatDelivKind::SENT) {
+      if (d.queuePos > 0) snprintf(body, sizeof(body), "排队第 %u 位 · 已送入会话", (unsigned)d.queuePos);
+      else snprintf(body, sizeof(body), "已进入会话队列");
+    } else if (d.kind == ChatDelivKind::RUN) {
+      snprintf(body, sizeof(body), "它正在处理这句话，等它说完");
+    } else if (d.kind == ChatDelivKind::FAIL) {
+      snprintf(body, sizeof(body), "%s", d.text[0] ? d.text : "目标会话已换段，请重选");
+    } else {
+      snprintf(body, sizeof(body), "%s", d.text[0] ? d.text : "这轮没有可播报的内容，不是网络问题");
+    }
+    ui::drawWrappedUtf8(c, ui::fontCjk14(), bodyX, (int16_t)(dr.y + 62),
+                        bodyW, 23, 3, body, ui::tide::MUTED_ON_W, ui::tide::WHITE);
+    ui::drawText(c, ui::fontCjk14(), bodyX, (int16_t)(dr.y + dr.h - 14),
+                 "点按返回看板", ui::tide::MUTED_ON_W, ui::tide::WHITE);
+  }
+}
+
+void drawBoardViewTide(NovaCanvas& c, const NovaState& st) {
+  const int16_t ox = ui::burnOffsetX(st.burnInStep);
+  const int16_t oy = ui::burnOffsetY(st.burnInStep);
+  const uint8_t n = boardCount(st);
+
+  if (st.chatDelivery.kind != ChatDelivKind::NONE) {
+    const int sIdx = deliverySessionIndex(st);
+    if (sIdx >= 0) {
+      const BoardSession& bs = st.boardSessions[sIdx];
+      const bool sel = (strcmp(bs.id, st.boardTargetId) == 0);
+      drawSessionCardTide(c, st, bs, delivTargetRect(st), sel, false, false);
+    }
+    if (n > 1) {
+      const ui::Rect fr = delivFoldRect(st);
+      char fold[40];
+      snprintf(fold, sizeof(fold), "另外 %u 个会话 · 点开", (unsigned)(n - 1));
+      ui::drawTextCenteredInRect(c, ui::fontCjk14(), fr, fold,
+                                 ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+    }
+    drawDeliveryCardTide(c, st, delivCardRect(st));
+    return;
+  }
+
+  if (n == 0) {
+    const ui::Rect emptyR{ (int16_t)(UI_SAFE_L + ox), (int16_t)(VIEW_TOP_BASE + 16 + oy),
+                           (int16_t)UI_SAFE_W, 118 };
+    c.fillRect(emptyR.x, emptyR.y, emptyR.w, emptyR.h, ui::tide::SURF_DEEP);
+    ui::drawTextCentered(c, ui::fontCjk16(), (int16_t)(UI_W / 2 + ox),
+                         (int16_t)(VIEW_TOP_BASE + 64 + oy),
+                         "命令看板就绪", ui::tide::WHITE, ui::tide::SURF_DEEP);
+    ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(UI_W / 2 + ox),
+                         (int16_t)(VIEW_TOP_BASE + 94 + oy),
+                         "暂无活跃 DSH 会话", ui::tide::WHITE_DIM, ui::tide::SURF_DEEP);
+    if (st.lastSayText[0]) drawLastSayBoxTide(c, st, lastSayRect(st, 0));
+    return;
+  }
+
+  const uint8_t showCount = (n <= 3) ? n : 3;
+  const int expIdx = expandedIndex(st);
+  for (uint8_t i = 0; i < showCount; i++) {
+    const BoardSession& bs = st.boardSessions[i];
+    const bool sel = (strcmp(bs.id, st.boardTargetId) == 0);
+    const bool exp = ((int)i == expIdx);
+    const bool mini = (expIdx >= 0 && !exp);
+    drawSessionCardTide(c, st, bs, boardCardRect(st, i, showCount, expIdx), sel, exp, mini);
+  }
+
+  if (expIdx < 0 && st.lastSayText[0]) {
+    drawLastSayBoxTide(c, st, lastSayRect(st, showCount));
+  }
+}
+
+void drawDraftViewTide(NovaCanvas& c, const NovaState& st) {
+  const ui::Rect dc = draftCardRect(st);
+  // 白纸确认卡
+  c.fillRect(dc.x, dc.y, dc.w, dc.h, ui::tide::WHITE);
+
+  ui::drawText(c, ui::fontCjk14(), (int16_t)(dc.x + 14), (int16_t)(dc.y + 24),
+               "识别到", ui::tide::BG_COBALT, ui::tide::WHITE);
+
+  const char* dtxt = st.chatDraftText[0] ? st.chatDraftText : "...";
+  ui::drawWrappedUtf8(c, ui::fontCjk16(), (int16_t)(dc.x + 14), (int16_t)(dc.y + 52),
+                      (int16_t)(dc.w - 28), 24, 3, dtxt, ui::tide::SURF_INK, ui::tide::WHITE);
+
+  const BoardSession* target = novaBoardFind(st, st.boardTargetId);
+  if (target && target->state == BoardSessState::WAIT) target = nullptr;
+  if (!target) target = novaBoardDefaultTarget(st);
+
+  const ui::Rect tr = draftTargetRect(st);
+  c.fillRect(tr.x, tr.y, tr.w, tr.h, ui::tide::SURF_TINT);
+  ui::drawText(c, ui::fontCjk14(), (int16_t)(tr.x + 10), (int16_t)(tr.y + 23),
+               "发往", ui::tide::MUTED_ON_W, ui::tide::SURF_TINT);
+
+  if (target) {
+    c.fillRect((int16_t)(tr.x + 48), (int16_t)(tr.y + 15), 6, 6,
+               target->state == BoardSessState::WAIT ? ui::tide::BG_CRIMSON
+                                                     : ui::tide::BG_COBALT);
+    char tname[48];
+    ui::fitUtf8Line(c, ui::fontCjk14(), target->name, (int16_t)(tr.w - 134), tname, sizeof(tname));
+    ui::drawText(c, ui::fontCjk14(), (int16_t)(tr.x + 60), (int16_t)(tr.y + 23),
+                 tname, ui::tide::SURF_INK, ui::tide::SURF_TINT);
+  } else {
+    ui::drawText(c, ui::fontCjk14(), (int16_t)(tr.x + 46), (int16_t)(tr.y + 23),
+                 "暂无可用会话", ui::tide::MUTED_ON_W, ui::tide::SURF_TINT);
+  }
+
+  ui::drawTextRight(c, ui::fontCjk14(), (int16_t)(tr.x + tr.w - 22), (int16_t)(tr.y + 23),
+                    "换一个", ui::tide::BG_COBALT, ui::tide::SURF_TINT);
+  ui::drawIcon(c, kIconChevronRight12, (int16_t)(tr.x + tr.w - 20), (int16_t)(tr.y + 12),
+               ui::tide::BG_COBALT);
+
+  ui::Rect rCancel{}, rPrimary{}, rSteer{};
+  draftActionRects(st, target, &rCancel, &rPrimary, &rSteer);
+
+  // 重说：深蓝细框
+  c.drawRect(rCancel.x, rCancel.y, rCancel.w, rCancel.h, ui::tide::SURF_INK);
+  c.drawRect(rCancel.x + 1, rCancel.y + 1, rCancel.w - 2, rCancel.h - 2, ui::tide::SURF_INK);
+  ui::drawTextCenteredInRect(c, ui::fontCjk14(), rCancel,
+                             (target && target->state == BoardSessState::RUN) ? "取消" : "重说",
+                             ui::tide::SURF_INK, ui::tide::WHITE);
+
+  if (target && target->state == BoardSessState::RUN) {
+    // 排队：钴蓝实心
+    c.fillRect(rPrimary.x, rPrimary.y, rPrimary.w, rPrimary.h, ui::tide::BG_COBALT);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), rPrimary, "排队",
+                               ui::tide::WHITE, ui::tide::BG_COBALT);
+    // 打断：绯红实心
+    c.fillRect(rSteer.x, rSteer.y, rSteer.w, rSteer.h, ui::tide::BG_CRIMSON);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), rSteer, "打断",
+                               ui::tide::WHITE, ui::tide::BG_CRIMSON);
+    ui::drawText(c, ui::fontCjk14(), (int16_t)(dc.x + 14), (int16_t)(dc.y + 232),
+                 "目标在跑 · 排队等本轮，打断立即插话",
+                 ui::tide::MUTED_ON_W, ui::tide::WHITE);
+  } else if (target) {
+    c.fillRect(rPrimary.x, rPrimary.y, rPrimary.w, rPrimary.h, ui::tide::BG_COBALT);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), rPrimary, "发送",
+                               ui::tide::WHITE, ui::tide::BG_COBALT);
+    ui::drawText(c, ui::fontCjk14(), (int16_t)(dc.x + 14), (int16_t)(dc.y + 232),
+                 "确认无误后发送，永不自动倒计时",
+                 ui::tide::MUTED_ON_W, ui::tide::WHITE);
+  } else {
+    c.fillRect(rPrimary.x, rPrimary.y, rPrimary.w, rPrimary.h, ui::tide::SURF_TINT);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), rPrimary, "暂无会话",
+                               ui::tide::MUTED_ON_W, ui::tide::SURF_TINT);
+    ui::drawText(c, ui::fontCjk14(), (int16_t)(dc.x + 14), (int16_t)(dc.y + 232),
+                 "请先在电脑端打开一个 DSH 会话",
+                 ui::tide::MUTED_ON_W, ui::tide::WHITE);
+  }
+}
+
+void drawDockTide(NovaCanvas& c, const NovaState& st) {
+  const ui::Rect r = dockBtnRect(st);
+  if (st.recState == 2) {
+    c.fillRect(r.x, r.y, r.w, r.h, ui::tide::WHITE);
+    char upBuf[24];
+    snprintf(upBuf, sizeof(upBuf), "上传中 %u%%", (unsigned)st.recUploadPct);
+    ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(r.x + r.w / 2), (int16_t)(r.y + 22),
+                         upBuf, ui::tide::SURF_INK, ui::tide::WHITE);
+    const int16_t bx = (int16_t)(r.x + 22);
+    const int16_t bw = (int16_t)(r.w - 44);
+    c.fillRect(bx, (int16_t)(r.y + 32), bw, 5, ui::tide::SURF_TINT);
+    int16_t fw = (int16_t)(((int32_t)bw * st.recUploadPct + 50) / 100);
+    if (fw > bw) fw = bw;
+    if (fw > 0) c.fillRect(bx, (int16_t)(r.y + 32), fw, 5, ui::tide::BG_COBALT);
+  } else if (st.recState == 3 || st.recState == 4) {
+    c.drawRect(r.x, r.y, r.w, r.h, ui::tide::WHITE);
+    c.drawRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2, ui::tide::WHITE);
+    ui::drawTextCenteredInRect(c, ui::fontCjk16(), r,
+                               st.recState == 3 ? "等待回执..." : "识别中...",
+                               ui::tide::WHITE, ui::tide::BG_COBALT);
+  } else if (st.chatDraftActive) {
+    c.drawRect(r.x, r.y, r.w, r.h, ui::tide::WHITE_LINE);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), r, "请先确认上方草稿",
+                               ui::tide::WHITE_DIM, ui::tide::BG_COBALT);
+  } else if (st.recState == 5) {
+    c.fillRect(r.x, r.y, r.w, r.h, ui::tide::BG_CRIMSON);
+    char errRaw[48], errFit[48];
+    snprintf(errRaw, sizeof(errRaw), "%s · 按住重试", st.recErr[0] ? st.recErr : "识别失败");
+    ui::fitUtf8Line(c, ui::fontCjk14(), errRaw, (int16_t)(r.w - 28), errFit, sizeof(errFit));
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), r, errFit,
+                               ui::tide::WHITE, ui::tide::BG_CRIMSON);
+  } else {
+    // 纯白实心通栏大块 + 钴蓝粗字
+    c.fillRect(r.x, r.y, r.w, r.h, ui::tide::WHITE);
+    const ui::TextMetrics tm = ui::measureText(c, ui::fontCjk16(), "按住说话");
+    constexpr int16_t gap = 8;
+    const int16_t totalW = (int16_t)(kIconMic18.w + gap + tm.w);
+    const int16_t startX = (int16_t)(r.x + (r.w - totalW) / 2);
+    const int16_t micY = (int16_t)(r.y + (r.h - (int16_t)kIconMic18.h) / 2);
+    ui::drawIcon(c, kIconMic18, startX, micY, ui::tide::BG_COBALT);
+    ui::drawText(c, ui::fontCjk16(), (int16_t)(startX + kIconMic18.w + gap - tm.x1),
+                 (int16_t)(r.y + (r.h - (int16_t)tm.h) / 2 - tm.y1),
+                 "按住说话", ui::tide::BG_COBALT, ui::tide::WHITE);
+  }
+}
+
+void drawRecordingOverlayTide(NovaCanvas& c, const NovaState& st) {
+  const int16_t ox = ui::burnOffsetX(st.burnInStep);
+  const int16_t oy = ui::burnOffsetY(st.burnInStep);
+  // 录音底：夜汐；上滑取消切信号绯红。
+  const uint16_t bg = st.boardHoldCancel ? ui::tide::BG_CRIMSON : ui::tide::BG_NIGHT;
+  const uint16_t dim = ui::tide::dimOn(bg);
+  c.fillScreen(bg);
+
+  ui::drawTextCentered(c, ui::fontAscii14(), (int16_t)(UI_W / 2 + ox), (int16_t)(82 + oy),
+                       st.boardHoldCancel ? "RELEASE TO CANCEL" : "RECORDING // VOICE", dim, bg);
+
+  constexpr int kBars = 15;
+  constexpr int16_t barW = 5;
+  constexpr int16_t barGap = 5;
+  const int16_t totalW = (int16_t)(kBars * barW + (kBars - 1) * barGap);
+  const int16_t x0 = (int16_t)(UI_W / 2 - totalW / 2 + ox);
+  const int16_t cy = (int16_t)(152 + oy);
+  const uint16_t barCol = ui::tide::WHITE;
+  const float phase = (float)(st.recDurMs / 90u) * 0.65f;
+  const float amp = 0.25f + 0.75f * ((float)(st.recLevel > 100 ? 100 : st.recLevel) / 100.0f);
+
+  for (int i = 0; i < kBars; i++) {
+    const float centerWeight = 1.0f - fabsf((float)i - 7.0f) / 8.5f;
+    const float wave = 0.55f + 0.45f * fabsf(sinf((float)i * 0.85f + phase));
+    int16_t h = (int16_t)(10 + lroundf(52.0f * amp * centerWeight * wave));
+    if (h < 10) h = 10;
+    if (h > 62) h = 62;
+    c.fillRect((int16_t)(x0 + i * (barW + barGap)), (int16_t)(cy - h / 2), barW, h, barCol);
+  }
+
+  uint32_t durMs = st.recDurMs;
+  if (durMs > 10000u) durMs = 10000u;
+  char durBuf[16];
+  snprintf(durBuf, sizeof(durBuf), "%u.%u", (unsigned)(durMs / 1000u),
+           (unsigned)((durMs % 1000u) / 100u));
+  ui::drawTextCentered(c, ui::fontNum92(), (int16_t)(UI_W / 2 + ox), (int16_t)(286 + oy),
+                       durBuf, ui::tide::WHITE, bg);
+
+  ui::drawTextCentered(c, ui::fontCjk16(), (int16_t)(UI_W / 2 + ox), (int16_t)(334 + oy),
+                       st.boardHoldCancel ? "松开手指即作废" : "松开发送 · 上滑取消",
+                       ui::tide::WHITE, bg);
+
+  ui::drawTextCentered(c, ui::fontCjk14(), (int16_t)(UI_W / 2 + ox), (int16_t)(362 + oy),
+                       "最长 10 秒 · 绝不自动发送", dim, bg);
+}
+
+void drawToastTide(NovaCanvas& c, const NovaState& st) {
+  if (!st.boardToast[0]) return;
+  if (st.nowMs < st.boardToastStartMs || (st.nowMs - st.boardToastStartMs) >= 1500u) return;
+  const int16_t ox = ui::burnOffsetX(st.burnInStep);
+  const int16_t oy = ui::burnOffsetY(st.burnInStep);
+  const ui::TextMetrics tm = ui::measureText(c, ui::fontCjk14(), st.boardToast);
+  int16_t tw = (int16_t)(tm.w + 28);
+  if (tw < 96) tw = 96;
+  if (tw > UI_SAFE_W) tw = UI_SAFE_W;
+  const ui::Rect tr{ (int16_t)((UI_W - tw) / 2 + ox), (int16_t)(66 + oy), tw, 28 };
+  c.fillRect(tr.x, tr.y, tr.w, tr.h, ui::tide::WHITE);
+  ui::drawTextCenteredInRect(c, ui::fontCjk14(), tr, st.boardToast,
+                             ui::tide::SURF_INK, ui::tide::WHITE);
+}
+
+void drawChatTide(NovaCanvas& c, const NovaState& st, const BoardSession* target) {
+  const uint16_t bg = (st.recState == 1 && st.boardHoldCancel)
+                        ? ui::tide::BG_CRIMSON
+                        : (st.recState == 1 ? ui::tide::BG_NIGHT : ui::tide::BG_COBALT);
+  c.fillScreen(bg);
+  drawHeaderTide(c, st, target);
+  if (st.chatDraftActive) drawDraftViewTide(c, st);
+  else                    drawBoardViewTide(c, st);
+  drawDockTide(c, st);
+  drawToastTide(c, st);
+}
+
+}  // namespace tide_draw
+
 }  // namespace
 
 const char* pageChatQuickCmdText(int) {
@@ -757,6 +1269,16 @@ bool pageChatCanStartHold(const NovaState& st) {
 }
 
 void pageChatDraw(NovaCanvas& c, const NovaState& st) {
+  if (ui::isTideTheme()) {
+    if (st.recState == 1) {
+      tide_draw::drawRecordingOverlayTide(c, st);
+      return;
+    }
+    const BoardSession* tgt = novaBoardFind(st, st.boardTargetId);
+    tide_draw::drawChatTide(c, st, tgt);
+    return;
+  }
+
   if (st.recState == 1) {
     drawRecordingOverlay(c, st);
     return;
@@ -899,3 +1421,4 @@ void pageChatScrollTouchUp(uint32_t, const NovaState&) {}
 bool pageChatTick(uint32_t, const NovaState&) { return false; }
 bool pageChatIsFlinging() { return false; }
 void pageChatScrollCancel() {}
+void pageChatOnExit() { pageChatScrollCancel(); }

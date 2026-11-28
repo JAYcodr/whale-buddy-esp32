@@ -7,10 +7,12 @@
 
 class UiNav {
 public:
-  void init(HomePageKind home);
+  void init(HomePageKind home, uint32_t nowMs = 0);
   UiPage currentPage() const { return m_page; }
   void setPage(UiPage p);
-  void goHome(HomePageKind home);
+  bool switchPage(UiPage next, uint32_t nowMs);
+  void applyTheme(ui::UiTheme theme, uint32_t nowMs);
+  void goHome(HomePageKind home, uint32_t nowMs = 0);
 
   UiAction onSwipe(int16_t dx, int16_t dy);
   UiAction onTap(int16_t x, int16_t y, const NovaState& st, const NovaSettings& cfg);

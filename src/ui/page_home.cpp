@@ -2,10 +2,17 @@
 #include "ui/pages.h"
 #include "anim/nva.h"
 #include "ui/theme.h"
+#include "ui/tide_palette.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#ifndef NOVA_HOST_SIM
+#include <esp_heap_caps.h>
+#endif
+
+void drawDockDetail(NovaCanvas& c, const NovaState& st);
 
 namespace {
 
@@ -589,6 +596,458 @@ void drawStatusPill(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg)
                              tagBuf, ui::COL_DIM, ui::COL_CARD);
 }
 
+// ── 潮汐（TIDE）主屏 ──────────────────────────────────────────────────
+// 契约见 docs/design/tide-theme-task-card.md §4①：状态淹没底色 + 92px 巨字时间背景
+// + 诺瓦前景 + 通栏码头。原版 OCEAN 的绘制一像素不动，两者各走各的分支。
+constexpr int16_t TIDE_STRIP_H      = 38;
+constexpr int16_t TIDE_STAGE_BOTTOM = 338;
+constexpr int16_t TIDE_PET_BASE_Y   = 334;  // 脚底轻踩在底栏横线 342 上方 8px
+constexpr int16_t TIDE_GIANT_TOP    = 46;   // 1.45× 巨字时间紧贴顶栏下方（高 ~98px → 46..144）
+constexpr int16_t TIDE_EYEBROW_Y    = 168;  // 位于巨字时间正下方左侧，严格对齐设计稿构图
+constexpr int16_t TIDE_BUBBLE_Y     = 148;  // 与眉标同高右侧对称
+constexpr int16_t TIDE_DOCK_TOP     = 342;
+constexpr float   TIDE_GIANT_SCALE  = 1.44f;
+
+inline void tideHomePalette(const NovaState& st, uint16_t* bg, uint16_t* giantCol) {
+  if (st.approvalActive || st.turnError || st.wait > 0) {
+    *bg = ui::tide::BG_CRIMSON;
+    *giantCol = ui::tide::GIANT_ALERT;
+  } else if (st.run > 0) {
+    *bg = ui::tide::BG_COBALT;
+    *giantCol = ui::tide::GIANT_WORK;
+  } else {
+    *bg = ui::tide::BG_NIGHT;
+    *giantCol = ui::tide::GIANT_IDLE;
+  }
+}
+
+inline const char* tideEyebrow(const NovaState& st) {
+  if (st.approvalActive || st.turnError || st.wait > 0) return "ALERT · 异常";
+  if (st.run > 0) return "ACTIVE · 运行中";
+  return "STANDBY · 摸鱼中";
+}
+
+// 双线性放大绘制 4-bpp 单字形（仅用于主屏 1.44× 巨字背景时间，零新增字库）。
+const AaGlyph* findDigitGlyph92(uint16_t cp) {
+  const AaFont* f = ui::fontNum92();
+  if (!f) return nullptr;
+  for (uint16_t i = 0; i < f->glyphCount; i++) {
+    if (f->glyphs[i].cp == cp) return &f->glyphs[i];
+  }
+  return nullptr;
+}
+
+void drawScaledGlyph92(NovaCanvas& c, const AaGlyph* g, int16_t dstX, int16_t dstTopY,
+                       float scale, uint16_t col) {
+  if (!g || g->w == 0 || g->h == 0) return;
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) return;
+  const AaFont* f = ui::fontNum92();
+  const uint8_t* data = f->data + g->dataOff;
+  const int16_t W = (int16_t)c.width();
+  const int16_t H = (int16_t)c.height();
+  const int16_t dw = (int16_t)lroundf((float)g->w * scale);
+  const int16_t dh = (int16_t)lroundf((float)g->h * scale);
+  const float invS = 1.0f / scale;
+
+  auto sampleA = [&](int sx, int sy) -> float {
+    if (sx < 0) sx = 0;
+    if (sy < 0) sy = 0;
+    if (sx >= (int)g->w) sx = (int)g->w - 1;
+    if (sy >= (int)g->h) sy = (int)g->h - 1;
+    const uint32_t pi = (uint32_t)sy * g->w + (uint32_t)sx;
+    const uint8_t byte = data[pi >> 1];
+    return (float)((pi & 1u) ? (byte & 0x0Fu) : (byte >> 4));
+  };
+
+  for (int16_t dy = 0; dy < dh; dy++) {
+    const int16_t py = (int16_t)(dstTopY + dy);
+    if (py < TIDE_STRIP_H || py >= TIDE_STAGE_BOTTOM || py < 0 || py >= H) continue;
+    const float fy = ((float)dy + 0.5f) * invS - 0.5f;
+    const int sy0 = (int)floorf(fy);
+    const float ty = fy - (float)sy0;
+    uint16_t* row = fb + (int32_t)py * W;
+
+    for (int16_t dx = 0; dx < dw; dx++) {
+      const int16_t px = (int16_t)(dstX + dx);
+      if (px < 0 || px >= W) continue;
+      const float fx = ((float)dx + 0.5f) * invS - 0.5f;
+      const int sx0 = (int)floorf(fx);
+      const float tx = fx - (float)sx0;
+      const float a00 = sampleA(sx0, sy0);
+      const float a10 = sampleA(sx0 + 1, sy0);
+      const float a01 = sampleA(sx0, sy0 + 1);
+      const float a11 = sampleA(sx0 + 1, sy0 + 1);
+      const float a = (a00 * (1.0f - tx) + a10 * tx) * (1.0f - ty) +
+                      (a01 * (1.0f - tx) + a11 * tx) * ty;
+      const uint8_t alpha255 = (uint8_t)lroundf(a * (255.0f / 15.0f));
+      if (alpha255 > 4) {
+        row[px] = ui::blend565(row[px], col, alpha255);
+      }
+    }
+  }
+}
+
+struct TideClockLayout {
+  const AaGlyph* g[4];
+  int16_t x[4];
+  int16_t colonX;
+  int16_t topY;
+  int16_t h;
+  int16_t x0, x1;
+};
+
+TideClockLayout layoutTideGiantClock(const NovaState& st, int16_t oy) {
+  TideClockLayout L{};
+  const uint16_t cps[4] = {
+    (uint16_t)('0' + (st.hour / 10) % 10),
+    (uint16_t)('0' + st.hour % 10),
+    (uint16_t)('0' + (st.minute / 10) % 10),
+    (uint16_t)('0' + st.minute % 10),
+  };
+  int16_t w[4] = {};
+  int16_t maxH = 0;
+  for (int i = 0; i < 4; i++) {
+    L.g[i] = findDigitGlyph92(cps[i]);
+    w[i] = L.g[i] ? (int16_t)lroundf((float)L.g[i]->w * TIDE_GIANT_SCALE) : 60;
+    int16_t gh = L.g[i] ? (int16_t)lroundf((float)L.g[i]->h * TIDE_GIANT_SCALE) : 96;
+    if (gh > maxH) maxH = gh;
+  }
+  constexpr int16_t kDigitGap = 5;
+  constexpr int16_t kColonGap = 32;
+  const int16_t totalW = (int16_t)(w[0] + kDigitGap + w[1] + kColonGap + w[2] + kDigitGap + w[3]);
+  const int16_t startX = (int16_t)((UI_W - totalW) / 2);
+  L.x[0] = startX;
+  L.x[1] = (int16_t)(L.x[0] + w[0] + kDigitGap);
+  L.colonX = (int16_t)(L.x[1] + w[1] + kColonGap / 2);
+  L.x[2] = (int16_t)(L.x[1] + w[1] + kColonGap);
+  L.x[3] = (int16_t)(L.x[2] + w[2] + kDigitGap);
+  L.topY = (int16_t)(TIDE_GIANT_TOP + oy);
+  L.h = maxH;
+  L.x0 = (int16_t)(startX - 2);
+  L.x1 = (int16_t)(startX + totalW + 2);
+  return L;
+}
+
+// 1.44× 巨字时间的着墨盒（含 AA 余量 + 矢量方冒号）。
+ui::Rect tideGiantClockBox(NovaCanvas&, const NovaState& st, int16_t oy) {
+  const TideClockLayout L = layoutTideGiantClock(st, oy);
+  return ui::Rect{ L.x0, (int16_t)(L.topY - 2),
+                   (int16_t)(L.x1 - L.x0), (int16_t)(L.h + 4) };
+}
+
+// 1.44× 巨字时间（紧贴顶栏下方、横跨近 300px，复刻设计稿封面级张力）。
+void drawTideGiantClock(NovaCanvas& c, const NovaState& st, int16_t oy, uint16_t col) {
+  const TideClockLayout L = layoutTideGiantClock(st, oy);
+  for (int i = 0; i < 4; i++) {
+    drawScaledGlyph92(c, L.g[i], L.x[i], L.topY, TIDE_GIANT_SCALE, col);
+  }
+  // 几何方冒号（对齐设计稿粗重 DIN 气质）
+  c.fillRect((int16_t)(L.colonX - 6), (int16_t)(L.topY + 26), 12, 12, col);
+  c.fillRect((int16_t)(L.colonX - 6), (int16_t)(L.topY + 62), 12, 12, col);
+}
+
+ui::Rect tideEyebrowRect(NovaCanvas& c, const NovaState& st, int16_t oy) {
+  const char* tag = tideEyebrow(st);
+  ui::TextMetrics m = ui::measureText(c, ui::fontCjk14(), tag);
+  const int16_t baseY = (int16_t)(TIDE_EYEBROW_Y + oy);
+  return ui::Rect{ (int16_t)(UI_SAFE_L + 2 - 1), (int16_t)(baseY + m.y1 - 1),
+                   (int16_t)(m.w + 2), (int16_t)(m.h + 2) };
+}
+
+inline bool rectsIntersect(const ui::Rect& a, const ui::Rect& b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+inline void rectUnion(ui::Rect& a, const ui::Rect& b) {
+  const int16_t x1 = (int16_t)(a.x + a.w < b.x + b.w ? b.x + b.w : a.x + a.w);
+  const int16_t y1 = (int16_t)(a.y + a.h < b.y + b.h ? b.y + b.h : a.y + a.h);
+  const int16_t x0 = a.x < b.x ? a.x : b.x;
+  const int16_t y0 = a.y < b.y ? a.y : b.y;
+  a = ui::Rect{ x0, y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0) };
+}
+
+constexpr int16_t TIDE_STAGE_H = TIDE_STAGE_BOTTOM - TIDE_STRIP_H;
+uint16_t* s_tideBgBuf = nullptr;
+bool      s_tideBgAllocTried = false;
+bool      s_tideBgValid      = false;
+uint16_t  s_tideBgCol        = 0;
+uint16_t  s_tideBgGiantCol   = 0;
+uint8_t   s_tideBgHour       = 255;
+uint8_t   s_tideBgMinute     = 255;
+uint8_t   s_tideBgBurnStep   = 255;
+uint8_t   s_tideBgStateKind  = 255;
+
+uint16_t* ensureTideBgBuf() {
+  if (s_tideBgBuf) return s_tideBgBuf;
+  if (s_tideBgAllocTried) return nullptr;
+  s_tideBgAllocTried = true;
+  const size_t bytes = (size_t)UI_W * (size_t)TIDE_STAGE_H * sizeof(uint16_t);
+#ifdef NOVA_HOST_SIM
+  s_tideBgBuf = (uint16_t*)malloc(bytes);
+#else
+  s_tideBgBuf = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+  return s_tideBgBuf;
+}
+
+inline uint8_t tideStateKind(const NovaState& st) {
+  if (st.approvalActive || st.turnError || st.wait > 0) return 2;
+  if (st.run > 0) return 1;
+  return 0;
+}
+
+inline bool tideBgMatches(const NovaState& st, uint16_t bg, uint16_t giantCol) {
+  return s_tideBgValid &&
+         s_tideBgCol == bg &&
+         s_tideBgGiantCol == giantCol &&
+         s_tideBgHour == st.hour &&
+         s_tideBgMinute == st.minute &&
+         s_tideBgBurnStep == st.burnInStep &&
+         s_tideBgStateKind == tideStateKind(st);
+}
+
+void drawTideStageStatic(NovaCanvas& c, const NovaState& st, int16_t oy,
+                         uint16_t bg, uint16_t giantCol) {
+  c.fillRect(0, TIDE_STRIP_H, UI_W, TIDE_STAGE_H, bg);
+  drawTideGiantClock(c, st, oy, giantCol);
+  ui::drawText(c, ui::fontCjk14(), UI_SAFE_L + 2, (int16_t)(TIDE_EYEBROW_Y + oy),
+               tideEyebrow(st), ui::tide::dimOn(bg), bg);
+}
+
+void snapshotTideBg(NovaCanvas& c) {
+  uint16_t* dst = ensureTideBgBuf();
+  const uint16_t* fb = c.getFramebuffer();
+  if (!dst || !fb) return;
+  const uint16_t* src = fb + (int32_t)TIDE_STRIP_H * (int16_t)c.width();
+  memcpy(dst, src, (size_t)UI_W * (size_t)TIDE_STAGE_H * sizeof(uint16_t));
+}
+
+bool restoreTideBgRect(NovaCanvas& c, const ui::Rect& r) {
+  if (!s_tideBgBuf || !s_tideBgValid) return false;
+  uint16_t* fb = c.getFramebuffer();
+  if (!fb) return false;
+  const int16_t W = (int16_t)c.width();
+  int16_t x0 = r.x;
+  int16_t y0 = r.y;
+  int16_t x1 = (int16_t)(r.x + r.w);
+  int16_t y1 = (int16_t)(r.y + r.h);
+  if (x0 < 0) x0 = 0;
+  if (x1 > W) x1 = W;
+  if (y0 < TIDE_STRIP_H) y0 = TIDE_STRIP_H;
+  if (y1 > TIDE_STAGE_BOTTOM) y1 = TIDE_STAGE_BOTTOM;
+  if (x1 <= x0 || y1 <= y0) return true;
+  const size_t rowBytes = (size_t)(x1 - x0) * sizeof(uint16_t);
+  for (int16_t y = y0; y < y1; y++) {
+    const uint16_t* srcRow = s_tideBgBuf + (int32_t)(y - TIDE_STRIP_H) * UI_W + x0;
+    uint16_t* dstRow = fb + (int32_t)y * W + x0;
+    memcpy(dstRow, srcRow, rowBytes);
+  }
+  return true;
+}
+
+void drawStageContentTide(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg,
+                          uint32_t frame, int16_t* outDx, int16_t* outDy,
+                          int16_t* outDw, int16_t* outDh) {
+  uint16_t bg, giantCol;
+  tideHomePalette(st, &bg, &giantCol);
+
+  updateRoam(st, cfg, frame);
+
+  const int16_t ox = ui::burnOffsetX(st.burnInStep);
+  const int16_t oy = ui::burnOffsetY(st.burnInStep);
+  const int16_t cx = (int16_t)(s_petX + 0.5f) + ox;
+
+  float diff = s_targetX - s_petX;
+  const bool walking = (diff < -1.2f || diff > 1.2f);
+  const int16_t hop = walking ? (int16_t)(fabsf(sinf(frame * 0.28f)) * 2.0f) : 0;
+  const int16_t bottomY = (int16_t)(TIDE_PET_BASE_Y + oy - hop);
+
+  const int16_t sprW = nvaFrameWidth();
+  const int16_t sprH = nvaFrameHeight();
+  // 常规态保持贴身包围盒（max sprW=213 → dw<=224 < 240），让每帧都留在 64KB 内部 DMA SRAM 快传路径；
+  // 仅在点击弹跳的 ~280ms 期间按 squash 最大倍率放大包围盒，避免静态也把宽图推过 240 掉入慢路径。
+  int16_t halfW = s_squashActive ? (int16_t)(lroundf((float)sprW * 0.58f) + 4) : (int16_t)(sprW / 2 + 4);
+  if (halfW < 84) halfW = 84;
+  int16_t curX0 = (int16_t)(cx - halfW);
+  int16_t curX1 = (int16_t)(cx + halfW);
+  const int16_t upH = s_squashActive ? (int16_t)lroundf((float)sprH * 1.14f) : sprH;
+  int16_t curY0 = (int16_t)(bottomY - upH - 4);
+  int16_t curY1 = (int16_t)(TIDE_PET_BASE_Y + oy + 6);
+
+  // 气泡固定贴右上（y = 160），不跟着诺瓦跑到脸上。
+  bool showBubble = (s_bubbleBuf[0] && s_bubbleUntilMs != 0 &&
+                     (int32_t)(s_bubbleUntilMs - st.nowMs) > 0);
+  if (s_bubbleBuf[0] && !showBubble && s_bubbleUntilMs != 0) {
+    s_bubbleBuf[0] = '\0';
+    s_bubbleUntilMs = 0;
+  }
+  constexpr int16_t kBubbleH = 30;
+  int16_t bx = 12, by = (int16_t)(TIDE_BUBBLE_Y + oy), bw = 0;
+  if (showBubble) {
+    ui::TextMetrics bm = ui::measureText(c, ui::fontCjk14(), s_bubbleBuf);
+    bw = (int16_t)(bm.w + 26);
+    if (bw > UI_W - 24) bw = UI_W - 24;
+    bx = (int16_t)(UI_SAFE_R - bw);
+    if (bx < 12) bx = 12;
+    if (by < TIDE_STRIP_H + 4) by = TIDE_STRIP_H + 4;
+    if (by + kBubbleH > TIDE_STAGE_BOTTOM - 4) by = (int16_t)(TIDE_STAGE_BOTTOM - 4 - kBubbleH);
+  }
+
+  int16_t uX0 = curX0, uY0 = curY0, uX1 = curX1, uY1 = curY1;
+  if (s_hasPrevBox) {
+    if (s_prevX0 < uX0) uX0 = s_prevX0;
+    if (s_prevY0 < uY0) uY0 = s_prevY0;
+    if (s_prevX1 > uX1) uX1 = s_prevX1;
+    if (s_prevY1 > uY1) uY1 = s_prevY1;
+  } else {
+    uX0 = 0; uY0 = TIDE_STRIP_H; uX1 = UI_W; uY1 = TIDE_STAGE_BOTTOM;
+  }
+
+  s_prevX0 = curX0; s_prevY0 = curY0; s_prevX1 = curX1; s_prevY1 = curY1;
+  s_hasPrevBox = true;
+
+  ui::Rect dirty{ uX0, uY0, (int16_t)(uX1 - uX0), (int16_t)(uY1 - uY0) };
+  if (showBubble) {
+    rectUnion(dirty, ui::Rect{ (int16_t)(bx - 2), (int16_t)(by - 2),
+                               (int16_t)(bw + 4), (int16_t)(kBubbleH + 4) });
+  }
+
+  // 舞台背景（底色 + 1.44× 巨字时间 + 眉标）只随分钟 / 主题调色板 / 烧屏位移变化，
+  // 缓存在 PSRAM 中后每帧只需按宠物脏矩形 memcpy 回填，不必重算双线性缩放，也避免把脏区扩成 >=240px 掉出快传路径。
+  const bool bgCached = (ensureTideBgBuf() != nullptr);
+  const bool bgHit = bgCached && tideBgMatches(st, bg, giantCol);
+  if (bgCached) {
+    if (!bgHit) {
+      dirty = ui::Rect{ 0, TIDE_STRIP_H, UI_W, TIDE_STAGE_H };
+    }
+  } else {
+    const ui::Rect giantBox = tideGiantClockBox(c, st, oy);
+    const ui::Rect eyebrowBox = tideEyebrowRect(c, st, oy);
+    const bool drawGiant = rectsIntersect(dirty, giantBox);
+    const bool drawEyebrow = rectsIntersect(dirty, eyebrowBox);
+    if (drawGiant) rectUnion(dirty, giantBox);
+    if (drawEyebrow) rectUnion(dirty, eyebrowBox);
+    dirty = ui::Rect{ dirty.x, dirty.y, dirty.w, dirty.h };
+  }
+
+  // 裁剪到舞台区，绝不越界到顶栏或码头。
+  int16_t x0 = dirty.x;
+  int16_t y0 = dirty.y;
+  int16_t x1 = (int16_t)(dirty.x + dirty.w);
+  int16_t y1 = (int16_t)(dirty.y + dirty.h);
+  if (x0 < 0) x0 = 0;
+  if (x1 > UI_W) x1 = UI_W;
+  if (y0 < TIDE_STRIP_H) y0 = TIDE_STRIP_H;
+  if (y1 > TIDE_STAGE_BOTTOM) y1 = TIDE_STAGE_BOTTOM;
+  if (x1 <= x0 || y1 <= y0) {
+    if (outDx) { *outDx = 0; *outDy = TIDE_STRIP_H; *outDw = 1; *outDh = 1; }
+    return;
+  }
+  dirty = ui::Rect{ x0, y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0) };
+
+  if (bgCached) {
+    if (!bgHit) {
+      drawTideStageStatic(c, st, oy, bg, giantCol);
+      snapshotTideBg(c);
+      s_tideBgCol = bg;
+      s_tideBgGiantCol = giantCol;
+      s_tideBgHour = st.hour;
+      s_tideBgMinute = st.minute;
+      s_tideBgBurnStep = st.burnInStep;
+      s_tideBgStateKind = tideStateKind(st);
+      s_tideBgValid = true;
+    } else {
+      restoreTideBgRect(c, dirty);
+    }
+  } else {
+    const ui::Rect giantBox = tideGiantClockBox(c, st, oy);
+    const ui::Rect eyebrowBox = tideEyebrowRect(c, st, oy);
+    c.fillRect(dirty.x, dirty.y, dirty.w, dirty.h, bg);
+    if (rectsIntersect(dirty, giantBox)) drawTideGiantClock(c, st, oy, giantCol);
+    if (rectsIntersect(dirty, eyebrowBox)) {
+      ui::drawText(c, ui::fontCjk14(), UI_SAFE_L + 2, (int16_t)(TIDE_EYEBROW_Y + oy),
+                   tideEyebrow(st), ui::tide::dimOn(bg), bg);
+    }
+  }
+
+  if (!nvaDraw(c, cx, bottomY, s_facingRight && spriteAllowsMirror(nvaActiveState()),
+               calcSquashScaleY(st.nowMs))) {
+    ui::aaFillCircle(c, cx, (int16_t)(bottomY - 76), 36,
+                     (bg == ui::tide::BG_NIGHT) ? ui::tide::SURF_SUB : ui::tide::WHITE);
+  }
+
+  if (showBubble) {
+    ui::aaFillRoundRect(c, bx, by, bw, kBubbleH, 6, ui::tide::WHITE, ui::tide::WHITE);
+    ui::drawTextCenteredInRect(c, ui::fontCjk14(), { bx, by, bw, kBubbleH },
+                               s_bubbleBuf, ui::tide::SURF_INK, ui::tide::WHITE);
+  }
+
+  if (outDx) *outDx = dirty.x;
+  if (outDy) *outDy = dirty.y;
+  if (outDw) *outDw = dirty.w;
+  if (outDh) *outDh = dirty.h;
+}
+
+// 底栏码头：顶部 2px 细横线 + 左侧纯白反色块（RUN N · CTX XX%）+ 右侧模型名
+// + 下方一行纯白状态文本。通栏无卡片、零圆角。
+void drawTideDock(NovaCanvas& c, const NovaState& st, uint16_t bg) {
+  c.fillRect(0, TIDE_DOCK_TOP, UI_W, UI_H - TIDE_DOCK_TOP, bg);
+  c.fillRect(0, TIDE_DOCK_TOP, UI_W, 2, ui::blend565(bg, ui::tide::WHITE, 95));
+
+  char runBuf[40];
+  if (st.ctxPct >= 0) {
+    if (st.turnError) snprintf(runBuf, sizeof(runBuf), "ERR · CTX %d%%", st.ctxPct);
+    else snprintf(runBuf, sizeof(runBuf), "RUN %u · CTX %d%%", (unsigned)st.run, st.ctxPct);
+  } else {
+    if (st.turnError) snprintf(runBuf, sizeof(runBuf), "ERR");
+    else snprintf(runBuf, sizeof(runBuf), "RUN %u", (unsigned)st.run);
+  }
+
+  constexpr int16_t kBlkY = 354;
+  constexpr int16_t kBlkH = 30;
+  // 用 CJK 字库画整串：Din17 的 U+00B7 字形是坏的（渲染成空心方块），
+  // 而本行文案里带「·」，原版同样走 fontCjk14。
+  ui::TextMetrics rm = ui::measureText(c, ui::fontCjk14(), runBuf);
+  const int16_t blkW = (int16_t)(rm.w + 20);
+  const int16_t blkX = UI_SAFE_L;
+  c.fillRect(blkX, kBlkY, blkW, kBlkH, ui::tide::WHITE);
+  ui::drawTextCenteredInRect(c, ui::fontCjk14(), { blkX, kBlkY, blkW, kBlkH },
+                             runBuf, bg, ui::tide::WHITE);
+
+  if (st.activeModel[0]) {
+    const int16_t avail = (int16_t)(UI_SAFE_R - (blkX + blkW) - 12);
+    if (avail > 40) {
+      char modelBuf[48];
+      ui::fitUtf8Line(c, ui::fontCjk14(), st.activeModel, avail, modelBuf, sizeof(modelBuf));
+      ui::drawTextRight(c, ui::fontCjk14(), UI_SAFE_R, kBlkY + 21, modelBuf,
+                        ui::tide::dimOn(bg), bg);
+    }
+  }
+
+  const char* line = st.msg[0] ? st.msg
+                     : (st.sessTitle[0] ? st.sessTitle
+                        : (st.run == 0 ? "待机摸鱼中 · 轻戳诺瓦互动" : "任务执行中"));
+  char lineBuf[96];
+  ui::fitUtf8Line(c, ui::fontCjk16(), line, UI_SAFE_W, lineBuf, sizeof(lineBuf));
+  ui::drawText(c, ui::fontCjk16(), UI_SAFE_L, 416, lineBuf, ui::tide::WHITE, bg);
+}
+
+void drawHomeTide(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
+  uint16_t bg, giantCol;
+  tideHomePalette(st, &bg, &giantCol);
+  c.fillScreen(bg);
+  const char* topLeft = (st.wifiConnected && st.mqttConnected) ? "DSH" : "OFFLINE";
+  ui::tide::drawTopStrip(c, st, 1, bg, 6, topLeft);
+
+  s_hasPrevBox = false;
+  drawStageContentTide(c, st, cfg, frame, nullptr, nullptr, nullptr, nullptr);
+  drawTideDock(c, st, bg);
+  if (st.dockExpanded && st.turnError && st.errMsg[0]) {
+    drawDockDetail(c, st);
+  }
+}
+
 }  // namespace
 
 int pageHomeDemoOverride() {
@@ -641,6 +1100,10 @@ void pageHomeTick(const NovaState& st, const NovaSettings& cfg, uint32_t frame, 
 
 void pageHomeDrawStage(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame,
                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH) {
+  if (ui::isTideTheme()) {
+    drawStageContentTide(c, st, cfg, frame, outX, outY, outW, outH);
+    return;
+  }
   drawStageContent(c, st, cfg, frame, outX, outY, outW, outH);
 }
 
@@ -675,6 +1138,12 @@ void drawDockDetail(NovaCanvas& c, const NovaState& st) {
 }
 
 void pageHomeDraw(NovaCanvas& c, const NovaState& st, const NovaSettings& cfg, uint32_t frame) {
+  // AP 配网态在两种主题下都走原版绘制（契约要求 AP 二维码保持原样不动像素）。
+  if (ui::isTideTheme() && !(st.wifiApMode && !st.wifiConnected)) {
+    drawHomeTide(c, st, cfg, frame);
+    return;
+  }
+
   c.fillScreen(ui::COL_BG);
   ui::drawTopBar(c, st, 1);
 
@@ -922,26 +1391,35 @@ UiAction pageHomeTap(int16_t x, int16_t y, const NovaState& st) {
     return UiAction{ UiAction::DOCK_TOGGLE, 0 };
   }
   // 异常时点码头展开详情；非异常时码头不拦点击，保持原有舞台交互。
-  if (st.turnError && dockRect(st).contains(x, y)) {
+  const ui::Rect dockHit = ui::isTideTheme()
+      ? ui::Rect{ 0, TIDE_DOCK_TOP, UI_W, (int16_t)(UI_H - TIDE_DOCK_TOP) }
+      : dockRect(st);
+  if (st.turnError && dockHit.contains(x, y)) {
     return UiAction{ UiAction::DOCK_TOGGLE, 0 };
   }
 
-  const ui::Rect pillR = statusPillRect(st);
-  if (pillR.contains(x, y)) {
-    if (s_demoAnim < 0) s_demoAnim = 1;
-    else if (s_demoAnim >= (int)NvaAnimKey::COUNT - 1) s_demoAnim = -1;
-    else s_demoAnim++;
-    setBubble((s_demoAnim < 0) ? "恢复自动状态" : "切换动作!", 3500u, st.nowMs);
-    return UiAction{ UiAction::PET_TAP, 2 };
+  // 潮汐版无中置状态胶囊（该区域现在是诺瓦落脚舞台），只有原版 OCEAN 拦截 pillR。
+  if (!ui::isTideTheme()) {
+    const ui::Rect pillR = statusPillRect(st);
+    if (pillR.contains(x, y)) {
+      if (s_demoAnim < 0) s_demoAnim = 1;
+      else if (s_demoAnim >= (int)NvaAnimKey::COUNT - 1) s_demoAnim = -1;
+      else s_demoAnim++;
+      setBubble((s_demoAnim < 0) ? "恢复自动状态" : "切换动作!", 3500u, st.nowMs);
+      return UiAction{ UiAction::PET_TAP, 2 };
+    }
   }
 
-  if (y >= STAGE_TOP && y <= STAGE_BOTTOM) {
+  const int16_t stageTop = ui::isTideTheme() ? TIDE_STRIP_H : STAGE_TOP;
+  const int16_t stageBot = ui::isTideTheme() ? TIDE_STAGE_BOTTOM : STAGE_BOTTOM;
+  if (y >= stageTop && y <= stageBot) {
     const int16_t ox = ui::burnOffsetX(st.burnInStep);
     const int16_t oy = ui::burnOffsetY(st.burnInStep);
     int16_t curX = (int16_t)(s_petX + 0.5f) + ox;
     int16_t dx = x - curX;
     if (dx < 0) dx = -dx;
-    if (dx <= 68 && y >= (int16_t)(104 + oy)) {
+    const int16_t petHitTop = ui::isTideTheme() ? (int16_t)(136 + oy) : (int16_t)(104 + oy);
+    if (dx <= 68 && y >= petHitTop) {
       s_sparkFrames = 24;
       s_pendingSquashTap = true;
       const NvaAnimKey cur = nvaActiveState();
@@ -1014,10 +1492,39 @@ bool pageHomeHitRect(int16_t x, int16_t y, const NovaState& st, const NovaSettin
     *out = apCancelPortalRect(st);
     return true;
   }
-  const ui::Rect pillR = statusPillRect(st);
-  if (pillR.contains(x, y)) {
-    *out = pillR;
-    return true;
+  if (!ui::isTideTheme()) {
+    const ui::Rect pillR = statusPillRect(st);
+    if (pillR.contains(x, y)) {
+      *out = pillR;
+      return true;
+    }
   }
   return false;
+}
+
+void pageHomeOnEnter(uint32_t nowMs) {
+  (void)nowMs;
+  s_hasPrevBox = false;
+}
+
+void pageHomeOnExit() {
+  s_hasPrevBox = false;
+  s_squashActive = false;
+  s_pendingSquashTap = false;
+  s_sparkFrames = 0;
+  s_bubbleBuf[0] = '\0';
+  s_bubbleUntilMs = 0;
+  s_pendingBubbleMs = 0;
+}
+
+void pageHomeOnThemeChange() {
+  s_hasPrevBox = false;
+  s_tideBgValid = false;
+  s_demoAnim = -1;
+  s_squashActive = false;
+  s_pendingSquashTap = false;
+  s_sparkFrames = 0;
+  s_bubbleBuf[0] = '\0';
+  s_bubbleUntilMs = 0;
+  s_pendingBubbleMs = 0;
 }

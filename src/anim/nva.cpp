@@ -325,8 +325,8 @@ bool decodeFrameToBack(const NvaPack& pk, uint16_t frameIdx, NvaAnimKey key) {
 #ifndef NOVA_HOST_SIM
 void decodeTaskFn(void*) {
   for (;;) {
+    // TaskNotification 本身就是计数信号量；不再二次用 s_needDecode 门控，防止跨核竞态丢唤醒
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    if (!s_needDecode) continue;
     s_needDecode = false;
 
     NvaAnimKey target = s_desiredKey;
@@ -361,11 +361,18 @@ void decodeTaskFn(void*) {
         }
         continue;
       }
-      uint16_t nextIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
-      s_frameIdx = nextIdx;
-      decodeFrameToBack(*pk, s_frameIdx, s_activeKey);
-      if (nextIdx == 0 && target == s_desiredKey && restartGen == s_desiredRestartGen) {
-        s_loopCycles++;
+      const uint16_t nextIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
+      if (decodeFrameToBack(*pk, nextIdx, s_activeKey)) {
+        s_frameIdx = nextIdx;
+        if (nextIdx == 0 && target == s_desiredKey && restartGen == s_desiredRestartGen) {
+          s_loopCycles++;
+        }
+      } else if (nextIdx != 0 && decodeFrameToBack(*pk, 0, s_activeKey)) {
+        // delta 校验失败时立刻回关键帧 0 自愈，避免 s_lastFrameIdx 失步导致整轮 ~10s 卡住
+        s_frameIdx = 0;
+        if (target == s_desiredKey && restartGen == s_desiredRestartGen) {
+          s_loopCycles++;
+        }
       }
     }
   }
@@ -420,7 +427,7 @@ void nvaSetState(NvaAnimKey key, bool once, bool restart) {
   if (s_desiredKey == key && s_desiredOnce == once && !restart) return;
   s_desiredKey = key;
   s_desiredOnce = once;
-  if (restart || s_desiredKey != s_activeKey) {
+  if (restart || !once || s_desiredKey != s_activeKey) {
     s_clipEnded = false;
   }
   if (restart) {
@@ -457,6 +464,9 @@ NvaAnimKey nvaActiveState() {
   }
 #endif
   return s_frontKey;
+}
+bool nvaIsSwitching() {
+  return s_ready && (nvaActiveState() != s_desiredKey || s_desiredRestartGen != s_seenRestartGen);
 }
 bool nvaIsEnded() { return s_clipEnded; }
 uint32_t nvaLoopCycles() { return s_loopCycles; }
@@ -503,9 +513,14 @@ void nvaTick(uint32_t nowMs) {
       s_loopCycles++;
       return;
     }
-    s_frameIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
-    decodeFrameToBack(*pk, s_frameIdx, s_activeKey);
-    if (s_frameIdx == 0) s_loopCycles++;
+    const uint16_t nextIdx = (uint16_t)((s_frameIdx + 1) % pk->nframes);
+    if (decodeFrameToBack(*pk, nextIdx, s_activeKey)) {
+      s_frameIdx = nextIdx;
+      if (nextIdx == 0) s_loopCycles++;
+    } else if (nextIdx != 0 && decodeFrameToBack(*pk, 0, s_activeKey)) {
+      s_frameIdx = 0;
+      s_loopCycles++;
+    }
   }
 #endif
 }

@@ -1,4 +1,5 @@
 #include "ui/theme.h"
+#include "ui/tide_palette.h"
 #include "ui/easing.h"
 #include <math.h>
 
@@ -11,6 +12,51 @@ extern const AaFont g_fontDin46;
 extern const AaFont g_fontDin92;
 
 namespace ui {
+
+static UiTheme s_activeTheme = UiTheme::OCEAN;
+
+static constexpr ThemeSpec kThemeSpecs[2] = {
+  {
+    UiTheme::OCEAN,
+    "深海原版",
+    60,
+    46,
+    true,
+    { 0, 62,  UI_W, 92 },
+    { 0, 414, UI_W, UI_H - 414 },
+    COL_BG,
+    COL_BG,
+    COL_BG,
+    COL_BG,
+    COL_TEXT,
+    COL_DIM,
+    COL_BORDER,
+  },
+  {
+    UiTheme::TIDE,
+    "深蓝潮汐",
+    38,
+    0,
+    false,
+    { 0, 38,  UI_W, 128 },
+    { 0, 354, UI_W, UI_H - 354 },
+    tide::BG_COBALT,
+    tide::BG_NIGHT,
+    tide::BG_CRIMSON,
+    tide::BG_TEAL,
+    tide::WHITE,
+    tide::WHITE_DIM,
+    tide::WHITE_LINE,
+  },
+};
+
+UiTheme activeTheme() { return s_activeTheme; }
+void setActiveTheme(UiTheme t) {
+  s_activeTheme = (t == UiTheme::TIDE) ? UiTheme::TIDE : UiTheme::OCEAN;
+}
+const ThemeSpec& themeSpecFor(UiTheme t) {
+  return kThemeSpecs[(t == UiTheme::TIDE) ? 1 : 0];
+}
 
 const AaFont* fontCjk14()   { return &g_fontPf16; }
 const AaFont* fontCjk16()   { return &g_fontPf20; }
